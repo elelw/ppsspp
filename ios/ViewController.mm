@@ -130,6 +130,7 @@ static LocationHelper *locationHelper;
 		iCadeToKeyMap[iCadeButtonF]			= NKCODE_BUTTON_2; // Cross
 		iCadeToKeyMap[iCadeButtonG]			= NKCODE_BUTTON_1; // Triangle
 		iCadeToKeyMap[iCadeButtonH]			= NKCODE_BUTTON_3; // Circle
+        iCadeToKeyMap[iCadeCenterHome]      = NKCODE_ESCAPE;
 
 		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(appWillTerminate:) name:UIApplicationWillTerminateNotification object:nil];
 
@@ -465,23 +466,10 @@ static LocationHelper *locationHelper;
 
 - (void)buttonUp:(iCadeState)button
 {
-	if (button == iCadeButtonC) {
-		// Pressing Start twice within 1 second will take to the Emu menu
-		if ((lastStartPress + 1.0f) > time_now_d()) {
-			KeyInput key;
-			key.flags = KEY_DOWN;
-			key.keyCode = NKCODE_ESCAPE;
-			key.deviceId = DEVICE_ID_KEYBOARD;
-			NativeKey(key);
-			return;
-		}
-		lastStartPress = time_now_d();
-	}
-	
 	if ((button == iCadeLeftAxisUp) ||
-            (button == iCadeLeftAxisDown) ||
-            (button == iCadeLeftAxisLeft) ||
-            (button == iCadeLeftAxisRight)) {
+        (button == iCadeLeftAxisDown) ||
+        (button == iCadeLeftAxisLeft) ||
+        (button == iCadeLeftAxisRight)) {
 		AxisInput axis;
 		switch (button) {
 			case iCadeLeftAxisUp :
