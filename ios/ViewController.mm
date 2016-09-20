@@ -33,6 +33,8 @@
 #include <sys/sysctl.h>
 #include <mach/machine.h>
 
+#include "Common/KeyMap.h"
+
 #define IS_IPAD() ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad)
 #define IS_IPHONE() ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPhone)
 
@@ -72,13 +74,11 @@ private:
 	Draw::DrawContext *draw_;
 	GLRenderManager *renderManager_;
 };
-
 static float dp_xscale = 1.0f;
 static float dp_yscale = 1.0f;
 
 static double lastSelectPress = 0.0f;
 static double lastStartPress = 0.0f;
-static bool simulateAnalog = false;
 static bool threadEnabled = true;
 static bool threadStopped = false;
 
@@ -86,15 +86,18 @@ __unsafe_unretained ViewController* sharedViewController;
 static GraphicsContext *graphicsContext;
 
 @interface ViewController () {
-	std::map<uint16_t, uint16_t> iCadeToKeyMap;
+	std::map<uint32_t, uint16_t> iCadeToKeyMap;
 }
 
 @property (nonatomic, strong) EAGLContext* context;
 @property (nonatomic, strong) NSMutableArray<NSDictionary *>* touches;
-//@property (nonatomic) iCadeReaderView* iCadeView;
+@property (nonatomic) NSString* documentsPath;
+@property (nonatomic) NSString* bundlePath;
+@property (nonatomic) iCadeReaderView* iCadeView;
 #if __IPHONE_OS_VERSION_MAX_ALLOWED > __IPHONE_6_1
 @property (nonatomic) GCController *gameController __attribute__((weak_import));
 #endif
+@property (nonatomic) std::vector<uint32_t> iCadeAnalogLimiterKeys;
 
 @end
 
@@ -124,6 +127,9 @@ static GraphicsContext *graphicsContext;
 		iCadeToKeyMap[iCadeButtonF]			= NKCODE_BUTTON_2; // Cross
 		iCadeToKeyMap[iCadeButtonG]			= NKCODE_BUTTON_1; // Triangle
 		iCadeToKeyMap[iCadeButtonH]			= NKCODE_BUTTON_3; // Circle
+        iCadeToKeyMap[iCadeCenterHome]      = NKCODE_ESCAPE;
+        iCadeToKeyMap[iCadeButtonL2]        = NKCODE_SHIFT_LEFT;
+        iCadeToKeyMap[iCadeButtonR2]        = NKCODE_SHIFT_RIGHT;
 
 		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(appWillTerminate:) name:UIApplicationWillTerminateNotification object:nil];
 
@@ -134,6 +140,21 @@ static GraphicsContext *graphicsContext;
 			[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(controllerDidDisconnect:) name:GCControllerDidDisconnectNotification object:nil];
 		}
 #endif
+        std::vector<KeyDef> keys;
+        KeyMap::KeyFromPspButton(VIRTKEY_ANALOG_LIGHTLY, &keys, false);
+        for (size_t i = 0; i < keys.size(); i++)
+        {
+            if (keys[i].deviceId != DEVICE_ID_PAD_0)
+                continue;
+            for (auto iter = iCadeToKeyMap.begin(); iter != iCadeToKeyMap.end(); iter++)
+            {
+                if (iter->second == keys[i].keyCode)
+                {
+                    _iCadeAnalogLimiterKeys.push_back(iter->first);
+                    break;
+                }
+            }
+        }
 	}
 	return self;
 }
@@ -171,10 +192,10 @@ static GraphicsContext *graphicsContext;
 	dp_xscale = (float)dp_xres / (float)pixel_xres;
 	dp_yscale = (float)dp_yres / (float)pixel_yres;
 	
-	/*self.iCadeView = [[iCadeReaderView alloc] init];
+	self.iCadeView = [[iCadeReaderView alloc] init];
 	[self.view addSubview:self.iCadeView];
 	self.iCadeView.delegate = self;
-	self.iCadeView.active = YES;*/
+	self.iCadeView.active = YES;
 	
 #if __IPHONE_OS_VERSION_MAX_ALLOWED > __IPHONE_6_1
 	if ([GCController class]) {
@@ -410,31 +431,39 @@ static GraphicsContext *graphicsContext;
 
 - (void)buttonDown:(iCadeState)button
 {
-	if (simulateAnalog &&
-		((button == iCadeJoystickUp) ||
-		 (button == iCadeJoystickDown) ||
-		 (button == iCadeJoystickLeft) ||
-		 (button == iCadeJoystickRight))) {
+    float axisWeight = 1.0f;
+    for (size_t i = 0; i < _iCadeAnalogLimiterKeys.size(); i++)
+    {
+        if ((self.iCadeView.iCadeState & _iCadeAnalogLimiterKeys[i]) == _iCadeAnalogLimiterKeys[i])
+        {
+            axisWeight = g_Config.fAnalogLimiterDeadzone;
+            break;
+        }
+    }
+    if ((button == iCadeLeftAxisUp) ||
+            (button == iCadeLeftAxisDown) ||
+            (button == iCadeLeftAxisLeft) ||
+            (button == iCadeLeftAxisRight)) {
 			AxisInput axis;
 			switch (button) {
-				case iCadeJoystickUp :
+				case iCadeLeftAxisUp :
 					axis.axisId = JOYSTICK_AXIS_Y;
-					axis.value = -1.0f;
+					axis.value = -axisWeight;
 					break;
 					
-				case iCadeJoystickDown :
+				case iCadeLeftAxisDown :
 					axis.axisId = JOYSTICK_AXIS_Y;
-					axis.value = 1.0f;
+					axis.value = axisWeight;
 					break;
 					
-				case iCadeJoystickLeft :
+				case iCadeLeftAxisLeft :
 					axis.axisId = JOYSTICK_AXIS_X;
-					axis.value = -1.0f;
+					axis.value = -axisWeight;
 					break;
 					
-				case iCadeJoystickRight :
+				case iCadeLeftAxisRight :
 					axis.axisId = JOYSTICK_AXIS_X;
-					axis.value = 1.0f;
+					axis.value = axisWeight;
 					break;
 					
 				default:
@@ -443,61 +472,71 @@ static GraphicsContext *graphicsContext;
 			axis.deviceId = DEVICE_ID_PAD_0;
 			axis.flags = 0;
 			NativeAxis(axis);
-		} else {
-			KeyInput key;
-			key.flags = KEY_DOWN;
-			key.keyCode = iCadeToKeyMap[button];
-			key.deviceId = DEVICE_ID_PAD_0;
-			NativeKey(key);
-		}
+    } else if ((button == iCadeRightAxisUp) ||
+               (button == iCadeRightAxisDown) ||
+               (button == iCadeRightAxisLeft) ||
+               (button == iCadeRightAxisRight)) {
+        AxisInput axis;
+        switch (button) {
+            case iCadeRightAxisUp :
+                axis.axisId = JOYSTICK_AXIS_Z;
+                axis.value = -axisWeight;
+                break;
+                
+            case iCadeRightAxisDown :
+                axis.axisId = JOYSTICK_AXIS_Z;
+                axis.value = axisWeight;
+                break;
+                
+            case iCadeRightAxisLeft :
+                axis.axisId = JOYSTICK_AXIS_RZ;
+                axis.value = -axisWeight;
+                break;
+                
+            case iCadeRightAxisRight :
+                axis.axisId = JOYSTICK_AXIS_RZ;
+                axis.value = axisWeight;
+                break;
+                
+            default:
+                break;
+        }
+        axis.deviceId = DEVICE_ID_PAD_0;
+        axis.flags = 0;
+        NativeAxis(axis);
+    } else {
+		KeyInput key;
+		key.flags = KEY_DOWN;
+		key.keyCode = iCadeToKeyMap[button];
+		key.deviceId = DEVICE_ID_PAD_0;
+		NativeKey(key);
+	}
 }
 
 - (void)buttonUp:(iCadeState)button
 {
-	if (button == iCadeButtonA) {
-		// Pressing Select twice within 1 second toggles the DPad between
-		//     normal operation and simulating the Analog stick.
-		if ((lastSelectPress + 1.0f) > time_now_d())
-			simulateAnalog = !simulateAnalog;
-		lastSelectPress = time_now_d();
-	}
-	
-	if (button == iCadeButtonC) {
-		// Pressing Start twice within 1 second will take to the Emu menu
-		if ((lastStartPress + 1.0f) > time_now_d()) {
-			KeyInput key;
-			key.flags = KEY_DOWN;
-			key.keyCode = NKCODE_ESCAPE;
-			key.deviceId = DEVICE_ID_KEYBOARD;
-			NativeKey(key);
-			return;
-		}
-		lastStartPress = time_now_d();
-	}
-	
-	if (simulateAnalog &&
-		((button == iCadeJoystickUp) ||
-		 (button == iCadeJoystickDown) ||
-		 (button == iCadeJoystickLeft) ||
-		 (button == iCadeJoystickRight))) {
+	if ((button == iCadeLeftAxisUp) ||
+        (button == iCadeLeftAxisDown) ||
+        (button == iCadeLeftAxisLeft) ||
+        (button == iCadeLeftAxisRight)) {
 		AxisInput axis;
 		switch (button) {
-			case iCadeJoystickUp :
+			case iCadeLeftAxisUp :
 				axis.axisId = JOYSTICK_AXIS_Y;
 				axis.value = 0.0f;
 				break;
 				
-			case iCadeJoystickDown :
+			case iCadeLeftAxisDown :
 				axis.axisId = JOYSTICK_AXIS_Y;
 				axis.value = 0.0f;
 				break;
 				
-			case iCadeJoystickLeft :
+			case iCadeLeftAxisLeft :
 				axis.axisId = JOYSTICK_AXIS_X;
 				axis.value = 0.0f;
 				break;
 				
-			case iCadeJoystickRight :
+			case iCadeLeftAxisRight :
 				axis.axisId = JOYSTICK_AXIS_X;
 				axis.value = 0.0f;
 				break;
@@ -508,7 +547,39 @@ static GraphicsContext *graphicsContext;
 		axis.deviceId = DEVICE_ID_PAD_0;
 		axis.flags = 0;
 		NativeAxis(axis);
-	} else {
+    } else if ((button == iCadeRightAxisUp) ||
+               (button == iCadeRightAxisDown) ||
+               (button == iCadeRightAxisLeft) ||
+               (button == iCadeRightAxisRight)) {
+        AxisInput axis;
+        switch (button) {
+            case iCadeRightAxisUp :
+                axis.axisId = JOYSTICK_AXIS_Z;
+                axis.value = 0.0f;
+                break;
+                
+            case iCadeRightAxisDown :
+                axis.axisId = JOYSTICK_AXIS_Z;
+                axis.value = 0.0f;
+                break;
+                
+            case iCadeRightAxisLeft :
+                axis.axisId = JOYSTICK_AXIS_RZ;
+                axis.value = 0.0f;
+                break;
+                
+            case iCadeRightAxisRight :
+                axis.axisId = JOYSTICK_AXIS_RZ;
+                axis.value = 0.0f;
+                break;
+                
+            default:
+                break;
+        }
+        axis.deviceId = DEVICE_ID_PAD_0;
+        axis.flags = 0;
+        NativeAxis(axis);
+    } else {
 		KeyInput key;
 		key.flags = KEY_UP;
 		key.keyCode = iCadeToKeyMap[button];

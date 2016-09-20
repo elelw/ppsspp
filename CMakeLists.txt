@@ -742,10 +742,6 @@ elseif(IOS)
 		ios/ViewController.h
 		ios/iOSCoreAudio.mm
 		ios/iOSCoreAudio.h
-		ios/PPSSPPUIApplication.h
-		ios/PPSSPPUIApplication.mm
-		ios/SmartKeyboardMap.cpp
-		ios/SmartKeyboardMap.hpp
 		ios/SubtleVolume.h
 		ios/SubtleVolume.mm
 		ios/iCade/iCadeReaderView.h

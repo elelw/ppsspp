@@ -9,8 +9,8 @@
 #import "codesign.h"
 
 #import "AppDelegate.h"
-#import "PPSSPPUIApplication.h"
 #import "ViewController.h"
+#import <AudioToolbox/AudioToolbox.h>
 
 #include "base/NativeApp.h"
 #include "profiler/profiler.h"
@@ -75,45 +75,15 @@ PermissionStatus System_GetPermissionStatus(SystemPermission permission) { retur
 
 FOUNDATION_EXTERN void AudioServicesPlaySystemSoundWithVibration(unsigned long, objc_object*, NSDictionary*);
 
-BOOL SupportsTaptic()
-{
-	// we're on an iOS version that cannot instantiate UISelectionFeedbackGenerator, so no.
-	if(!NSClassFromString(@"UISelectionFeedbackGenerator"))
-	{
-		return NO;
-	}
-	
-	// http://www.mikitamanko.com/blog/2017/01/29/haptic-feedback-with-uifeedbackgenerator/
-	// use private API against UIDevice to determine the haptic stepping
-	// 2 - iPhone 7 or above, full taptic feedback
-	// 1 - iPhone 6S, limited taptic feedback
-	// 0 - iPhone 6 or below, no taptic feedback
-	NSNumber* val = (NSNumber*)[[UIDevice currentDevice] valueForKey:@"feedbackSupportLevel"];
-	return [val intValue] >= 2;
-}
-
 void Vibrate(int mode) {
 	
-	if(SupportsTaptic())
-	{
-		PPSSPPUIApplication* app = (PPSSPPUIApplication*)[UIApplication sharedApplication];
-		if(app.feedbackGenerator == nil)
-		{
-			app.feedbackGenerator = [[UISelectionFeedbackGenerator alloc] init];
-			[app.feedbackGenerator prepare];
-		}
-		[app.feedbackGenerator selectionChanged];
-	}
-	else
-	{
-		NSMutableDictionary *dictionary = [NSMutableDictionary dictionary];
-		NSArray *pattern = @[@YES, @30, @NO, @2];
-		
-		dictionary[@"VibePattern"] = pattern;
-		dictionary[@"Intensity"] = @2;
-		
-		AudioServicesPlaySystemSoundWithVibration(kSystemSoundID_Vibrate, nil, dictionary);
-	}
+	NSMutableDictionary *dictionary = [NSMutableDictionary dictionary];
+	NSArray *pattern = @[@YES, @30, @NO, @2];
+
+	dictionary[@"VibePattern"] = pattern;
+	dictionary[@"Intensity"] = @2;
+
+	AudioServicesPlaySystemSoundWithVibration(kSystemSoundID_Vibrate, nil, dictionary);
 }
 
 int main(int argc, char *argv[])
@@ -137,6 +107,6 @@ int main(int argc, char *argv[])
 		
 		NativeInit(argc, (const char**)argv, documentsPath.UTF8String, bundlePath.UTF8String, NULL);
 		
-		return UIApplicationMain(argc, argv, NSStringFromClass([PPSSPPUIApplication class]), NSStringFromClass([AppDelegate class]));
+		return UIApplicationMain(argc, argv, nil, NSStringFromClass([AppDelegate class]));
 	}
 }

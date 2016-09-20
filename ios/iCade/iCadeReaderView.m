@@ -22,8 +22,8 @@
 
 #import "iCadeReaderView.h"
 
-static const char *ON_STATES  = "wdxayhujikol";
-static const char *OFF_STATES = "eczqtrfnmpgv";
+static const char *ON_STATES  = "7\\-9oylhujikwdxab[1,53;";
+static const char *OFF_STATES = "8/=0gtvrfnmpeczqs]2.64\'";
 
 @interface iCadeReaderView()
 
@@ -84,12 +84,12 @@ static const char *OFF_STATES = "eczqtrfnmpgv";
     _delegate = delegate;
     if (!_delegate) return;
     
-    /*_delegateFlags.stateChanged = [_delegate respondsToSelector:@selector(stateChanged:)];
+    _delegateFlags.stateChanged = [_delegate respondsToSelector:@selector(stateChanged:)];
     _delegateFlags.buttonDown = [_delegate respondsToSelector:@selector(buttonDown:)];
-    _delegateFlags.buttonUp = [_delegate respondsToSelector:@selector(buttonUp:)];*/
+    _delegateFlags.buttonUp = [_delegate respondsToSelector:@selector(buttonUp:)];
 }
 
-/*#pragma mark -
+#pragma mark -
 #pragma mark UIKeyInput Protocol Methods
 
 - (BOOL)hasText {
@@ -135,6 +135,6 @@ static const char *OFF_STATES = "eczqtrfnmpgv";
 
 - (void)deleteBackward {
     // This space intentionally left blank to complete protocol
-}*/
+}
 
 @end
