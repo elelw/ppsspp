@@ -45,5 +45,7 @@ typedef enum iCadeState {
     iCadeLeftAxisRight      = 0x2000,
     iCadeLeftAxisDown       = 0x4000,
     iCadeLeftAxisLeft       = 0x8000,
+    
+    iCadeCenterHome         = 0x10000,
 
 } iCadeState;
