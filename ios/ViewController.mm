@@ -74,6 +74,8 @@ private:
 	Draw::DrawContext *draw_;
 	GLRenderManager *renderManager_;
 };
+double lastSelectPress = 0.0f;
+double lastStartPress = 0.0f;
 
 static float dp_xscale = 1.0f;
 static float dp_yscale = 1.0f;
@@ -420,29 +422,28 @@ static LocationHelper *locationHelper;
 
 - (void)buttonDown:(iCadeState)button
 {
-	if (simulateAnalog &&
-		((button == iCadeJoystickUp) ||
-		 (button == iCadeJoystickDown) ||
-		 (button == iCadeJoystickLeft) ||
-		 (button == iCadeJoystickRight))) {
+	if ((button == iCadeLeftAxisUp) ||
+            (button == iCadeLeftAxisDown) ||
+            (button == iCadeLeftAxisLeft) ||
+            (button == iCadeLeftAxisRight)) {
 			AxisInput axis;
 			switch (button) {
-				case iCadeJoystickUp :
+				case iCadeLeftAxisUp :
 					axis.axisId = JOYSTICK_AXIS_Y;
 					axis.value = -1.0f;
 					break;
 					
-				case iCadeJoystickDown :
+				case iCadeLeftAxisDown :
 					axis.axisId = JOYSTICK_AXIS_Y;
 					axis.value = 1.0f;
 					break;
 					
-				case iCadeJoystickLeft :
+				case iCadeLeftAxisLeft :
 					axis.axisId = JOYSTICK_AXIS_X;
 					axis.value = -1.0f;
 					break;
 					
-				case iCadeJoystickRight :
+				case iCadeLeftAxisRight :
 					axis.axisId = JOYSTICK_AXIS_X;
 					axis.value = 1.0f;
 					break;
@@ -464,14 +465,6 @@ static LocationHelper *locationHelper;
 
 - (void)buttonUp:(iCadeState)button
 {
-	if (button == iCadeButtonA) {
-		// Pressing Select twice within 1 second toggles the DPad between
-		//     normal operation and simulating the Analog stick.
-		if ((lastSelectPress + 1.0f) > time_now_d())
-			simulateAnalog = !simulateAnalog;
-		lastSelectPress = time_now_d();
-	}
-	
 	if (button == iCadeButtonC) {
 		// Pressing Start twice within 1 second will take to the Emu menu
 		if ((lastStartPress + 1.0f) > time_now_d()) {
@@ -485,29 +478,28 @@ static LocationHelper *locationHelper;
 		lastStartPress = time_now_d();
 	}
 	
-	if (simulateAnalog &&
-		((button == iCadeJoystickUp) ||
-		 (button == iCadeJoystickDown) ||
-		 (button == iCadeJoystickLeft) ||
-		 (button == iCadeJoystickRight))) {
+	if ((button == iCadeLeftAxisUp) ||
+            (button == iCadeLeftAxisDown) ||
+            (button == iCadeLeftAxisLeft) ||
+            (button == iCadeLeftAxisRight)) {
 		AxisInput axis;
 		switch (button) {
-			case iCadeJoystickUp :
+			case iCadeLeftAxisUp :
 				axis.axisId = JOYSTICK_AXIS_Y;
 				axis.value = 0.0f;
 				break;
 				
-			case iCadeJoystickDown :
+			case iCadeLeftAxisDown :
 				axis.axisId = JOYSTICK_AXIS_Y;
 				axis.value = 0.0f;
 				break;
 				
-			case iCadeJoystickLeft :
+			case iCadeLeftAxisLeft :
 				axis.axisId = JOYSTICK_AXIS_X;
 				axis.value = 0.0f;
 				break;
 				
-			case iCadeJoystickRight :
+			case iCadeLeftAxisRight :
 				axis.axisId = JOYSTICK_AXIS_X;
 				axis.value = 0.0f;
 				break;
