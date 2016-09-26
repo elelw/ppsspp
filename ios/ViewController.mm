@@ -144,6 +144,8 @@ static LocationHelper *locationHelper;
 		iCadeToKeyMap[iCadeButtonG]			= NKCODE_BUTTON_1; // Triangle
 		iCadeToKeyMap[iCadeButtonH]			= NKCODE_BUTTON_3; // Circle
         iCadeToKeyMap[iCadeCenterHome]      = NKCODE_ESCAPE;
+        iCadeToKeyMap[iCadeButtonL2]        = NKCODE_SHIFT_LEFT;
+        iCadeToKeyMap[iCadeButtonR2]        = NKCODE_SHIFT_RIGHT;
 
 		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(appWillTerminate:) name:UIApplicationWillTerminateNotification object:nil];
 
@@ -473,12 +475,12 @@ int ToTouchID(UITouch *uiTouch, bool allowAllocate) {
 			switch (button) {
 				case iCadeLeftAxisUp :
 					axis.axisId = JOYSTICK_AXIS_Y;
-					axis.value = -1.0f;
+					axis.value = 1.0f;
 					break;
 					
 				case iCadeLeftAxisDown :
 					axis.axisId = JOYSTICK_AXIS_Y;
-					axis.value = 1.0f;
+					axis.value = -1.0f;
 					break;
 					
 				case iCadeLeftAxisLeft :
@@ -497,13 +499,45 @@ int ToTouchID(UITouch *uiTouch, bool allowAllocate) {
 			axis.deviceId = DEVICE_ID_PAD_0;
 			axis.flags = 0;
 			NativeAxis(axis);
-		} else {
-			KeyInput key;
-			key.flags = KEY_DOWN;
-			key.keyCode = iCadeToKeyMap[button];
-			key.deviceId = DEVICE_ID_PAD_0;
-			NativeKey(key);
-		}
+    } else if ((button == iCadeRightAxisUp) ||
+               (button == iCadeRightAxisDown) ||
+               (button == iCadeRightAxisLeft) ||
+               (button == iCadeRightAxisRight)) {
+        AxisInput axis;
+        switch (button) {
+            case iCadeRightAxisUp :
+                axis.axisId = JOYSTICK_AXIS_Z;
+                axis.value = 1.0f;
+                break;
+                
+            case iCadeRightAxisDown :
+                axis.axisId = JOYSTICK_AXIS_Z;
+                axis.value = -1.0f;
+                break;
+                
+            case iCadeRightAxisLeft :
+                axis.axisId = JOYSTICK_AXIS_RZ;
+                axis.value = -1.0f;
+                break;
+                
+            case iCadeRightAxisRight :
+                axis.axisId = JOYSTICK_AXIS_RZ;
+                axis.value = 1.0f;
+                break;
+                
+            default:
+                break;
+        }
+        axis.deviceId = DEVICE_ID_PAD_0;
+        axis.flags = 0;
+        NativeAxis(axis);
+    } else {
+		KeyInput key;
+		key.flags = KEY_DOWN;
+		key.keyCode = iCadeToKeyMap[button];
+		key.deviceId = DEVICE_ID_PAD_0;
+		NativeKey(key);
+	}
 }
 
 - (void)buttonUp:(iCadeState)button
@@ -540,7 +574,39 @@ int ToTouchID(UITouch *uiTouch, bool allowAllocate) {
 		axis.deviceId = DEVICE_ID_PAD_0;
 		axis.flags = 0;
 		NativeAxis(axis);
-	} else {
+    } else if ((button == iCadeRightAxisUp) ||
+               (button == iCadeRightAxisDown) ||
+               (button == iCadeRightAxisLeft) ||
+               (button == iCadeRightAxisRight)) {
+        AxisInput axis;
+        switch (button) {
+            case iCadeRightAxisUp :
+                axis.axisId = JOYSTICK_AXIS_Z;
+                axis.value = 0.0f;
+                break;
+                
+            case iCadeRightAxisDown :
+                axis.axisId = JOYSTICK_AXIS_Z;
+                axis.value = 0.0f;
+                break;
+                
+            case iCadeRightAxisLeft :
+                axis.axisId = JOYSTICK_AXIS_RZ;
+                axis.value = 0.0f;
+                break;
+                
+            case iCadeRightAxisRight :
+                axis.axisId = JOYSTICK_AXIS_RZ;
+                axis.value = 0.0f;
+                break;
+                
+            default:
+                break;
+        }
+        axis.deviceId = DEVICE_ID_PAD_0;
+        axis.flags = 0;
+        NativeAxis(axis);
+    } else {
 		KeyInput key;
 		key.flags = KEY_UP;
 		key.keyCode = iCadeToKeyMap[button];
