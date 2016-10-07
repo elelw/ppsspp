@@ -476,12 +476,12 @@ int ToTouchID(UITouch *uiTouch, bool allowAllocate) {
 			switch (button) {
 				case iCadeLeftAxisUp :
 					axis.axisId = JOYSTICK_AXIS_Y;
-					axis.value = 1.0f;
+					axis.value = -1.0f;
 					break;
 					
 				case iCadeLeftAxisDown :
 					axis.axisId = JOYSTICK_AXIS_Y;
-					axis.value = -1.0f;
+					axis.value = 1.0f;
 					break;
 					
 				case iCadeLeftAxisLeft :
@@ -508,12 +508,12 @@ int ToTouchID(UITouch *uiTouch, bool allowAllocate) {
         switch (button) {
             case iCadeRightAxisUp :
                 axis.axisId = JOYSTICK_AXIS_Z;
-                axis.value = 1.0f;
+                axis.value = -1.0f;
                 break;
                 
             case iCadeRightAxisDown :
                 axis.axisId = JOYSTICK_AXIS_Z;
-                axis.value = -1.0f;
+                axis.value = 1.0f;
                 break;
                 
             case iCadeRightAxisLeft :
