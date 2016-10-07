@@ -374,12 +374,12 @@ static GraphicsContext *graphicsContext;
 			switch (button) {
 				case iCadeLeftAxisUp :
 					axis.axisId = JOYSTICK_AXIS_Y;
-					axis.value = 1.0f;
+					axis.value = -1.0f;
 					break;
 					
 				case iCadeLeftAxisDown :
 					axis.axisId = JOYSTICK_AXIS_Y;
-					axis.value = -1.0f;
+					axis.value = 1.0f;
 					break;
 					
 				case iCadeLeftAxisLeft :
@@ -406,12 +406,12 @@ static GraphicsContext *graphicsContext;
         switch (button) {
             case iCadeRightAxisUp :
                 axis.axisId = JOYSTICK_AXIS_Z;
-                axis.value = 1.0f;
+                axis.value = -1.0f;
                 break;
                 
             case iCadeRightAxisDown :
                 axis.axisId = JOYSTICK_AXIS_Z;
-                axis.value = -1.0f;
+                axis.value = 1.0f;
                 break;
                 
             case iCadeRightAxisLeft :
