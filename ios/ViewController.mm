@@ -35,6 +35,8 @@
 #include <sys/sysctl.h>
 #include <mach/machine.h>
 
+#include "Common/KeyMap.h"
+
 #define IS_IPAD() ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad)
 #define IS_IPHONE() ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPhone)
 
@@ -100,6 +102,7 @@ static LocationHelper *locationHelper;
 #if __IPHONE_OS_VERSION_MAX_ALLOWED > __IPHONE_6_1
 @property (nonatomic) GCController *gameController __attribute__((weak_import));
 #endif
+@property (nonatomic) std::vector<uint32_t> iCadeAnalogLimiterKeys;
 
 @end
 
@@ -142,6 +145,21 @@ static LocationHelper *locationHelper;
 			[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(controllerDidDisconnect:) name:GCControllerDidDisconnectNotification object:nil];
 		}
 #endif
+        std::vector<KeyDef> keys;
+        KeyMap::KeyFromPspButton(VIRTKEY_ANALOG_LIGHTLY, &keys);
+        for (size_t i = 0; i < keys.size(); i++)
+        {
+            if (keys[i].deviceId != DEVICE_ID_PAD_0)
+                continue;
+            for (auto iter = iCadeToKeyMap.begin(); iter != iCadeToKeyMap.end(); iter++)
+            {
+                if (iter->second == keys[i].keyCode)
+                {
+                    _iCadeAnalogLimiterKeys.push_back(iter->first);
+                    break;
+                }
+            }
+        }
 	}
 	return self;
 }
@@ -424,7 +442,16 @@ static LocationHelper *locationHelper;
 
 - (void)buttonDown:(iCadeState)button
 {
-	if ((button == iCadeLeftAxisUp) ||
+    float axisWeight = 1.0f;
+    for (size_t i = 0; i < _iCadeAnalogLimiterKeys.size(); i++)
+    {
+        if ((self.iCadeView.iCadeState & _iCadeAnalogLimiterKeys[i]) == _iCadeAnalogLimiterKeys[i])
+        {
+            axisWeight = g_Config.fAnalogLimiterDeadzone;
+            break;
+        }
+    }
+    if ((button == iCadeLeftAxisUp) ||
             (button == iCadeLeftAxisDown) ||
             (button == iCadeLeftAxisLeft) ||
             (button == iCadeLeftAxisRight)) {
@@ -432,22 +459,22 @@ static LocationHelper *locationHelper;
 			switch (button) {
 				case iCadeLeftAxisUp :
 					axis.axisId = JOYSTICK_AXIS_Y;
-					axis.value = -1.0f;
+					axis.value = -axisWeight;
 					break;
 					
 				case iCadeLeftAxisDown :
 					axis.axisId = JOYSTICK_AXIS_Y;
-					axis.value = 1.0f;
+					axis.value = axisWeight;
 					break;
 					
 				case iCadeLeftAxisLeft :
 					axis.axisId = JOYSTICK_AXIS_X;
-					axis.value = -1.0f;
+					axis.value = -axisWeight;
 					break;
 					
 				case iCadeLeftAxisRight :
 					axis.axisId = JOYSTICK_AXIS_X;
-					axis.value = 1.0f;
+					axis.value = axisWeight;
 					break;
 					
 				default:
@@ -464,22 +491,22 @@ static LocationHelper *locationHelper;
         switch (button) {
             case iCadeRightAxisUp :
                 axis.axisId = JOYSTICK_AXIS_Z;
-                axis.value = -1.0f;
+                axis.value = -axisWeight;
                 break;
                 
             case iCadeRightAxisDown :
                 axis.axisId = JOYSTICK_AXIS_Z;
-                axis.value = 1.0f;
+                axis.value = axisWeight;
                 break;
                 
             case iCadeRightAxisLeft :
                 axis.axisId = JOYSTICK_AXIS_RZ;
-                axis.value = -1.0f;
+                axis.value = -axisWeight;
                 break;
                 
             case iCadeRightAxisRight :
                 axis.axisId = JOYSTICK_AXIS_RZ;
-                axis.value = 1.0f;
+                axis.value = axisWeight;
                 break;
                 
             default:
