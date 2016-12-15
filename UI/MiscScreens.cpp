@@ -16,8 +16,8 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include <algorithm>
+#include <functional>
 
-#include "base/functional.h"
 #include "base/colorutil.h"
 #include "base/display.h"
 #include "base/timeutil.h"
@@ -31,10 +31,13 @@
 #include "util/random/rng.h"
 #include "file/vfs.h"
 #include "UI/ui_atlas.h"
-#include "UI/MiscScreens.h"
+#include "UI/ControlMappingScreen.h"
+#include "UI/DisplayLayoutScreen.h"
 #include "UI/EmuScreen.h"
-#include "UI/MainScreen.h"
 #include "UI/GameInfoCache.h"
+#include "UI/GameSettingsScreen.h"
+#include "UI/MainScreen.h"
+#include "UI/MiscScreens.h"
 #include "Core/Config.h"
 #include "Core/Host.h"
 #include "Core/System.h"
@@ -136,6 +139,16 @@ void HandleCommonMessages(const char *message, const char *value, ScreenManager 
 		if (PSP_IsInited()) {
 			currentMIPS->UpdateCore((CPUCore)g_Config.iCpuCore);
 		}
+	} else if (!strcmp(message, "control mapping")) {
+		manager->push(new ControlMappingScreen());
+	} else if (!strcmp(message, "display layout editor")) {
+		manager->push(new DisplayLayoutScreen());
+	} else if (!strcmp(message, "window minimized")) {
+		if (!strcmp(value, "true")) {
+			gstate_c.skipDrawReason |= SKIPDRAW_WINDOW_MINIMIZED;
+		} else {
+			gstate_c.skipDrawReason &= ~SKIPDRAW_WINDOW_MINIMIZED;
+		}
 	}
 }
 
@@ -153,8 +166,24 @@ void UIScreenWithGameBackground::DrawBackground(UIContext &dc) {
 	}
 }
 
+void UIScreenWithGameBackground::sendMessage(const char *message, const char *value) {
+	if (!strcmp(message, "settings")) {
+		screenManager()->push(new GameSettingsScreen(gamePath_));
+	} else {
+		UIScreenWithBackground::sendMessage(message, value);
+	}
+}
+
 void UIDialogScreenWithGameBackground::DrawBackground(UIContext &dc) {
 	DrawGameBackground(dc, gamePath_);
+}
+
+void UIDialogScreenWithGameBackground::sendMessage(const char *message, const char *value) {
+	if (!strcmp(message, "settings")) {
+		screenManager()->push(new GameSettingsScreen(gamePath_));
+	} else {
+		UIDialogScreenWithBackground::sendMessage(message, value);
+	}
 }
 
 void UIScreenWithBackground::sendMessage(const char *message, const char *value) {
@@ -164,6 +193,8 @@ void UIScreenWithBackground::sendMessage(const char *message, const char *value)
 		auto langScreen = new NewLanguageScreen(dev->T("Language"));
 		langScreen->OnChoice.Handle(this, &UIScreenWithBackground::OnLanguageChange);
 		screenManager()->push(langScreen);
+	} else if (!strcmp(message, "settings")) {
+		screenManager()->push(new GameSettingsScreen("", ""));
 	}
 }
 
@@ -203,12 +234,8 @@ void UIDialogScreenWithBackground::sendMessage(const char *message, const char *
 		auto langScreen = new NewLanguageScreen(dev->T("Language"));
 		langScreen->OnChoice.Handle(this, &UIDialogScreenWithBackground::OnLanguageChange);
 		screenManager()->push(langScreen);
-	} else if (!strcmp(message, "window minimized")) {
-		if (!strcmp(value, "true")) {
-			gstate_c.skipDrawReason |= SKIPDRAW_WINDOW_MINIMIZED;
-		} else {
-			gstate_c.skipDrawReason &= ~SKIPDRAW_WINDOW_MINIMIZED;
-		}
+	} else if (!strcmp(message, "settings")) {
+		screenManager()->push(new GameSettingsScreen("", ""));
 	}
 }
 
@@ -467,7 +494,7 @@ void CreditsScreen::CreateViews() {
 #endif
 	root_->Add(new Button(cr->T("PPSSPP Forums"), new AnchorLayoutParams(260, 64, 10, NONE, NONE, 84, false)))->OnClick.Handle(this, &CreditsScreen::OnForums);
 	root_->Add(new Button("www.ppsspp.org", new AnchorLayoutParams(260, 64, 10, NONE, NONE, 158, false)))->OnClick.Handle(this, &CreditsScreen::OnPPSSPPOrg);
-#ifdef ANDROID
+#ifdef __ANDROID__
 	root_->Add(new Button(cr->T("Share PPSSPP"), new AnchorLayoutParams(260, 64, NONE, NONE, 10, 84, false)))->OnClick.Handle(this, &CreditsScreen::OnShare);
 	root_->Add(new Button(cr->T("Twitter @PPSSPP_emu"), new AnchorLayoutParams(260, 64, NONE, NONE, 10, 154, false)))->OnClick.Handle(this, &CreditsScreen::OnTwitter);
 #endif
@@ -479,7 +506,7 @@ void CreditsScreen::CreateViews() {
 }
 
 UI::EventReturn CreditsScreen::OnSupport(UI::EventParams &e) {
-#ifdef ANDROID
+#ifdef __ANDROID__
 	LaunchBrowser("market://details?id=org.ppsspp.ppssppgold");
 #else
 	LaunchBrowser("http://central.ppsspp.org/buygold");
@@ -488,7 +515,7 @@ UI::EventReturn CreditsScreen::OnSupport(UI::EventParams &e) {
 }
 
 UI::EventReturn CreditsScreen::OnTwitter(UI::EventParams &e) {
-#ifdef ANDROID
+#ifdef __ANDROID__
 	System_SendMessage("showTwitter", "PPSSPP_emu");
 #else
 	LaunchBrowser("https://twitter.com/#!/PPSSPP_emu");
@@ -602,10 +629,8 @@ void CreditsScreen::render() {
 		"",
 		"",
 		cr->T("tools", "Free tools used:"),
-#ifdef ANDROID
+#ifdef __ANDROID__
 		"Android SDK + NDK",
-#elif defined(BLACKBERRY)
-		"Blackberry NDK",
 #endif
 #if defined(USING_QT_UI)
 		"Qt",

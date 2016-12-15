@@ -60,10 +60,6 @@
 #include "GPU/GPUInterface.h"
 #include "GPU/GPUState.h"
 
-#ifdef BLACKBERRY
-using std::strnlen;
-#endif
-
 enum {
 	PSP_THREAD_ATTR_USER = 0x80000000
 };
@@ -1678,8 +1674,7 @@ int sceKernelLoadExec(const char *filename, u32 paramPtr)
 	return 0;
 }
 
-
-static u32 sceKernelLoadModule(const char *name, u32 flags, u32 optionAddr) {
+u32 sceKernelLoadModule(const char *name, u32 flags, u32 optionAddr) {
 	if (!name) {
 		return hleLogError(LOADER, SCE_KERNEL_ERROR_ILLEGAL_ADDR, "bad filename");
 	}

@@ -445,13 +445,14 @@ UI::EventReturn GamePauseScreen::OnDeleteConfig(UI::EventParams &e)
 	I18NCategory *ga = GetI18NCategory("Game");
 	screenManager()->push(
 		new PromptScreen(di->T("DeleteConfirmGameConfig", "Do you really want to delete the settings for this game?"), ga->T("ConfirmDelete"), di->T("Cancel"),
-		std::bind(&GamePauseScreen::CallbackDeleteConfig, this, placeholder::_1)));
+		std::bind(&GamePauseScreen::CallbackDeleteConfig, this, std::placeholders::_1)));
 
 	return UI::EVENT_DONE;
 }
 
 
 void GamePauseScreen::sendMessage(const char *message, const char *value) {
+	UIDialogScreenWithGameBackground::sendMessage(message, value);
 	// Since the language message isn't allowed to be in native, we have to have add this
 	// to every screen which directly inherits from UIScreen(which are few right now, luckily).
 	if (!strcmp(message, "language")) {

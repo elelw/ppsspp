@@ -244,7 +244,11 @@ void EmuScreen::bootComplete() {
 
 	if (Core_GetPowerSaving()) {
 		I18NCategory *sy = GetI18NCategory("System");
+#ifdef __ANDROID__
+		osm.Show(sy->T("WARNING: Android battery save mode is on"), 2.0f, 0xFFFFFF, -1, true, "core_powerSaving");
+#else
 		osm.Show(sy->T("WARNING: Battery save mode is on"), 2.0f, 0xFFFFFF, -1, true, "core_powerSaving");
+#endif
 	}
 
 	System_SendMessage("event", "startgame");
@@ -338,13 +342,6 @@ void EmuScreen::sendMessage(const char *message, const char *value) {
 		UpdateUIState(UISTATE_MENU);
 		releaseButtons();
 		screenManager()->push(new GameSettingsScreen(gamePath_));
-	} else if (!strcmp(message, "gpu resized") || !strcmp(message, "gpu clear cache")) {
-		if (gpu) {
-			gpu->ClearCacheNextFrame();
-			gpu->Resized();
-		}
-		Reporting::UpdateConfig();
-		RecreateViews();
 	} else if (!strcmp(message, "gpu dump next frame")) {
 		if (gpu)
 			gpu->DumpNextFrame();

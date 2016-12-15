@@ -22,10 +22,6 @@
 #endif
 #include <stdint.h>
 
-#ifdef BLACKBERRY
-using std::size_t;
-#endif
-
 // Returns true if we need to avoid setting both writable and executable at the same time (W^X)
 bool PlatformIsWXExclusive();
 
@@ -49,10 +45,6 @@ void FreeMemoryPages(void* ptr, size_t size);
 // Regular aligned memory. Don't try to apply memory protection willy-nilly to memory allocated this way as in-page alignment is unknown (though could be checked).
 void* AllocateAlignedMemory(size_t size, size_t alignment);
 void FreeAlignedMemory(void* ptr);
-
-#ifdef __SYMBIAN32__
-void ResetExecutableMemory(void* ptr);
-#endif
 
 int GetMemoryProtectPageSize();
 

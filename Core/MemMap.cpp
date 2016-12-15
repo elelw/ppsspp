@@ -17,12 +17,11 @@
 
 #include <algorithm>
 
+#include "ppsspp_config.h"
 #include "base/mutex.h"
 #include "Common/Common.h"
 #include "Common/MemoryUtil.h"
-#ifndef __SYMBIAN32__
 #include "Common/MemArena.h"
-#endif
 #include "Common/ChunkFile.h"
 
 #include "Core/MemMap.h"
@@ -42,12 +41,8 @@ namespace Memory {
 // The base pointer to the auto-mirrored arena.
 u8* base = NULL;
 
-#ifdef __SYMBIAN32__
-RChunk* memmap;
-#else
 // The MemArena class
 MemArena g_arena;
-#endif
 // ==============
 
 // 64-bit: Pointers to low-mem (sub-0x10000000) mirror
@@ -124,7 +119,7 @@ static MemoryView views[] =
 static const int num_views = sizeof(views) / sizeof(MemoryView);
 
 inline static bool CanIgnoreView(const MemoryView &view) {
-#ifdef _ARCH_32
+#if PPSSPP_ARCH(32BIT)
 	// Basically, 32-bit platforms can ignore views that are masked out anyway.
 	return (view.flags & MV_MIRROR_PREVIOUS) && (view.virtual_address & ~MEMVIEW32_MASK) != 0;
 #else
@@ -145,7 +140,7 @@ static bool Memory_TryBase(u32 flags) {
 
 #if defined(_XBOX)
 	void *ptr;
-#elif !defined(__SYMBIAN32__)
+#else
 	size_t position = 0;
 	size_t last_position = 0;
 #endif
@@ -167,12 +162,7 @@ static bool Memory_TryBase(u32 flags) {
 			continue;
 		SKIP(flags, view.flags);
 		
-#ifdef __SYMBIAN32__
-		if (!CanIgnoreView(view)) {
-			memmap->Commit(view.virtual_address & MEMVIEW32_MASK, view.size);
-		}
-		*(view.out_ptr) = (u8*)base + (view.virtual_address & MEMVIEW32_MASK);
-#elif defined(_XBOX)
+#if defined(_XBOX)
 		if (!CanIgnoreView(view)) {
 			*(view.out_ptr_low) = (u8*)(base + view.virtual_address);
 			ptr = VirtualAlloc(base + (view.virtual_address & MEMVIEW32_MASK), view.size, MEM_COMMIT, PAGE_READWRITE);
@@ -186,7 +176,7 @@ static bool Memory_TryBase(u32 flags) {
 			if (!*view.out_ptr_low)
 				goto bail;
 		}
-#if defined(_ARCH_64)
+#if PPSSPP_ARCH(64BIT)
 		*view.out_ptr = (u8*)g_arena.CreateView(
 			position, view.size, base + view.virtual_address);
 #else
@@ -207,7 +197,6 @@ static bool Memory_TryBase(u32 flags) {
 
 	return true;
 
-#if !defined(__SYMBIAN32__)
 bail:
 	// Argh! ERROR! Free what we grabbed so far so we can try again.
 	for (int j = 0; j <= i; j++)
@@ -229,7 +218,6 @@ bail:
 		}
 	}
 	return false;
-#endif
 }
 
 void MemoryMap_Setup(u32 flags)
@@ -237,10 +225,6 @@ void MemoryMap_Setup(u32 flags)
 	// Find a base to reserve 256MB
 #if defined(_XBOX)
 	base = (u8*)VirtualAlloc(0, 0x10000000, MEM_RESERVE|MEM_LARGE_PAGES, PAGE_READWRITE);
-#elif defined(__SYMBIAN32__)
-	memmap = new RChunk();
-	memmap->CreateDisconnectedLocal(0 , 0, 0x10000000);
-	base = memmap->Base();
 #else
 	size_t total_mem = 0;
 
@@ -296,11 +280,6 @@ void MemoryMap_Setup(u32 flags)
 
 void MemoryMap_Shutdown(u32 flags)
 {
-#ifdef __SYMBIAN32__
-	memmap->Decommit(0, memmap->MaxSize());
-	memmap->Close();
-	delete memmap;
-#else
 	for (int i = 0; i < num_views; i++)
 	{
 		if (views[i].size == 0)
@@ -315,7 +294,6 @@ void MemoryMap_Shutdown(u32 flags)
 			*views[i].out_ptr_low = NULL;
 	}
 	g_arena.ReleaseSpace();
-#endif
 }
 
 void Init()

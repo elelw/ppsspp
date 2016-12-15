@@ -24,17 +24,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-// For cache flushing on Symbian/iOS/Blackberry
-#ifdef __SYMBIAN32__
-#include <e32std.h>
-#endif
-
 #ifdef IOS
 #include <libkern/OSCacheControl.h>
-#include <sys/mman.h>
-#endif
-
-#ifdef BLACKBERRY
 #include <sys/mman.h>
 #endif
 
@@ -43,7 +34,7 @@
 #include "CPUDetect.h"
 
 // Want it in release builds too
-#ifdef ANDROID
+#ifdef __ANDROID__
 #undef _dbg_assert_msg_
 #define _dbg_assert_msg_ _assert_msg_
 #endif
@@ -277,7 +268,7 @@ bool ARMXEmitter::TryANDI2R(ARMReg rd, ARMReg rs, u32 val)
 		}
 		return true;
 	} else {
-#ifdef HAVE_ARMV7
+#if PPSSPP_ARCH(ARMV7)
 		// Check if we have a single pattern of sequential bits.
 		int seq = -1;
 		for (int i = 0; i < 32; ++i) {
@@ -309,7 +300,7 @@ bool ARMXEmitter::TryANDI2R(ARMReg rd, ARMReg rs, u32 val)
 		}
 
 		// The worst case is 4 (e.g. 0x55555555.)
-#ifdef HAVE_ARMV7
+#if PPSSPP_ARCH(ARMV7)
 		if (ops > 3) {
 			return false;
 		}
@@ -410,7 +401,7 @@ bool ARMXEmitter::TryORI2R(ARMReg rd, ARMReg rs, u32 val)
 		bool inversed;
 		if (TryMakeOperand2_AllowInverse(val, op2, &inversed) && ops >= 3) {
 			return false;
-#ifdef HAVE_ARMV7
+#if PPSSPP_ARCH(ARMV7)
 		} else if (ops > 3) {
 			return false;
 #endif
@@ -497,7 +488,7 @@ void ARMXEmitter::MOVI2R(ARMReg reg, u32 val, bool optimize)
 	Operand2 op2;
 	bool inverse;
 
-#ifdef HAVE_ARMV7
+#if PPSSPP_ARCH(ARMV7)
 	// Unused
 	if (!optimize)
 	{
@@ -511,7 +502,7 @@ void ARMXEmitter::MOVI2R(ARMReg reg, u32 val, bool optimize)
 	if (TryMakeOperand2_AllowInverse(val, op2, &inverse)) {
 		inverse ? MVN(reg, op2) : MOV(reg, op2);
 	} else {
-#ifdef HAVE_ARMV7
+#if PPSSPP_ARCH(ARMV7)
 		// Use MOVW+MOVT for ARMv7+
 		MOVW(reg, val & 0xFFFF);
 		if(val & 0xFFFF0000)
@@ -632,16 +623,12 @@ void ARMXEmitter::FlushIcache()
 
 void ARMXEmitter::FlushIcacheSection(u8 *start, u8 *end)
 {
-#ifdef __SYMBIAN32__
-	User::IMB_Range(start, end);
-#elif defined(BLACKBERRY)
-	msync(start, end - start, MS_SYNC | MS_INVALIDATE_ICACHE);
-#elif defined(IOS)
+#if defined(IOS)
 	// Header file says this is equivalent to: sys_icache_invalidate(start, end - start);
 	sys_cache_control(kCacheFunctionPrepareForExecution, start, end - start);
 #elif !defined(_WIN32)
 #if defined(ARM)
-#if defined(__clang__) || defined(ANDROID)
+#if defined(__clang__) || defined(__ANDROID__)
 	__clear_cache(start, end);
 #else
 	__builtin___clear_cache(start, end);
@@ -3049,7 +3036,7 @@ void ARMXEmitter::VMOV_imm(u32 Size, ARMReg Vd, VIMMMode type, int imm) {
 	return;
 
 error:
-	_dbg_assert_msg_(JIT, false, "Bad Size or type specified in %s: Size %i Type %i", __FUNCTION__, Size, type);
+	_dbg_assert_msg_(JIT, false, "Bad Size or type specified in %s: Size %i Type %i", __FUNCTION__, (int)Size, type);
 }
 
 void ARMXEmitter::VMOV_immf(ARMReg Vd, float value) {  // This only works with a select few values. I've hardcoded 1.0f.

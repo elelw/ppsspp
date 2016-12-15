@@ -15,12 +15,12 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include <algorithm>
 #include <cstdlib>
 #include <ctime>
-#include <algorithm>
+#include <functional>
 
 #include "base/display.h"
-#include "base/functional.h"
 #include "base/NativeApp.h"
 #include "ext/vjson/json.h"
 #include "file/ini_file.h"
@@ -38,10 +38,6 @@
 #include "Core/Loaders.h"
 #include "GPU/Common/FramebufferCommon.h"
 #include "HLE/sceUtility.h"
-
-#ifndef USING_QT_UI
-extern const char *PPSSPP_GIT_VERSION;
-#endif
 
 // TODO: Find a better place for this.
 http::Downloader g_DownloadManager;
@@ -344,7 +340,7 @@ static ConfigSetting generalSettings[] = {
 	ConfigSetting("CacheFullIsoInRam", &g_Config.bCacheFullIsoInRam, false, true, true),
 	ConfigSetting("RemoteISOPort", &g_Config.iRemoteISOPort, 0, true, false),
 
-#ifdef ANDROID
+#ifdef __ANDROID__
 	ConfigSetting("ScreenRotation", &g_Config.iScreenRotation, 1),
 #endif
 	ConfigSetting("InternalScreenRotation", &g_Config.iInternalScreenRotation, 1),
@@ -403,28 +399,15 @@ static int DefaultInternalResolution() {
 }
 
 static int DefaultZoomType() {
-#ifdef BLACKBERRY
-	if (pixel_xres < 1.3 * pixel_yres) {
-		return 1;
-	} else {
-		return 2;
-	}
-#else
 	return 2;
-#endif
 }
 
 static bool DefaultTimerHack() {
-// Has been in use on Symbian since v0.7. Preferred option.
-#ifdef __SYMBIAN32__
-	return true;
-#else
 	return false;
-#endif
 }
 
 static int DefaultAndroidHwScale() {
-#ifdef ANDROID
+#ifdef __ANDROID__
 	// Get the real resolution as passed in during startup, not dp_xres and stuff
 	int xres = System_GetPropertyInt(SYSPROP_DISPLAY_XRES);
 	int yres = System_GetPropertyInt(SYSPROP_DISPLAY_YRES);
@@ -525,6 +508,7 @@ static ConfigSetting soundSettings[] = {
 	ConfigSetting("Enable", &g_Config.bEnableSound, true, true, true),
 	ConfigSetting("AudioBackend", &g_Config.iAudioBackend, 0, true, true),
 	ConfigSetting("AudioLatency", &g_Config.iAudioLatency, 1, true, true),
+	ConfigSetting("ExtraAudioBuffering", &g_Config.bExtraAudioBuffering, false, true, false),
 	ConfigSetting("SoundSpeedHack", &g_Config.bSoundSpeedHack, false, true, true),
 	ConfigSetting("AudioResampler", &g_Config.bAudioResampler, true, true, true),
 	ConfigSetting("GlobalVolume", &g_Config.iGlobalVolume, VOLUME_MAX, true, true),
@@ -577,7 +561,7 @@ static ConfigSetting controlSettings[] = {
 	ConfigSetting("ComboKey3Mapping", &g_Config.iCombokey3, 0, true, true),
 	ConfigSetting("ComboKey4Mapping", &g_Config.iCombokey4, 0, true, true),
 
-#if !defined(__SYMBIAN32__) && !defined(IOS) && !defined(MAEMO)
+#if !defined(IOS)
 #if defined(_WIN32)
 	// A win32 user seeing touch controls is likely using PPSSPP on a tablet. There it makes
 	// sense to default this to on.
@@ -680,7 +664,7 @@ static ConfigSetting networkSettings[] = {
 
 static int DefaultPSPModel() {
 	// TODO: Can probably default this on, but not sure about its memory differences.
-#if !defined(_M_X64) && !defined(_WIN32) && !defined(__SYMBIAN32__)
+#if !defined(_M_X64) && !defined(_WIN32)
 	return PSP_MODEL_FAT;
 #else
 	return PSP_MODEL_SLIM;
@@ -946,7 +930,7 @@ void Config::Load(const char *iniFileName, const char *controllerIniFilename) {
 	// Sometimes the download may not be finished when the main screen shows (if the user dismisses the
 	// splash screen quickly), but then we'll just show the notification next time instead, we store the
 	// upgrade number in the ini.
-#if !defined(ARMEABI)  // blackberry and stuff? why do we still keep this check?
+#if !defined(ARMEABI)  // which platforms? why do we still keep this check?
 	if (iRunCount % 10 == 0 && bCheckForNewVersion) {
 		std::shared_ptr<http::Download> dl = g_DownloadManager.StartDownloadWithCallback(
 			"http://www.ppsspp.org/version.json", "", &DownloadCompletedCallback);

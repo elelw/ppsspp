@@ -15,7 +15,9 @@
 // Official SVN repository and contact information can be found at
 // http://code.google.com/p/dolphin-emu/
 
-#ifdef ANDROID
+#if defined(_M_IX86) || defined(_M_X64)
+
+#ifdef __ANDROID__
 #include <sys/stat.h>
 #include <fcntl.h>
 #endif
@@ -285,3 +287,5 @@ std::string CPUInfo::Summarize()
 	if (bLongMode) sum += ", 64-bit support";
 	return sum;
 }
+
+#endif // defined(_M_IX86) || defined(_M_X64)

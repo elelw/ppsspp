@@ -15,11 +15,11 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-#include <vector>
-#include <string>
+#include <functional>
 #include <set>
+#include <string>
+#include <vector>
 
-#include "base/functional.h"
 #include "Common/ColorConv.h"
 #include "Windows/GEDebugger/GEDebugger.h"
 #include "Windows/GEDebugger/SimpleGLWindow.h"
@@ -256,7 +256,7 @@ void CGEDebugger::UpdatePrimaryPreview(const GPUgstate &state) {
 	} else {
 		switch (PrimaryDisplayType(fbTabs->CurrentTabIndex())) {
 		case PRIMARY_FRAMEBUF:
-			bufferResult = GPU_GetCurrentFramebuffer(primaryBuffer_);
+			bufferResult = GPU_GetCurrentFramebuffer(primaryBuffer_, GPU_DBG_FRAMEBUF_RENDER);
 			break;
 
 		case PRIMARY_DEPTHBUF:

@@ -298,15 +298,15 @@ void LogLevelScreen::OnCompleted(DialogResult result) {
 }
 
 const char *GetCompilerABI() {
-#ifdef HAVE_ARMV7
+#if PPSSPP_ARCH(ARMV7)
 	return "armeabi-v7a";
-#elif defined(ARM)
+#elif PPSSPP_ARCH(ARM)
 	return "armeabi";
-#elif defined(ARM64)
+#elif PPSSPP_ARCH(ARM64)
 	return "arm64";
-#elif defined(_M_IX86)
+#elif PPSSPP_ARCH(X86)
 	return "x86";
-#elif defined(_M_X64)
+#elif PPSSPP_ARCH(AMD64)
 	return "x86-64";
 #else
 	return "other";
@@ -363,7 +363,7 @@ void SystemInfoScreen::CreateViews() {
 	}
 #endif
 
-#ifdef ANDROID
+#ifdef __ANDROID__
 	deviceSpecs->Add(new ItemHeader("Audio Information"));
 	deviceSpecs->Add(new InfoItem("Sample rate", StringFromFormat("%d Hz", System_GetPropertyInt(SYSPROP_AUDIO_SAMPLE_RATE))));
 	deviceSpecs->Add(new InfoItem("Frames per buffer", StringFromFormat("%d", System_GetPropertyInt(SYSPROP_AUDIO_FRAMES_PER_BUFFER))));
@@ -394,7 +394,7 @@ void SystemInfoScreen::CreateViews() {
 	deviceSpecs->Add(new InfoItem("API Version", apiVersion));
 	deviceSpecs->Add(new InfoItem("Shading Language", thin3d->GetInfoString(T3DInfo::SHADELANGVERSION)));
 
-#ifdef ANDROID
+#ifdef __ANDROID__
 	std::string moga = System_GetProperty(SYSPROP_MOGA_VERSION);
 	if (moga.empty()) {
 		moga = "(none detected)";
@@ -402,7 +402,7 @@ void SystemInfoScreen::CreateViews() {
 	deviceSpecs->Add(new InfoItem("Moga", moga));
 #endif
 
-#ifdef ANDROID
+#ifdef __ANDROID__
 	char temp[256];
 	sprintf(temp, "%dx%d", System_GetPropertyInt(SYSPROP_DISPLAY_XRES), System_GetPropertyInt(SYSPROP_DISPLAY_YRES));
 	deviceSpecs->Add(new InfoItem("Display resolution", temp));

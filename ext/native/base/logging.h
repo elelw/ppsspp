@@ -46,7 +46,7 @@ inline void Crash() {
 // Just ILOGs on nonWindows. On Windows it outputs to the VS output console.
 void OutputDebugStringUTF8(const char *p);
 
-#if defined(ANDROID)
+#if defined(__ANDROID__)
 
 #include <android/log.h>
 
@@ -67,18 +67,6 @@ void OutputDebugStringUTF8(const char *p);
 #define FLOG(...)   { __android_log_print(ANDROID_LOG_ERROR, APP_NAME, __VA_ARGS__); Crash(); }
 
 #define MessageBox(a, b, c, d) __android_log_print(ANDROID_LOG_INFO, APP_NAME, "%s %s", (b), (c));
-
-#elif defined(__SYMBIAN32__)
-#include <QDebug>
-#ifdef _DEBUG
-#define DLOG(...) { qDebug(__VA_ARGS__);}
-#else
-#define DLOG(...)
-#endif
-#define ILOG(...) { qDebug(__VA_ARGS__);}
-#define WLOG(...) { qDebug(__VA_ARGS__);}
-#define ELOG(...) { qDebug(__VA_ARGS__);}
-#define FLOG(...) { qDebug(__VA_ARGS__); Crash();}
 
 #else
 

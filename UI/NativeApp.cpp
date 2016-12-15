@@ -72,6 +72,7 @@
 #include "Core/Core.h"
 #include "Core/FileLoaders/DiskCachingFileLoader.h"
 #include "Core/Host.h"
+#include "Core/Reporting.h"
 #include "Core/SaveState.h"
 #include "Core/Screenshot.h"
 #include "Core/System.h"
@@ -79,11 +80,12 @@
 #include "Core/HLE/sceCtrl.h"
 #include "Core/Util/GameManager.h"
 #include "Core/Util/AudioFormat.h"
+#include "GPU/GPUInterface.h"
 
 #include "ui_atlas.h"
-#include "EmuScreen.h"
-#include "GameInfoCache.h"
-#include "HostTypes.h"
+#include "UI/EmuScreen.h"
+#include "UI/GameInfoCache.h"
+#include "UI/HostTypes.h"
 #include "UI/OnScreenDisplay.h"
 #include "UI/MiscScreens.h"
 #include "UI/TiltEventProcessor.h"
@@ -93,17 +95,13 @@
 #include "Common/KeyMap.h"
 #endif
 
-#ifdef __SYMBIAN32__
-#define unique_ptr auto_ptr
-#endif
-
 // The new UI framework, for initialization
 
 static UI::Theme ui_theme;
 
-#if defined(ARM) && defined(ANDROID)
+#if defined(ARM) && defined(__ANDROID__)
 #include "../../android/jni/ArmEmitterTest.h"
-#elif defined(ARM64) && defined(ANDROID)
+#elif defined(ARM64) && defined(__ANDROID__)
 #include "../../android/jni/Arm64EmitterTest.h"
 #endif
 
@@ -264,9 +262,9 @@ void NativeGetAppInfo(std::string *app_dir_name, std::string *app_nice_name, boo
 	*landscape = true;
 	*version = PPSSPP_GIT_VERSION;
 
-#if defined(ARM) && defined(ANDROID)
+#if defined(ARM) && defined(__ANDROID__)
 	ArmEmitterTest();
-#elif defined(ARM64) && defined(ANDROID)
+#elif defined(ARM64) && defined(__ANDROID__)
 	Arm64EmitterTest();
 #endif
 }
@@ -315,30 +313,29 @@ void NativeInit(int argc, const char *argv[], const char *savegame_dir, const ch
 	// We want this to be FIRST.
 #ifdef USING_QT_UI
 	VFSRegister("", new AssetsAssetReader());
-#elif defined(BLACKBERRY) || defined(IOS)
+#elif defined(IOS)
 	// Packed assets are included in app
 	VFSRegister("", new DirectoryAssetReader(external_dir));
 #elif !defined(MOBILE_DEVICE) && !defined(_WIN32)
 	VFSRegister("", new DirectoryAssetReader((File::GetExeDirectory() + "assets/").c_str()));
 	VFSRegister("", new DirectoryAssetReader((File::GetExeDirectory()).c_str()));
 	VFSRegister("", new DirectoryAssetReader("/usr/share/ppsspp/assets/"));
-#else
-	VFSRegister("", new DirectoryAssetReader("assets/"));
 #endif
+	VFSRegister("", new DirectoryAssetReader("assets/"));
 	VFSRegister("", new DirectoryAssetReader(savegame_dir));
 
 #if defined(MOBILE_DEVICE) || !defined(USING_QT_UI)
 	host = new NativeHost();
 #endif
 
-#if defined(ANDROID)
+#if defined(__ANDROID__)
 	g_Config.internalDataDirectory = savegame_dir;
 	// Maybe there should be an option to use internal memory instead, but I think
 	// that for most people, using external memory (SDCard/USB Storage) makes the
 	// most sense.
 	g_Config.memStickDirectory = std::string(external_dir) + "/";
 	g_Config.flash0Directory = std::string(external_dir) + "/flash0/";
-#elif defined(BLACKBERRY) || defined(__SYMBIAN32__) || defined(MAEMO) || defined(IOS)
+#elif defined(IOS)
 	g_Config.memStickDirectory = user_data_path;
 	g_Config.flash0Directory = std::string(external_dir) + "/flash0/";
 #elif !defined(_WIN32)
@@ -372,7 +369,7 @@ void NativeInit(int argc, const char *argv[], const char *savegame_dir, const ch
 #endif
 	LogManager *logman = LogManager::GetInstance();
 
-#ifdef ANDROID
+#ifdef __ANDROID__
 	// On Android, create a PSP directory tree in the external_dir,
 	// to hopefully reduce confusion a bit.
 	ILOG("Creating %s", (g_Config.memStickDirectory + "PSP").c_str());
@@ -446,9 +443,9 @@ void NativeInit(int argc, const char *argv[], const char *savegame_dir, const ch
 
 #ifndef _WIN32
 	if (g_Config.currentDirectory == "") {
-#if defined(ANDROID)
+#if defined(__ANDROID__)
 		g_Config.currentDirectory = external_dir;
-#elif defined(BLACKBERRY) || defined(__SYMBIAN32__) || defined(MAEMO) || defined(IOS) || defined(_WIN32)
+#elif defined(IOS) || defined(_WIN32)
 		g_Config.currentDirectory = savegame_dir;
 #else
 		if (getenv("HOME") != NULL)
@@ -462,7 +459,7 @@ void NativeInit(int argc, const char *argv[], const char *savegame_dir, const ch
 		LogTypes::LOG_TYPE type = (LogTypes::LOG_TYPE)i;
 		logman->SetEnable(type, true);
 		logman->SetLogLevel(type, logLevel);
-#ifdef ANDROID
+#ifdef __ANDROID__
 		logman->AddListener(type, logger);
 #endif
 	}
@@ -581,13 +578,8 @@ void NativeInitGraphics(GraphicsContext *graphicsContext) {
 	ui_draw2d.Init(thin3d);
 	ui_draw2d_front.Init(thin3d);
 
-#ifdef USING_QT_UI
-	uiTexture = thin3d->CreateTextureFromFile("ui_atlas_lowmem.zim", T3DImageType::ZIM);
-	if (!uiTexture) {
-#else
 	uiTexture = thin3d->CreateTextureFromFile("ui_atlas.zim", T3DImageType::ZIM);
 	if (!uiTexture) {
-#endif
 		PanicAlert("Failed to load ui_atlas.zim.\n\nPlace it in the directory \"assets\" under your PPSSPP directory.");
 		ELOG("Failed to load ui_atlas.zim");
 #ifdef _WIN32
@@ -673,7 +665,7 @@ void TakeScreenshot() {
 		i++;
 	}
 
-	bool success = TakeGameScreenshot(filename, g_Config.bScreenshotsAsPNG ? SCREENSHOT_PNG : SCREENSHOT_JPG, SCREENSHOT_DISPLAY);
+	bool success = TakeGameScreenshot(filename, g_Config.bScreenshotsAsPNG ? SCREENSHOT_PNG : SCREENSHOT_JPG, SCREENSHOT_OUTPUT);
 	if (success) {
 		osm.Show(filename);
 	} else {
@@ -770,10 +762,11 @@ void HandleGlobalMessage(const std::string &msg, const std::string &value) {
 	}
 	if (msg == "inputbox_completed") {
 		SplitString(value, ':', inputboxValue);
+		std::string setString = inputboxValue.size() > 1 ? inputboxValue[1] : "";
 		if (inputboxValue[0] == "IP")
-			g_Config.proAdhocServer = inputboxValue[1];
+			g_Config.proAdhocServer = setString;
 		if (inputboxValue[0] == "nickname")
-			g_Config.sNickName = inputboxValue[1];
+			g_Config.sNickName = setString;
 		inputboxValue.clear();
 	}
 	if (msg == "savestate_displayslot") {
@@ -782,10 +775,21 @@ void HandleGlobalMessage(const std::string &msg, const std::string &value) {
 		// Show for the same duration as the preview.
 		osm.Show(msg, 2.0f, 0xFFFFFF, -1, true, "savestate_slot");
 	}
+	if (msg == "gpu resized" || msg == "gpu clear cache") {
+		if (gpu) {
+			gpu->ClearCacheNextFrame();
+			gpu->Resized();
+		}
+		Reporting::UpdateConfig();
+	}
 	if (msg == "core_powerSaving") {
 		if (value != "false") {
 			I18NCategory *sy = GetI18NCategory("System");
+#ifdef __ANDROID__
+			osm.Show(sy->T("WARNING: Android battery save mode is on"), 2.0f, 0xFFFFFF, -1, true, "core_powerSaving");
+#else
 			osm.Show(sy->T("WARNING: Battery save mode is on"), 2.0f, 0xFFFFFF, -1, true, "core_powerSaving");
+#endif
 		}
 
 		Core_SetPowerSaving(value != "false");
@@ -812,7 +816,9 @@ void NativeDeviceLost() {
 	if (g_gameInfoCache)
 		g_gameInfoCache->Clear();
 	screenManager->deviceLost();
-	gl_lost();
+	if (GetGPUBackend() == GPUBackend::OPENGL) {
+		gl_lost();
+	}
 }
 
 void NativeDeviceRestore() {
@@ -999,7 +1005,7 @@ void NativeShutdown() {
 	// This means that the activity has been completely destroyed. PPSSPP does not
 	// boot up correctly with "dirty" global variables currently, so we hack around that
 	// by simply exiting.
-#ifdef ANDROID
+#ifdef __ANDROID__
 	exit(0);
 #endif
 

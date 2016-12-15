@@ -15,14 +15,16 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include "ppsspp_config.h"
+
+#if PPSSPP_ARCH(ARM_NEON)
+
+#include "ext/xxhash.h"
+
 #include <arm_neon.h>
 
 #include "GPU/GPUState.h"
 #include "GPU/Common/TextureDecoder.h"
-
-#if !defined(ARM) && !defined(ARM64)
-#error Should not be compiled on non-ARM.
-#endif
 
 static const u16 MEMORY_ALIGNED16(QuickTexHashInitial[8]) = {0xc00bU, 0x9bd9U, 0x4b73U, 0xb651U, 0x4d9bU, 0x4309U, 0x0083U, 0x0001U};
 
@@ -31,7 +33,7 @@ u32 QuickTexHashNEON(const void *checkp, u32 size) {
 	__builtin_prefetch(checkp, 0, 0);
 
 	if (((intptr_t)checkp & 0xf) == 0 && (size & 0x3f) == 0) {
-#if defined(IOS) || defined(ARM64)
+#if defined(IOS) || PPSSPP_ARCH(ARM64)
 		uint32x4_t cursor = vdupq_n_u32(0);
 		uint16x8_t cursor2 = vld1q_u16(QuickTexHashInitial);
 		uint16x8_t update = vdupq_n_u16(0x2455U);
@@ -183,6 +185,11 @@ void DoUnswizzleTex16NEON(const u8 *texptr, u32 *ydestp, int bxc, int byc, u32 p
 #endif
 
 u32 ReliableHash32NEON(const void *input, size_t len, u32 seed) {
+	if (((uintptr_t)input & 3) != 0) {
+		// Cannot handle misaligned data. Fall back to XXH32.
+		return XXH32(input, len, seed);
+	}
+
 	const u8 *p = (const u8 *)input;
 	const u8 *const bEnd = p + len;
 	U32 h32;
@@ -367,3 +374,5 @@ CheckAlphaResult CheckAlphaABGR1555NEON(const u32 *pixelData, int stride, int w,
 
 	return CHECKALPHA_FULL;
 }
+
+#endif

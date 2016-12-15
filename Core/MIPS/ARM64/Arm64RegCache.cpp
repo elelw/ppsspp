@@ -15,6 +15,9 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include "ppsspp_config.h"
+#if PPSSPP_ARCH(ARM64)
+
 #include "base/logging.h"
 #include "Core/MemMap.h"
 #include "Core/MIPS/ARM64/Arm64RegCache.h"
@@ -687,7 +690,7 @@ void Arm64RegCache::SetImm(MIPSGPReg r, u64 immVal) {
 		return;
 	}
 	if (r == MIPS_REG_ZERO && immVal != 0) {
-		ERROR_LOG_REPORT(JIT, "Trying to set immediate %08x to r0 at %08x", immVal, compilerPC_);
+		ERROR_LOG_REPORT(JIT, "Trying to set immediate %08x to r0 at %08x", (u32)immVal, compilerPC_);
 		return;
 	}
 
@@ -802,3 +805,5 @@ ARM64Reg Arm64RegCache::RPtr(MIPSGPReg mipsReg) {
 		return INVALID_REG;  // BAAAD
 	}
 }
+
+#endif // PPSSPP_ARCH(ARM64)

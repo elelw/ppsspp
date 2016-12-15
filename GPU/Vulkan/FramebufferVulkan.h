@@ -104,6 +104,7 @@ public:
 
 	void Resized();
 	void DeviceLost();
+	void DeviceRestore(VulkanContext *vulkan);
 	void CopyDisplayToOutput();
 	int GetLineWidth();
 	void ReformatFramebufferFrom(VirtualFramebuffer *vfb, GEBufferFormat old);
@@ -127,7 +128,7 @@ public:
 	bool GetFramebuffer(u32 fb_address, int fb_stride, GEBufferFormat format, GPUDebugBuffer &buffer);
 	bool GetDepthbuffer(u32 fb_address, int fb_stride, u32 z_address, int z_stride, GPUDebugBuffer &buffer);
 	bool GetStencilbuffer(u32 fb_address, int fb_stride, GPUDebugBuffer &buffer);
-	static bool GetDisplayFramebuffer(GPUDebugBuffer &buffer);
+	static bool GetOutputFramebuffer(GPUDebugBuffer &buffer);
 
 	virtual void RebindFramebuffer() override;
 
@@ -173,6 +174,9 @@ private:
 
 	void PackFramebufferAsync_(VirtualFramebuffer *vfb);
 	void PackFramebufferSync_(VirtualFramebuffer *vfb, int x, int y, int w, int h);
+
+	void InitDeviceObjects();
+	void DestroyDeviceObjects();
 
 	VulkanContext *vulkan_;
 

@@ -15,6 +15,8 @@
 // Official SVN repository and contact information can be found at
 // http://code.google.com/p/dolphin-emu/
 
+#ifdef __mips__
+
 #include "Common.h"
 #include "CPUDetect.h"
 #include "StringUtils.h"
@@ -156,7 +158,7 @@ void CPUInfo::Detect()
 {
 	// Set some defaults here
 	HTT = false;
-#ifdef _ARCH_64
+#ifdef PPSSPP_ARCH(MIPS64)
 	OS64bit = true;
 	CPU64bit = true;
 	Mode64bit = true;
@@ -196,3 +198,5 @@ std::string CPUInfo::Summarize()
 
 	return sum;
 }
+
+#endif // __mips__

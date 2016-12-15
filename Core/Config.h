@@ -23,9 +23,7 @@
 
 #include "CommonTypes.h"
 
-#if !defined(USING_QT_UI)
 extern const char *PPSSPP_GIT_VERSION;
-#endif
 
 const int PSP_MODEL_FAT = 0;
 const int PSP_MODEL_SLIM = 1;
@@ -222,6 +220,7 @@ public:
 	int iAudioLatency; // 0 = low , 1 = medium(default) , 2 = high
 	int iAudioBackend;
 	int iGlobalVolume;
+	bool bExtraAudioBuffering;  // For bluetooth
 
 	// Audio Hack
 	bool bSoundSpeedHack;
@@ -342,7 +341,7 @@ public:
 	int iCombokey3;
 	int iCombokey4;
 
-#if !defined(__SYMBIAN32__) && !defined(IOS) && !defined(MAEMO)
+#if !defined(IOS)
 	bool bShowTouchPause;
 #endif
 

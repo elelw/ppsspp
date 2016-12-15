@@ -1,7 +1,7 @@
 #ifndef UTIL_INIT
 #define UTIL_INIT
 
-#ifdef ANDROID
+#ifdef __ANDROID__
 #undef NDEBUG   // asserts
 #endif
 #include <cassert>
@@ -17,7 +17,7 @@
 #define NOMINMAX              /* Don't let Windows define min() or max() */
 #define APP_NAME_STR_LEN 80
 #include <Windows.h>
-#elif defined(ANDROID)  // _WIN32
+#elif defined(__ANDROID__)  // _WIN32
 #include <android/native_window_jni.h>
 #define VK_USE_PLATFORM_ANDROID_KHR
 #else
@@ -66,18 +66,18 @@ class VulkanDeleteList {
 	};
 
 public:
-	void QueueDeleteDescriptorPool(VkDescriptorPool pool) { descPools_.push_back(pool); }
-	void QueueDeleteShaderModule(VkShaderModule module) { modules_.push_back(module); }
-	void QueueDeleteBuffer(VkBuffer buffer) { buffers_.push_back(buffer); }
-	void QueueDeleteBufferView(VkBufferView bufferView) { bufferViews_.push_back(bufferView); }
-	void QueueDeleteImage(VkImage image) { images_.push_back(image); }
-	void QueueDeleteImageView(VkImageView imageView) { imageViews_.push_back(imageView); }
-	void QueueDeleteDeviceMemory(VkDeviceMemory deviceMemory) { deviceMemory_.push_back(deviceMemory); }
-	void QueueDeleteSampler(VkSampler sampler) { samplers_.push_back(sampler); }
-	void QueueDeletePipeline(VkPipeline pipeline) { pipelines_.push_back(pipeline); }
-	void QueueDeletePipelineCache(VkPipelineCache pipelineCache) { pipelineCaches_.push_back(pipelineCache); }
-	void QueueDeleteRenderPass(VkRenderPass renderPass) { renderPasses_.push_back(renderPass); }
-	void QueueDeleteFramebuffer(VkFramebuffer framebuffer) { framebuffers_.push_back(framebuffer); }
+	void QueueDeleteDescriptorPool(VkDescriptorPool &pool) { descPools_.push_back(pool); pool = VK_NULL_HANDLE; }
+	void QueueDeleteShaderModule(VkShaderModule &module) { modules_.push_back(module); module = VK_NULL_HANDLE; }
+	void QueueDeleteBuffer(VkBuffer &buffer) { buffers_.push_back(buffer); buffer = VK_NULL_HANDLE; }
+	void QueueDeleteBufferView(VkBufferView &bufferView) { bufferViews_.push_back(bufferView); bufferView = VK_NULL_HANDLE; }
+	void QueueDeleteImage(VkImage &image) { images_.push_back(image); image = VK_NULL_HANDLE; }
+	void QueueDeleteImageView(VkImageView &imageView) { imageViews_.push_back(imageView); imageView = VK_NULL_HANDLE; }
+	void QueueDeleteDeviceMemory(VkDeviceMemory &deviceMemory) { deviceMemory_.push_back(deviceMemory); deviceMemory = VK_NULL_HANDLE; }
+	void QueueDeleteSampler(VkSampler &sampler) { samplers_.push_back(sampler); sampler = VK_NULL_HANDLE; }
+	void QueueDeletePipeline(VkPipeline &pipeline) { pipelines_.push_back(pipeline); pipeline = VK_NULL_HANDLE; }
+	void QueueDeletePipelineCache(VkPipelineCache &pipelineCache) { pipelineCaches_.push_back(pipelineCache); pipelineCache = VK_NULL_HANDLE; }
+	void QueueDeleteRenderPass(VkRenderPass &renderPass) { renderPasses_.push_back(renderPass); renderPass = VK_NULL_HANDLE; }
+	void QueueDeleteFramebuffer(VkFramebuffer &framebuffer) { framebuffers_.push_back(framebuffer); framebuffer = VK_NULL_HANDLE; }
 	void QueueCallback(void(*func)(void *userdata), void *userdata) { callbacks_.push_back(Callback(func, userdata)); }
 
 	void Take(VulkanDeleteList &del) {
@@ -201,7 +201,7 @@ public:
 #ifdef _WIN32
 	void InitSurfaceWin32(HINSTANCE conn, HWND wnd);
 	void ReinitSurfaceWin32();
-#elif ANDROID
+#elif __ANDROID__
 	void InitSurfaceAndroid(ANativeWindow *native_window, int width, int height);
 	void ReinitSurfaceAndroid(int width, int height);
 #endif
@@ -294,7 +294,7 @@ private:
 #ifdef _WIN32
 	HINSTANCE connection;        // hInstance - Windows Instance
 	HWND window;          // hWnd - window handle
-#elif ANDROID  // _WIN32
+#elif __ANDROID__  // _WIN32
 	ANativeWindow *native_window;
 #endif // _WIN32
 

@@ -132,7 +132,7 @@ int GetVm(uint32_t op, bool quad = false, bool dbl = false) {
 // Horrible array of hacks but hey. Can be cleaned up later.
 
 bool DisasmVFP(uint32_t op, char *text) {
-#if defined(ANDROID) && defined(_M_IX86)
+#if defined(__ANDROID__) && defined(_M_IX86)
 	// Prevent linking errors with ArmEmitter which I've excluded on x86 android.
 	strcpy(text, "ARM disasm not available");
 #else
@@ -1084,7 +1084,6 @@ instr_disassemble(word instr, address addr, pDisOptions opts) {
 			if (instr >> 24 == 0xF3) {
 				if (!DisasmNeon(instr, result.text)) {
 					goto lUndefined;
-					break;
 				}
 				result.undefined = 0;
 				return &result;
@@ -1154,7 +1153,6 @@ lMaybeLDRHetc:
 			if (instr >> 24 == 0xF2) {
 				if (!DisasmNeon(instr, result.text)) {
 					goto lUndefined;
-					break;
 				}
 				result.undefined = 0;
 				return &result;
@@ -1197,7 +1195,6 @@ lMaybeLDRHetc:
 			if ((instr >> 24) == 0xF4) {
 				if (!DisasmNeon(instr, result.text)) {
 					goto lUndefined;
-					break;
 				}
 				result.undefined = 0;
 				return &result;
@@ -1273,7 +1270,6 @@ lMaybeLDRHetc:
 			{
 				if (!DisasmVFP(instr, result.text)) {
 					goto lUndefined;
-					break;
 				}
 				result.undefined = 0;
 				return &result;

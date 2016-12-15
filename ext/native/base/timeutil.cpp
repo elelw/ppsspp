@@ -36,19 +36,13 @@ double real_time_now() {
 	return elapsed * frequencyMult;
 }
 
-#elif defined(BLACKBERRY)
-double real_time_now() {
-	struct timespec time;
-	clock_gettime(CLOCK_MONOTONIC, &time); // Linux must use CLOCK_MONOTONIC_RAW due to time warps
-	return time.tv_sec + time.tv_nsec / 1.0e9;
-}
 #else
 
 uint64_t _frequency = 0;
 uint64_t _starttime = 0;
 
 double real_time_now() {
-#ifdef ANDROID
+#ifdef __ANDROID__
 	if (false && gl_extensions.EGL_NV_system_time) {
 		// This is needed to profile using PerfHUD on Tegra
 		if (_frequency == 0) {

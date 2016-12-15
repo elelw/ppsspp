@@ -18,6 +18,7 @@
 #include <map>
 #include <unordered_map>
 #include <set>
+#include <unordered_set>
 #include "base/mutex.h"
 #include "ext/cityhash/city.h"
 #include "Common/FileUtil.h"
@@ -43,12 +44,7 @@ recursive_mutex functions_lock;
 
 // One function can appear in multiple copies in memory, and they will all have 
 // the same hash and should all be replaced if possible.
-#ifdef __SYMBIAN32__
-// Symbian does not have a functional unordered_multimap.
-static std::multimap<u64, MIPSAnalyst::AnalyzedFunction *> hashToFunction;
-#else
 static std::unordered_multimap<u64, MIPSAnalyst::AnalyzedFunction *> hashToFunction;
-#endif
 
 struct HashMapFunc {
 	char name[64];
@@ -59,9 +55,22 @@ struct HashMapFunc {
 	bool operator < (const HashMapFunc &other) const {
 		return hash < other.hash || (hash == other.hash && size < other.size);
 	}
+
+	bool operator == (const HashMapFunc &other) const {
+		return hash == other.hash && size == other.size;
+	}
 };
 
-static std::set<HashMapFunc> hashMap;
+namespace std {
+	template <>
+	struct hash<HashMapFunc> {
+		size_t operator()(const HashMapFunc &f) const {
+			return std::hash<u64>()(f.hash) ^ f.size;
+		}
+	};
+}
+
+static std::unordered_set<HashMapFunc> hashMap;
 
 static std::string hashmapFileName;
 
@@ -741,7 +750,7 @@ namespace MIPSAnalyst {
 		lock_guard guard(functions_lock);
 		hashToFunction.clear();
 		// Really need to detect C++11 features with better defines.
-#if !defined(__SYMBIAN32__) && !defined(IOS)
+#if !defined(IOS)
 		hashToFunction.reserve(functions.size());
 #endif
 		for (auto iter = functions.begin(); iter != functions.end(); iter++) {

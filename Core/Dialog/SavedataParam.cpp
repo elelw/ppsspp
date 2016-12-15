@@ -36,10 +36,6 @@
 
 #include <algorithm>
 
-#ifdef BLACKBERRY
-using std::strnlen;
-#endif
-
 static const std::string ICON0_FILENAME = "ICON0.PNG";
 static const std::string ICON1_FILENAME = "ICON1.PMF";
 static const std::string PIC1_FILENAME = "PIC1.PNG";
@@ -211,7 +207,7 @@ void SavedataParam::Init()
 		pspFileSystem.MkDir(savePath);
 	}
 	// Create a nomedia file to hide save icons form Android image viewer
-#ifdef ANDROID
+#ifdef __ANDROID__
 	int handle = pspFileSystem.OpenFile(savePath + ".nomedia", (FileAccess)(FILEACCESS_CREATE | FILEACCESS_WRITE), 0);
 	if (handle) {
 		pspFileSystem.CloseFile(handle);

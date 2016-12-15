@@ -15,10 +15,10 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include <functional>
 #include <string>
 #include <vector>
 
-#include "base/functional.h"
 #include "Common/ChunkFile.h"
 
 namespace SaveState
@@ -30,6 +30,7 @@ namespace SaveState
 	static const char *SCREENSHOT_EXTENSION = "jpg";
 
 	void Init();
+	void Shutdown();
 
 	// Cycle through the 5 savestate slots
 	void NextSlot();

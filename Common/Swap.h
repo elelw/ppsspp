@@ -18,7 +18,7 @@
 #pragma once
 
 // Android
-#if defined(ANDROID)
+#if defined(__ANDROID__)
 #include <sys/endian.h>
 
 #if _BYTE_ORDER == _LITTLE_ENDIAN && !defined(COMMON_LITTLE_ENDIAN)
@@ -78,7 +78,6 @@ inline unsigned short bswap16(unsigned short x) { return __loadshortbytereverse(
 #define bswap16 swap16
 #define bswap32 swap32
 #define bswap64 swap64
-#define
 # endif
 #else
 // TODO: speedup

@@ -6,13 +6,10 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <sys/stat.h>
-#if defined(ANDROID)
+#if defined(__ANDROID__)
 #include <sys/types.h>
 #include <sys/vfs.h>
 #define statvfs statfs
-#elif defined(__SYMBIAN32__)
-#include <mw/QSystemStorageInfo>
-QTM_USE_NAMESPACE
 #else
 #include <sys/statvfs.h>
 #endif
@@ -31,16 +28,12 @@ bool free_disk_space(const std::string &dir, uint64_t &space) {
 		space = free.QuadPart;
 		return true;
 	}
-#elif defined(__SYMBIAN32__)
-	QSystemStorageInfo storageInfo;
-	space = (uint64_t)storageInfo.availableDiskSpace("E");
-	return true;
 #else
 	struct statvfs diskstat;
 	int res = statvfs(dir.c_str(), &diskstat);
 
 	if (res == 0) {
-#ifndef ANDROID
+#ifndef __ANDROID__
 		if (diskstat.f_flag & ST_RDONLY) {
 			space = 0;
 			return true;

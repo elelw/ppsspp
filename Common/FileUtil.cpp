@@ -76,24 +76,6 @@
 #define DIR_SEP_CHRS "/"
 #endif
 
-// Hack
-#if defined(__SYMBIAN32__)
-static inline int readdir_r(DIR *dirp, struct dirent *entry, struct dirent **result) {
-	struct dirent *readdir_entry;
-
-	readdir_entry = readdir(dirp);
-	if (readdir_entry == NULL) {
-		*result = NULL;
-		return errno;
-	}
-
-	*entry = *readdir_entry;
-	*result = entry;
-	return 0;
-}
-#endif
-
-
 // This namespace has various generic functions related to files and paths.
 // The code still needs a ton of cleanup.
 // REMEMBER: strdup considered harmful!
@@ -236,11 +218,7 @@ bool CreateDir(const std::string &path)
 	ERROR_LOG(COMMON, "CreateDir: CreateDirectory failed on %s: %i", path.c_str(), error);
 	return false;
 #else
-#ifdef BLACKBERRY
-	if (mkdir(path.c_str(), 0775) == 0)
-#else
 	if (mkdir(path.c_str(), 0755) == 0)
-#endif
 		return true;
 
 	int err = errno;

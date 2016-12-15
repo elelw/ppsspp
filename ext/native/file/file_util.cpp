@@ -29,23 +29,6 @@
 #define stat64 stat
 #endif
 
-// Hack
-#ifdef __SYMBIAN32__
-static inline int readdir_r(DIR *dirp, struct dirent *entry, struct dirent **result) {
-	struct dirent *readdir_entry;
-
-	readdir_entry = readdir(dirp);
-	if (readdir_entry == NULL) {
-		*result = NULL;
-		return errno;
-	}
-
-	*entry = *readdir_entry;
-	*result = entry;
-	return 0;
-}
-#endif
-
 FILE *openCFile(const std::string &filename, const char *mode)
 {
 #if defined(_WIN32) && defined(UNICODE)
@@ -89,7 +72,7 @@ uint64_t GetSize(FILE *f)
 {
 	// This will only support 64-bit when large file support is available.
 	// That won't be the case on some versions of Android, at least.
-#if defined(ANDROID) || (defined(_FILE_OFFSET_BITS) && _FILE_OFFSET_BITS < 64)
+#if defined(__ANDROID__) || (defined(_FILE_OFFSET_BITS) && _FILE_OFFSET_BITS < 64)
 	int fd = fileno(f);
 
 	off64_t pos = lseek64(fd, 0, SEEK_CUR);

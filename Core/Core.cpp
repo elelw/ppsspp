@@ -60,6 +60,7 @@ static bool powerSaving = false;
 
 void Core_SetGraphicsContext(GraphicsContext *ctx) {
 	graphicsContext = ctx;
+	PSP_CoreParameter().graphicsContext = graphicsContext;
 }
 
 void Core_NotifyWindowHidden(bool hidden) {
@@ -132,9 +133,6 @@ bool Core_GetPowerSaving() {
 bool UpdateScreenScale(int width, int height, bool smallWindow) {
 	g_dpi = 72;
 	g_dpi_scale = 1.0f;
-#if defined(__SYMBIAN32__)
-	g_dpi_scale = 1.4f;
-#endif
 	if (smallWindow) {
 		g_dpi_scale = 2.0f;
 	}

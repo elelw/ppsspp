@@ -19,12 +19,6 @@
 
 #include "MsgHandler.h"
 
-#ifdef __arm__
-#if !defined(ARM)
-#define ARM
-#endif
-#endif
-
 #define	NOTICE_LEVEL  1  // VERY important information that is NOT errors. Like startup and debugprintfs from the game itself.
 #define	ERROR_LEVEL   2  // Important errors.
 #define	WARNING_LEVEL 3  // Something is suspicious.
@@ -121,16 +115,12 @@ bool GenericLogEnabled(LogTypes::LOG_LEVELS level, LogTypes::LOG_TYPE type);
 					   __LINE__, __FILE__); \
 		if (!PanicYesNo("*** Assertion (see log)***\n")) {Crash();} \
 	}
-#ifdef __SYMBIAN32__
-#define _dbg_assert_msg_(_t_, _a_, ...) if (!(_a_)) ERROR_LOG(_t_, __VA_ARGS__);
-#else
 #define _dbg_assert_msg_(_t_, _a_, ...)\
 	if (!(_a_)) {\
 		printf(__VA_ARGS__); \
 		ERROR_LOG(_t_, __VA_ARGS__); \
 		if (!PanicYesNo(__VA_ARGS__)) {Crash();} \
 	}
-#endif
 #define _dbg_update_() ; //Host_UpdateLogDisplay();
 
 #else // not debug

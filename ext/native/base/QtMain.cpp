@@ -3,7 +3,7 @@
  *
  */
 // Qt 4.7+ / 5.0+ implementation of the framework.
-// Currently supports: Android, Symbian, Blackberry, Maemo/Meego, Linux, Windows, Mac OSX
+// Currently supports: Android, Linux, Windows, Mac OSX
 
 #include <QApplication>
 #include <QUrl>
@@ -20,11 +20,6 @@
 #endif
 #endif
 
-#ifdef __SYMBIAN32__
-#include <QSystemScreenSaver>
-#include <QFeedbackHapticsEffect>
-#include "SymbianMediaKeys.h"
-#endif
 #ifdef SDL
 #include "SDL/SDLJoystick.h"
 #include "SDL_audio.h"
@@ -47,13 +42,7 @@ extern void mixaudio(void *userdata, Uint8 *stream, int len) {
 std::string System_GetProperty(SystemProperty prop) {
 	switch (prop) {
 	case SYSPROP_NAME:
-#ifdef __SYMBIAN32__
-		return "Qt:Symbian";
-#elif defined(BLACKBERRY)
-		return "Qt:Blackberry";
-#elif defined(MAEMO)
-		return "Qt:Maemo";
-#elif defined(ANDROID)
+#if defined(__ANDROID__)
 		return "Qt:Android";
 #elif defined(Q_OS_LINUX)
 		return "Qt:Linux";
@@ -78,13 +67,7 @@ int System_GetPropertyInt(SystemProperty prop) {
 	case SYSPROP_DISPLAY_REFRESH_RATE:
 		return 60000;
 	case SYSPROP_DEVICE_TYPE:
-#ifdef __SYMBIAN32__
-		return DEVICE_TYPE_MOBILE;
-#elif defined(BLACKBERRY)
-		return DEVICE_TYPE_MOBILE;
-#elif defined(MAEMO)
-		return DEVICE_TYPE_MOBILE;
-#elif defined(ANDROID)
+#if defined(__ANDROID__)
 		return DEVICE_TYPE_MOBILE;
 #elif defined(Q_OS_LINUX)
 		return DEVICE_TYPE_DESKTOP;
@@ -123,13 +106,6 @@ void Vibrate(int length_ms) {
 		length_ms = 50;
 	else if (length_ms == -2)
 		length_ms = 25;
-	// Symbian only for now
-#if defined(__SYMBIAN32__)
-	QFeedbackHapticsEffect effect;
-	effect.setIntensity(0.8);
-	effect.setDuration(length_ms);
-	effect.start();
-#endif
 }
 
 void LaunchBrowser(const char *url)
@@ -140,9 +116,7 @@ void LaunchBrowser(const char *url)
 float CalculateDPIScale()
 {
 	// Sane default rather than check DPI
-#ifdef __SYMBIAN32__
-	return 1.4f;
-#elif defined(USING_GLES2)
+#if defined(USING_GLES2)
 	return 1.2f;
 #else
 	return 1.0f;
@@ -158,11 +132,7 @@ static int mainInternal(QApplication &a)
 #endif
 	EnableFZ();
 	// Disable screensaver
-#ifdef __SYMBIAN32__
-	QSystemScreenSaver ssObject(emugl);
-	ssObject.setScreenSaverInhibit();
-	QScopedPointer<SymbianMediaKeys> mediakeys(new SymbianMediaKeys());
-#elif defined(QT_HAS_SYSTEMINFO)
+#if defined(QT_HAS_SYSTEMINFO)
 	QScreenSaver ssObject(emugl);
 	ssObject.setScreenSaverEnabled(false);
 #endif
@@ -209,7 +179,7 @@ MainUI::MainUI(QWidget *parent):
 #if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
     setAttribute(Qt::WA_LockLandscapeOrientation);
 #endif
-#if defined(MOBILE_DEVICE) && !defined(MAEMO)
+#if defined(MOBILE_DEVICE)
     acc = new QAccelerometer(this);
     acc->start();
 #endif
@@ -220,7 +190,7 @@ MainUI::MainUI(QWidget *parent):
 
 MainUI::~MainUI()
 {
-#if defined(MOBILE_DEVICE) && !defined(MAEMO)
+#if defined(MOBILE_DEVICE)
         delete acc;
 #endif
         NativeShutdownGraphics();
@@ -373,7 +343,7 @@ void MainUI::paintGL()
 
 void MainUI::updateAccelerometer()
 {
-#if defined(MOBILE_DEVICE) && !defined(MAEMO)
+#if defined(MOBILE_DEVICE)
         // TODO: Toggle it depending on whether it is enabled
         QAccelerometerReading *reading = acc->reading();
         if (reading) {
@@ -460,7 +430,7 @@ Q_DECL_EXPORT
 #endif
 int main(int argc, char *argv[])
 {
-#if defined(Q_OS_LINUX) && !defined(MAEMO)
+#if defined(Q_OS_LINUX)
 	QApplication::setAttribute(Qt::AA_X11InitThreads, true);
 #endif
 	QApplication a(argc, argv);
@@ -477,15 +447,6 @@ int main(int argc, char *argv[])
 #if QT_VERSION > QT_VERSION_CHECK(5, 0, 0)
 	savegame_dir = QStandardPaths::writableLocation(QStandardPaths::HomeLocation).toStdString();
 	assets_dir = QStandardPaths::writableLocation(QStandardPaths::DataLocation).toStdString();
-#elif defined(__SYMBIAN32__)
-	savegame_dir = "E:/PPSSPP";
-	assets_dir = "E:/PPSSPP";
-#elif defined(BLACKBERRY)
-	savegame_dir = "/accounts/1000/shared/misc";
-	assets_dir = "app/native/assets";
-#elif defined(MAEMO)
-	savegame_dir = "/home/user/MyDocs/PPSSPP";
-	assets_dir = "/opt/PPSSPP";
 #endif
 	savegame_dir += "/";
 	assets_dir += "/";
