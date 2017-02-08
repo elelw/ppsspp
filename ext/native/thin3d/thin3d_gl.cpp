@@ -4,13 +4,19 @@
 #include <map>
 
 #include "base/logging.h"
-#include "image/zim_load.h"
 #include "math/dataconv.h"
 #include "math/lin/matrix4x4.h"
 #include "thin3d/thin3d.h"
 #include "gfx/gl_common.h"
+#include "gfx/GLStateCache.h"
 #include "gfx_es2/gpu_features.h"
 #include "gfx/gl_lost_manager.h"
+
+#ifdef IOS
+extern void bindDefaultFBO();
+#endif
+
+namespace Draw {
 
 static const unsigned short compToGL[] = {
 	GL_NEVER,
@@ -27,25 +33,52 @@ static const unsigned short blendEqToGL[] = {
 	GL_FUNC_ADD,
 	GL_FUNC_SUBTRACT,
 	GL_FUNC_REVERSE_SUBTRACT,
+	GL_MIN,
+	GL_MAX,
 };
 
 static const unsigned short blendFactorToGL[] = {
 	GL_ZERO,
 	GL_ONE,
 	GL_SRC_COLOR,
-	GL_SRC_ALPHA,
 	GL_ONE_MINUS_SRC_COLOR,
-	GL_ONE_MINUS_SRC_ALPHA,
 	GL_DST_COLOR,
-	GL_DST_ALPHA,
 	GL_ONE_MINUS_DST_COLOR,
+	GL_SRC_ALPHA,
+	GL_ONE_MINUS_SRC_ALPHA,
+	GL_DST_ALPHA,
 	GL_ONE_MINUS_DST_ALPHA,
 	GL_CONSTANT_COLOR,
+	GL_ONE_MINUS_CONSTANT_COLOR,
+	GL_CONSTANT_ALPHA,
+	GL_ONE_MINUS_CONSTANT_ALPHA,
+#if !defined(USING_GLES2)   // TODO: Remove when we have better headers
+	GL_SRC1_COLOR,
+	GL_ONE_MINUS_SRC1_COLOR,
+	GL_SRC1_ALPHA,
+	GL_ONE_MINUS_SRC1_ALPHA,
+#elif !defined(IOS)
+	GL_SRC1_COLOR_EXT,
+	GL_ONE_MINUS_SRC1_COLOR_EXT,
+	GL_SRC1_ALPHA_EXT,
+	GL_ONE_MINUS_SRC1_ALPHA_EXT,
+#else
+	GL_INVALID_ENUM,
+	GL_INVALID_ENUM,
+	GL_INVALID_ENUM,
+	GL_INVALID_ENUM,
+#endif
 };
 
 static const unsigned short texWrapToGL[] = {
 	GL_REPEAT,
+	GL_MIRRORED_REPEAT,
 	GL_CLAMP_TO_EDGE,
+#if !defined(USING_GLES2)
+	GL_CLAMP_TO_BORDER,
+#else
+	GL_REPEAT,
+#endif
 };
 
 static const unsigned short texFilterToGL[] = {
@@ -81,25 +114,60 @@ static const unsigned short logicOpToGL[] = {
 };
 #endif
 
+static const GLuint stencilOpToGL[8] = {
+	GL_KEEP,
+	GL_ZERO,
+	GL_REPLACE,
+	GL_INCR,
+	GL_DECR,
+	GL_INVERT,
+	GL_INCR_WRAP,
+	GL_DECR_WRAP,
+};
+
 static const unsigned short primToGL[] = {
 	GL_POINTS,
 	GL_LINES,
+	GL_LINE_STRIP,
 	GL_TRIANGLES,
+	GL_TRIANGLE_STRIP,
+	GL_TRIANGLE_FAN,
+#if !defined(USING_GLES2)   // TODO: Remove when we have better headers
+	GL_PATCHES,
+	GL_LINES_ADJACENCY,
+	GL_LINE_STRIP_ADJACENCY,
+	GL_TRIANGLES_ADJACENCY,
+	GL_TRIANGLE_STRIP_ADJACENCY,
+#elif !defined(IOS)
+	GL_POINTS,
+	GL_POINTS,
+	GL_POINTS,
+	GL_POINTS,
+	GL_POINTS,
+#else
+	GL_POINTS,
+	GL_POINTS,
+	GL_POINTS,
+	GL_POINTS,
+	GL_POINTS,
+#endif
 };
+
+class OpenGLBuffer;
 
 static const char *glsl_fragment_prelude =
 "#ifdef GL_ES\n"
 "precision mediump float;\n"
 "#endif\n";
 
-class Thin3DGLBlendState : public Thin3DBlendState {
+class OpenGLBlendState : public BlendState {
 public:
 	bool enabled;
 	GLuint eqCol, eqAlpha;
 	GLuint srcCol, srcAlpha, dstCol, dstAlpha;
 	bool logicEnabled;
 	GLuint logicOp;
-	// int maskBits;
+	int colorMask;
 	// uint32_t fixedColor;
 
 	void Apply() {
@@ -110,10 +178,8 @@ public:
 		} else {
 			glDisable(GL_BLEND);
 		}
-		glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-		// glColorMask(maskBits & 1, (maskBits >> 1) & 1, (maskBits >> 2) & 1, (maskBits >> 3) & 1);
-		// glBlendColor(fixedColor);
-		
+		glColorMask(colorMask & 1, (colorMask >> 1) & 1, (colorMask >> 2) & 1, (colorMask >> 3) & 1);
+
 #if !defined(USING_GLES2)
 		if (logicEnabled) {
 			glEnable(GL_COLOR_LOGIC_OP);
@@ -125,8 +191,10 @@ public:
 	}
 };
 
-class Thin3DGLSamplerState : public Thin3DSamplerState {
+class OpenGLSamplerState : public SamplerState {
 public:
+	// Old school. Should also support using a sampler object.
+
 	GLint wrapS;
 	GLint wrapT;
 	GLint magFilt;
@@ -151,12 +219,20 @@ public:
 	}
 };
 
-class Thin3DGLDepthStencilState : public Thin3DDepthStencilState {
+class OpenGLDepthStencilState : public DepthStencilState {
 public:
 	bool depthTestEnabled;
 	bool depthWriteEnabled;
 	GLuint depthComp;
-	// bool stencilTestEnabled; TODO
+	// TODO: Two-sided
+	GLboolean stencilEnabled;
+	GLuint stencilFail;
+	GLuint stencilZFail;
+	GLuint stencilPass;
+	GLuint stencilCompareOp;
+	uint8_t stencilReference;
+	uint8_t stencilCompareMask;
+	uint8_t stencilWriteMask;
 
 	void Apply() {
 		if (depthTestEnabled) {
@@ -166,74 +242,64 @@ public:
 		} else {
 			glDisable(GL_DEPTH_TEST);
 		}
+		if (stencilEnabled) {
+			glEnable(GL_STENCIL_TEST);
+			glStencilOpSeparate(GL_FRONT_AND_BACK, stencilFail, stencilZFail, stencilPass);
+			glStencilFuncSeparate(GL_FRONT_AND_BACK, stencilCompareOp, stencilReference, stencilCompareMask);
+			glStencilMaskSeparate(GL_FRONT_AND_BACK, stencilWriteMask);
+		} else {
+			glDisable(GL_STENCIL_TEST);
+		}
 		glDisable(GL_STENCIL_TEST);
 	}
 };
 
-class Thin3DGLBuffer : public Thin3DBuffer, GfxResourceHolder {
+class OpenGLRasterState : public RasterState {
 public:
-	Thin3DGLBuffer(size_t size, uint32_t flags) {
-		glGenBuffers(1, &buffer_);
-		target_ = (flags & T3DBufferUsage::INDEXDATA) ? GL_ELEMENT_ARRAY_BUFFER : GL_ARRAY_BUFFER;
-		usage_ = 0;
-		if (flags & T3DBufferUsage::DYNAMIC)
-			usage_ = GL_STREAM_DRAW;
-		else
-			usage_ = GL_STATIC_DRAW;
-		knownSize_ = 0;
-		register_gl_resource_holder(this);
-	}
-	~Thin3DGLBuffer() override {
-		unregister_gl_resource_holder(this);
-		glDeleteBuffers(1, &buffer_);
-	}
-
-	void SetData(const uint8_t *data, size_t size) override {
-		Bind();
-		glBufferData(target_, size, data, usage_);
-		knownSize_ = size;
-	}
-
-	void SubData(const uint8_t *data, size_t offset, size_t size) override {
-		Bind();
-		if (size + offset > knownSize_) {
-			// Allocate the buffer.
-			glBufferData(target_, size + offset, NULL, usage_);
-			knownSize_ = size + offset;
+	void Apply() {
+		glEnable(GL_SCISSOR_TEST);
+		if (!cullEnable) {
+			glDisable(GL_CULL_FACE);
+			return;
 		}
-		glBufferSubData(target_, offset, size, data);
-	}
-	void Bind() {
-		glBindBuffer(target_, buffer_);
-	}
-
-	void GLLost() override {
-		buffer_ = 0;
+		glEnable(GL_CULL_FACE);
+		glFrontFace(frontFace);
+		glCullFace(cullMode);
 	}
 
-	void GLRestore() override {
-		ILOG("Recreating vertex buffer after gl_restore");
-		knownSize_ = 0;  // Will cause a new glBufferData call. Should genBuffers again though?
-		glGenBuffers(1, &buffer_);
-	}
-
-private:
-	GLuint buffer_;
-	GLuint target_;
-	GLuint usage_;
-
-	size_t knownSize_;
+	GLboolean cullEnable;
+	GLenum cullMode;
+	GLenum frontFace;
 };
 
-// Not registering this as a resource holder, instead ShaderSet is registered. It will
+GLuint ShaderStageToOpenGL(ShaderStage stage) {
+	switch (stage) {
+	case ShaderStage::VERTEX: return GL_VERTEX_SHADER;
+#ifndef USING_GLES2
+	case ShaderStage::COMPUTE: return GL_COMPUTE_SHADER;
+	case ShaderStage::EVALUATION: return GL_TESS_EVALUATION_SHADER;
+	case ShaderStage::CONTROL: return GL_TESS_CONTROL_SHADER;
+	case ShaderStage::GEOMETRY: return GL_GEOMETRY_SHADER;
+#endif
+	case ShaderStage::FRAGMENT:
+	default:
+		return GL_FRAGMENT_SHADER;
+	}
+}
+
+// Not registering this as a resource holder, instead Pipeline is registered. It will
 // invoke Compile again to recreate the shader then link them together.
-class Thin3DGLShader : public Thin3DShader {
+class OpenGLShaderModule : public ShaderModule {
 public:
-	Thin3DGLShader(bool isFragmentShader) : shader_(0), type_(0) {
-		type_ = isFragmentShader ? GL_FRAGMENT_SHADER : GL_VERTEX_SHADER;
+	OpenGLShaderModule(ShaderStage stage) : stage_(stage), shader_(0) {
+		glstage_ = ShaderStageToOpenGL(stage);
 	}
 
-	bool Compile(const char *source);
+	~OpenGLShaderModule() {
+		glDeleteShader(shader_);
+	}
+
+	bool Compile(ShaderLanguage language, const uint8_t *data, size_t dataSize);
 	GLuint GetShader() const {
 		return shader_;
 	}
@@ -242,30 +308,36 @@ public:
 	void Unset() {
 		shader_ = 0;
 	}
-
-	~Thin3DGLShader() {
-		glDeleteShader(shader_);
+	ShaderLanguage GetLanguage() {
+		return language_;
+	}
+	ShaderStage GetStage() const override {
+		return stage_;
 	}
 
 private:
+	ShaderStage stage_;
+	ShaderLanguage language_;
 	GLuint shader_;
-	GLuint type_;
+	GLuint glstage_;
 	bool ok_;
 	std::string source_;  // So we can recompile in case of context loss.
 };
 
-bool Thin3DGLShader::Compile(const char *source) {
-	source_ = source;
-	shader_ = glCreateShader(type_);
+bool OpenGLShaderModule::Compile(ShaderLanguage language, const uint8_t *data, size_t dataSize) {
+	source_ = std::string((const char *)data);
+	shader_ = glCreateShader(glstage_);
+	language_ = language;
 
 	std::string temp;
 	// Add the prelude on automatically for fragment shaders.
-	if (type_ == GL_FRAGMENT_SHADER) {
-		temp = std::string(glsl_fragment_prelude) + source;
-		source = temp.c_str();
+	if (glstage_ == GL_FRAGMENT_SHADER) {
+		temp = std::string(glsl_fragment_prelude) + source_;
+		source_ = temp.c_str();
 	}
 
-	glShaderSource(shader_, 1, &source, nullptr);
+	const char *code = source_.c_str();
+	glShaderSource(shader_, 1, &code, nullptr);
 	glCompileShader(shader_);
 	GLint success = 0;
 	glGetShaderiv(shader_, GL_COMPILE_STATUS, &success);
@@ -277,26 +349,27 @@ bool Thin3DGLShader::Compile(const char *source) {
 		infoLog[len] = '\0';
 		glDeleteShader(shader_);
 		shader_ = 0;
-		ILOG("%s Shader compile error:\n%s", type_ == GL_FRAGMENT_SHADER ? "Fragment" : "Vertex", infoLog);
+		ILOG("%s Shader compile error:\n%s", glstage_ == GL_FRAGMENT_SHADER ? "Fragment" : "Vertex", infoLog);
 	}
 	ok_ = success != 0;
 	return ok_;
 }
 
-class Thin3DGLVertexFormat : public Thin3DVertexFormat, GfxResourceHolder {
+class OpenGLInputLayout : public InputLayout, GfxResourceHolder {
 public:
-	~Thin3DGLVertexFormat();
+	~OpenGLInputLayout();
 
 	void Apply(const void *base = nullptr);
 	void Unapply();
 	void Compile();
 	void GLRestore() override;
 	void GLLost() override;
-	bool RequiresBuffer() override {
+	bool RequiresBuffer() {
 		return id_ != 0;
 	}
 
-	std::vector<Thin3DVertexComponent> components_;
+	InputLayoutDesc desc;
+
 	int semanticsMask_;  // Fast way to check what semantics to enable/disable.
 	int stride_;
 	GLuint id_;
@@ -308,21 +381,29 @@ struct UniformInfo {
 	int loc_;
 };
 
-// TODO: Fold BlendState into this? Seems likely to be right for DX12 etc.
 // TODO: Add Uniform Buffer support.
-class Thin3DGLShaderSet : public Thin3DShaderSet, GfxResourceHolder {
+class OpenGLPipeline : public Pipeline, GfxResourceHolder {
 public:
-	Thin3DGLShaderSet() {
+	OpenGLPipeline() {
 		program_ = 0;
 		register_gl_resource_holder(this);
 	}
-	~Thin3DGLShaderSet() {
+	~OpenGLPipeline() {
 		unregister_gl_resource_holder(this);
-		vshader->Release();
-		fshader->Release();
+		for (auto iter : shaders) {
+			iter->Release();
+		}
 		glDeleteProgram(program_);
+		if (depthStencil) depthStencil->Release();
+		if (blend) blend->Release();
+		if (raster) raster->Release();
+		if (inputLayout) inputLayout->Release();
 	}
-	bool Link();
+	bool RequiresBuffer() override {
+		return inputLayout->RequiresBuffer();
+	}
+
+	bool LinkShaders();
 
 	void Apply();
 	void Unapply();
@@ -334,51 +415,84 @@ public:
 
 	void GLLost() override {
 		program_ = 0;
-		vshader->Unset();
-		fshader->Unset();
+		for (auto iter : shaders) {
+			iter->Unset();
+		}
 	}
 
 	void GLRestore() override {
-		vshader->Compile(vshader->GetSource().c_str());
-		fshader->Compile(fshader->GetSource().c_str());
-		Link();
+		for (auto iter : shaders) {
+			iter->Compile(iter->GetLanguage(), (const uint8_t *)iter->GetSource().c_str(), iter->GetSource().size());
+		}
+		LinkShaders();
 	}
 
-	Thin3DGLShader *vshader;
-	Thin3DGLShader *fshader;
+	GLuint prim;
+	std::vector<OpenGLShaderModule *> shaders;
+	OpenGLInputLayout *inputLayout = nullptr;
+	OpenGLDepthStencilState *depthStencil = nullptr;
+	OpenGLBlendState *blend = nullptr;
+	OpenGLRasterState *raster = nullptr;
 
 private:
 	GLuint program_;
 	std::map<std::string, UniformInfo> uniforms_;
 };
 
-class Thin3DGLContext : public Thin3DContext {
+class OpenGLFramebuffer;
+
+class OpenGLContext : public DrawContext {
 public:
-	Thin3DGLContext();
-	virtual ~Thin3DGLContext();
+	OpenGLContext();
+	virtual ~OpenGLContext();
 
-	Thin3DDepthStencilState *CreateDepthStencilState(bool depthTestEnabled, bool depthWriteEnabled, T3DComparison depthCompare) override;
-	Thin3DBlendState *CreateBlendState(const T3DBlendStateDesc &desc) override;
-	Thin3DSamplerState *CreateSamplerState(const T3DSamplerStateDesc &desc) override;
-	Thin3DBuffer *CreateBuffer(size_t size, uint32_t usageFlags) override;
-	Thin3DShaderSet *CreateShaderSet(Thin3DShader *vshader, Thin3DShader *fshader) override;
-	Thin3DVertexFormat *CreateVertexFormat(const std::vector<Thin3DVertexComponent> &components, int stride, Thin3DShader *vshader) override;
-	Thin3DTexture *CreateTexture(T3DTextureType type, T3DImageFormat format, int width, int height, int depth, int mipLevels) override;
-	Thin3DTexture *CreateTexture() override;
-
-	// Bound state objects
-	void SetBlendState(Thin3DBlendState *state) override {
-		Thin3DGLBlendState *s = static_cast<Thin3DGLBlendState *>(state);
-		s->Apply();
+	const DeviceCaps &GetDeviceCaps() const override {
+		return caps_;
 	}
+	uint32_t GetSupportedShaderLanguages() const override {
+#if defined(USING_GLES2)
+		return (uint32_t)ShaderLanguage::GLSL_ES_200 | (uint32_t)ShaderLanguage::GLSL_ES_300;
+#else
+		return (uint32_t)ShaderLanguage::GLSL_ES_200 | (uint32_t)ShaderLanguage::GLSL_410;
+#endif
+	}
+	uint32_t GetDataFormatSupport(DataFormat fmt) const override;
 
-	void SetSamplerStates(int start, int count, Thin3DSamplerState **states) override {
+	DepthStencilState *CreateDepthStencilState(const DepthStencilStateDesc &desc) override;
+	BlendState *CreateBlendState(const BlendStateDesc &desc) override;
+	SamplerState *CreateSamplerState(const SamplerStateDesc &desc) override;
+	RasterState *CreateRasterState(const RasterStateDesc &desc) override;
+	Pipeline *CreateGraphicsPipeline(const PipelineDesc &desc) override;
+	InputLayout *CreateInputLayout(const InputLayoutDesc &desc) override;
+	ShaderModule *CreateShaderModule(ShaderStage stage, ShaderLanguage language, const uint8_t *data, size_t dataSize) override;
+
+	Texture *CreateTexture(const TextureDesc &desc) override;
+	Buffer *CreateBuffer(size_t size, uint32_t usageFlags) override;
+	Framebuffer *CreateFramebuffer(const FramebufferDesc &desc) override;
+
+	void UpdateBuffer(Buffer *buffer, const uint8_t *data, size_t offset, size_t size, UpdateBufferFlags flags) override;
+
+	void CopyFramebufferImage(Framebuffer *src, int level, int x, int y, int z, Framebuffer *dst, int dstLevel, int dstX, int dstY, int dstZ, int width, int height, int depth) override;
+	bool BlitFramebuffer(Framebuffer *src, int srcX1, int srcY1, int srcX2, int srcY2, Framebuffer *dst, int dstX1, int dstY1, int dstX2, int dstY2, int channelBits, FBBlitFilter filter) override;
+
+	// These functions should be self explanatory.
+	void BindFramebufferAsRenderTarget(Framebuffer *fbo) override;
+	// color must be 0, for now.
+	void BindFramebufferAsTexture(Framebuffer *fbo, int binding, FBChannel channelBit, int attachment) override;
+	void BindFramebufferForRead(Framebuffer *fbo) override;
+
+	void BindBackbufferAsRenderTarget() override;
+	uintptr_t GetFramebufferAPITexture(Framebuffer *fbo, int channelBits, int attachment) override;
+
+	void GetFramebufferDimensions(Framebuffer *fbo, int *w, int *h) override;
+
+	void BindSamplerStates(int start, int count, SamplerState **states) override {
 		if (samplerStates_.size() < (size_t)(start + count)) {
 			samplerStates_.resize(start + count);
 		}
 		for (int i = 0; i < count; ++i) {
 			int index = i + start;
-			Thin3DGLSamplerState *s = static_cast<Thin3DGLSamplerState *>(states[index]);
+			OpenGLSamplerState *s = static_cast<OpenGLSamplerState *>(states[index]);
 
 			if (samplerStates_[index]) {
 				samplerStates_[index]->Release();
@@ -391,33 +505,14 @@ public:
 				s->Apply(false, true);
 			}
 		}
-
-	}
-
-	// Bound state objects
-	void SetDepthStencilState(Thin3DDepthStencilState *state) override {
-		Thin3DGLDepthStencilState *s = static_cast<Thin3DGLDepthStencilState *>(state);
-		s->Apply();
-	}
-
-	// The implementation makes the choice of which shader code to use.
-	Thin3DShader *CreateVertexShader(const char *glsl_source, const char *hlsl_source, const char *vulkan_source) override;
-	Thin3DShader *CreateFragmentShader(const char *glsl_source, const char *hlsl_source, const char *vulkan_source) override;
-
-	void SetScissorEnabled(bool enable) override {
-		if (enable) {
-			glEnable(GL_SCISSOR_TEST);
-		} else {
-			glDisable(GL_SCISSOR_TEST);
-		}
 	}
 
 	void SetScissorRect(int left, int top, int width, int height) override {
 		glScissor(left, targetHeight_ - (top + height), width, height);
 	}
 
-	void SetViewports(int count, T3DViewport *viewports) override {
-		// TODO: Add support for multiple viewports.
+	void SetViewports(int count, Viewport *viewports) override {
+		// TODO: Use glViewportArrayv.
 		glViewport(viewports[0].TopLeftX, viewports[0].TopLeftY, viewports[0].Width, viewports[0].Height);
 #if defined(USING_GLES2)
 		glDepthRangef(viewports[0].MinDepth, viewports[0].MaxDepth);
@@ -426,17 +521,31 @@ public:
 #endif
 	}
 
-	void SetTextures(int start, int count, Thin3DTexture **textures) override;
+	void SetBlendFactor(float color[4]) override {
+		glBlendColor(color[0], color[1], color[2], color[3]);
+	}
 
-	void SetRenderState(T3DRenderState rs, uint32_t value) override;
+	void BindTextures(int start, int count, Texture **textures) override;
+	void BindPipeline(Pipeline *pipeline) override;
+	void BindVertexBuffers(int start, int count, Buffer **buffers, int *offsets) override {
+		for (int i = 0; i < count; i++) {
+			curVBuffers_[i + start] = (OpenGLBuffer  *)buffers[i];
+			curVBufferOffsets_[i + start] = offsets ? offsets[i] : 0;
+		}
+	}
+	void BindIndexBuffer(Buffer *indexBuffer, int offset) override {
+		curIBuffer_ = (OpenGLBuffer  *)indexBuffer;
+		curIBufferOffset_ = offset;
+	}
 
 	// TODO: Add more sophisticated draws.
-	void Draw(T3DPrimitive prim, Thin3DShaderSet *shaderSet, Thin3DVertexFormat *format, Thin3DBuffer *vdata, int vertexCount, int offset) override;
-	void DrawIndexed(T3DPrimitive prim, Thin3DShaderSet *shaderSet, Thin3DVertexFormat *format, Thin3DBuffer *vdata, Thin3DBuffer *idata, int vertexCount, int offset) override;
-	void DrawUP(T3DPrimitive prim, Thin3DShaderSet *shaderSet, Thin3DVertexFormat *format, const void *vdata, int vertexCount) override;
+	void Draw(int vertexCount, int offset) override;
+	void DrawIndexed(int vertexCount, int offset) override;
+	void DrawUP(const void *vdata, int vertexCount) override;
+
 	void Clear(int mask, uint32_t colorval, float depthVal, int stencilVal) override;
 
-	std::string GetInfoString(T3DInfo info) const override {
+	std::string GetInfoString(InfoField info) const override {
 		// TODO: Make these actually query the right information
 		switch (info) {
 			case APINAME:
@@ -467,15 +576,50 @@ public:
 		}
 	}
 
-	std::vector<Thin3DGLSamplerState *> samplerStates_;
+	uintptr_t GetNativeObject(NativeObject obj) const override {
+		return 0;
+	}
+
+	void HandleEvent(Event ev) override {}
+
+	OpenGLFramebuffer *fbo_ext_create(const FramebufferDesc &desc);
+	void fbo_bind_fb_target(bool read, GLuint name);
+	GLenum fbo_get_fb_target(bool read, GLuint **cached);
+	void fbo_unbind();
+
+private:
+	std::vector<OpenGLSamplerState *> samplerStates_;
+	DeviceCaps caps_;
+	
+	// Bound state
+	OpenGLPipeline *curPipeline_;
+	OpenGLBuffer *curVBuffers_[4];
+	int curVBufferOffsets_[4];
+	OpenGLBuffer *curIBuffer_;
+	int curIBufferOffset_;
+
+	// Framebuffer state
+	GLuint currentDrawHandle_ = 0;
+	GLuint currentReadHandle_ = 0;
 };
 
-Thin3DGLContext::Thin3DGLContext() {
+OpenGLContext::OpenGLContext() {
 	CreatePresets();
+
+	// TODO: Detect more caps
+	if (gl_extensions.IsGLES) {
+		if (gl_extensions.OES_packed_depth_stencil || gl_extensions.OES_depth24) {
+			caps_.preferredDepthBufferFormat = DataFormat::D24_S8;
+		} else {
+			caps_.preferredDepthBufferFormat = DataFormat::D16;
+		}
+	} else {
+		caps_.preferredDepthBufferFormat = DataFormat::D24_S8;
+	}
 }
 
-Thin3DGLContext::~Thin3DGLContext() {
-	for (Thin3DGLSamplerState *s : samplerStates_) {
+OpenGLContext::~OpenGLContext() {
+	for (OpenGLSamplerState *s : samplerStates_) {
 		if (s) {
 			s->Release();
 		}
@@ -483,65 +627,60 @@ Thin3DGLContext::~Thin3DGLContext() {
 	samplerStates_.clear();
 }
 
-Thin3DVertexFormat *Thin3DGLContext::CreateVertexFormat(const std::vector<Thin3DVertexComponent> &components, int stride, Thin3DShader *vshader) {
-	Thin3DGLVertexFormat *fmt = new Thin3DGLVertexFormat();
-	fmt->components_ = components;
-	fmt->stride_ = stride;
+InputLayout *OpenGLContext::CreateInputLayout(const InputLayoutDesc &desc) {
+	OpenGLInputLayout *fmt = new OpenGLInputLayout();
+	fmt->desc = desc;
 	fmt->Compile();
 	return fmt;
 }
 
-GLuint TypeToTarget(T3DTextureType type) {
+GLuint TypeToTarget(TextureType type) {
 	switch (type) {
 #ifndef USING_GLES2
-	case LINEAR1D: return GL_TEXTURE_1D;
+	case TextureType::LINEAR1D: return GL_TEXTURE_1D;
 #endif
-	case LINEAR2D: return GL_TEXTURE_2D;
-	case LINEAR3D: return GL_TEXTURE_3D;
-	case CUBE: return GL_TEXTURE_CUBE_MAP;
+	case TextureType::LINEAR2D: return GL_TEXTURE_2D;
+	case TextureType::LINEAR3D: return GL_TEXTURE_3D;
+	case TextureType::CUBE: return GL_TEXTURE_CUBE_MAP;
 #ifndef USING_GLES2
-	case ARRAY1D: return GL_TEXTURE_1D_ARRAY;
+	case TextureType::ARRAY1D: return GL_TEXTURE_1D_ARRAY;
 #endif
-	case ARRAY2D: return GL_TEXTURE_2D_ARRAY;
+	case TextureType::ARRAY2D: return GL_TEXTURE_2D_ARRAY;
 	default: return GL_NONE;
 	}
 }
 
-class Thin3DGLTexture : public Thin3DTexture, GfxResourceHolder {
-public:
-	Thin3DGLTexture() : tex_(0), target_(0) {
-		generatedMips_ = false;
-		canWrap_ = true;
-		width_ = 0;
-		height_ = 0;
-		depth_ = 0;
-		glGenTextures(1, &tex_);
-		register_gl_resource_holder(this);
-	}
-	Thin3DGLTexture(T3DTextureType type, T3DImageFormat format, int width, int height, int depth, int mipLevels) : tex_(0), target_(TypeToTarget(type)), format_(format), mipLevels_(mipLevels) {
-		generatedMips_ = false;
-		canWrap_ = true;
-		width_ = width;
-		height_ = height;
-		depth_ = depth;
-		glGenTextures(1, &tex_);
-		register_gl_resource_holder(this);
-	}
-	~Thin3DGLTexture() {
-		unregister_gl_resource_holder(this);
-		Destroy();
-	}
+inline bool isPowerOf2(int n) {
+	return n == 1 || (n & (n - 1)) == 0;
+}
 
-	bool Create(T3DTextureType type, T3DImageFormat format, int width, int height, int depth, int mipLevels) override {
+class OpenGLTexture : public Texture {
+public:
+	OpenGLTexture(const TextureDesc &desc) : tex_(0), target_(TypeToTarget(desc.type)), format_(desc.format), mipLevels_(desc.mipLevels) {
 		generatedMips_ = false;
 		canWrap_ = true;
-		format_ = format;
-		target_ = TypeToTarget(type);
-		mipLevels_ = mipLevels;
-		width_ = width;
-		height_ = height;
-		depth_ = depth;
-		return true;
+		width_ = desc.width;
+		height_ = desc.height;
+		depth_ = desc.depth;
+		canWrap_ = !isPowerOf2(width_) || !isPowerOf2(height_);
+
+		glGenTextures(1, &tex_);
+
+		if (!desc.initData.size())
+			return;
+
+		int level = 0;
+		for (auto data : desc.initData) {
+			SetImageData(0, 0, 0, width_, height_, depth_, level, 0, data);
+			width_ = (width_ + 1) /2;
+			height_ = (height_ + 1) /2;
+			level++;
+		}
+		if (desc.initData.size() < desc.mipLevels)
+			AutoGenMipmaps();
+	}
+	~OpenGLTexture() {
+		Destroy();
 	}
 
 	void Destroy() {
@@ -551,8 +690,9 @@ public:
 			generatedMips_ = false;
 		}
 	}
+
 	void SetImageData(int x, int y, int z, int width, int height, int depth, int level, int stride, const uint8_t *data) override;
-	void AutoGenMipmaps() override;
+	void AutoGenMipmaps();
 
 	bool HasMips() {
 		return mipLevels_ > 1 || generatedMips_;
@@ -565,47 +705,21 @@ public:
 		glBindTexture(target_, tex_);
 	}
 
-	void GLLost() override {
-		// We can assume that the texture is gone.
-		tex_ = 0;
-		generatedMips_ = false;
-	}
-
-	void GLRestore() override {
-		if (!filename_.empty()) {
-			if (LoadFromFile(filename_.c_str())) {
-				ILOG("Reloaded lost texture %s", filename_.c_str());
-			} else {
-				ELOG("Failed to reload lost texture %s", filename_.c_str());
-				tex_ = 0;
-			}
-		} else {
-			WLOG("Texture %p cannot be restored - has no filename", this);
-			tex_ = 0;
-		}
-	}
-
-	void Finalize(int zim_flags) override;
-
 private:
 	GLuint tex_;
 	GLuint target_;
 
-	T3DImageFormat format_;
+	DataFormat format_;
 	int mipLevels_;
 	bool generatedMips_;
 	bool canWrap_;
 };
 
-Thin3DTexture *Thin3DGLContext::CreateTexture() {
-	return new Thin3DGLTexture();
+Texture *OpenGLContext::CreateTexture(const TextureDesc &desc) {
+	return new OpenGLTexture(desc);
 }
 
-Thin3DTexture *Thin3DGLContext::CreateTexture(T3DTextureType type, T3DImageFormat format, int width, int height, int depth, int mipLevels) {
-	return new Thin3DGLTexture(type, format, width, height, depth, mipLevels);
-}
-
-void Thin3DGLTexture::AutoGenMipmaps() {
+void OpenGLTexture::AutoGenMipmaps() {
 	if (!generatedMips_) {
 		Bind();
 		glGenerateMipmap(target_);
@@ -615,28 +729,41 @@ void Thin3DGLTexture::AutoGenMipmaps() {
 	}
 }
 
-void Thin3DGLTexture::SetImageData(int x, int y, int z, int width, int height, int depth, int level, int stride, const uint8_t *data) {
+void OpenGLTexture::SetImageData(int x, int y, int z, int width, int height, int depth, int level, int stride, const uint8_t *data) {
 	int internalFormat;
 	int format;
 	int type;
+
+	if (width != width_ || height != height_ || depth != depth_) {
+		// When switching to texStorage we need to handle this correctly.
+		width_ = width;
+		height_ = height;
+		depth_ = depth;
+	}
+
 	switch (format_) {
-	case RGBA8888:
+	case DataFormat::R8G8B8A8_UNORM:
 		internalFormat = GL_RGBA;
 		format = GL_RGBA;
 		type = GL_UNSIGNED_BYTE;
 		break;
-	case RGBA4444:
+	case DataFormat::R4G4B4A4_UNORM_PACK16:
 		internalFormat = GL_RGBA;
 		format = GL_RGBA;
 		type = GL_UNSIGNED_SHORT_4_4_4_4;
 		break;
+
+#ifndef USING_GLES2
+	case DataFormat::A4B4G4R4_UNORM_PACK16:
+		internalFormat = GL_RGBA;
+		format = GL_RGBA;
+		type = GL_UNSIGNED_SHORT_4_4_4_4_REV;
+		break;
+#endif
+
 	default:
+		ELOG("Thin3d GL: Unsupported texture format %d", (int)format_);
 		return;
-	}
-	if (level == 0) {
-		width_ = width;
-		height_ = height;
-		depth_ = depth;
 	}
 
 	Bind();
@@ -648,30 +775,25 @@ void Thin3DGLTexture::SetImageData(int x, int y, int z, int width, int height, i
 		ELOG("Thin3D GL: Targets other than GL_TEXTURE_2D not yet supported");
 		break;
 	}
+
+	GLenum err = glGetError();
+	if (err) {
+		ELOG("Thin3D GL: Error loading texture: %08x", err);
+	}
 }
 
-bool isPowerOf2(int n) {
-	return n == 1 || (n & (n - 1)) == 0;
-}
-
-void Thin3DGLTexture::Finalize(int zim_flags) {
-	canWrap_ = (zim_flags & ZIM_CLAMP) || !isPowerOf2(width_) || !isPowerOf2(height_);
-}
-
-
-Thin3DGLVertexFormat::~Thin3DGLVertexFormat() {
+OpenGLInputLayout::~OpenGLInputLayout() {
 	if (id_) {
 		glDeleteVertexArrays(1, &id_);
 	}
 }
 
-void Thin3DGLVertexFormat::Compile() {
-	int sem = 0;
-	for (int i = 0; i < (int)components_.size(); i++) {
-		sem |= 1 << components_[i].semantic;
+void OpenGLInputLayout::Compile() {
+	int semMask = 0;
+	for (int i = 0; i < (int)desc.attributes.size(); i++) {
+		semMask |= 1 << desc.attributes[i].location;
 	}
-	semanticsMask_ = sem;
-	// TODO : Compute stride as well?
+	semanticsMask_ = semMask;
 
 	if (gl_extensions.ARB_vertex_array_object && gl_extensions.IsCoreContext) {
 		glGenVertexArrays(1, &id_);
@@ -682,73 +804,177 @@ void Thin3DGLVertexFormat::Compile() {
 	lastBase_ = -1;
 }
 
-void Thin3DGLVertexFormat::GLLost() {
+void OpenGLInputLayout::GLLost() {
 	id_ = 0;
 }
 
-void Thin3DGLVertexFormat::GLRestore() {
+void OpenGLInputLayout::GLRestore() {
 	Compile();
 }
 
-Thin3DDepthStencilState *Thin3DGLContext::CreateDepthStencilState(bool depthTestEnabled, bool depthWriteEnabled, T3DComparison depthCompare) {
-	Thin3DGLDepthStencilState *ds = new Thin3DGLDepthStencilState();
-	ds->depthTestEnabled = depthTestEnabled;
-	ds->depthWriteEnabled = depthWriteEnabled;
-	ds->depthComp = compToGL[depthCompare];
+DepthStencilState *OpenGLContext::CreateDepthStencilState(const DepthStencilStateDesc &desc) {
+	OpenGLDepthStencilState *ds = new OpenGLDepthStencilState();
+	ds->depthTestEnabled = desc.depthTestEnabled;
+	ds->depthWriteEnabled = desc.depthWriteEnabled;
+	ds->depthComp = compToGL[(int)desc.depthCompare];
+	ds->stencilEnabled = desc.stencilEnabled;
+	ds->stencilCompareOp = compToGL[(int)desc.front.compareOp];
+	ds->stencilPass = stencilOpToGL[(int)desc.front.passOp];
+	ds->stencilFail = stencilOpToGL[(int)desc.front.failOp];
+	ds->stencilZFail = stencilOpToGL[(int)desc.front.depthFailOp];
+	ds->stencilWriteMask = desc.front.writeMask;
+	ds->stencilReference = desc.front.reference;
+	ds->stencilCompareMask = desc.front.compareMask;
 	return ds;
 }
 
-Thin3DBlendState *Thin3DGLContext::CreateBlendState(const T3DBlendStateDesc &desc) {
-	Thin3DGLBlendState *bs = new Thin3DGLBlendState();
+BlendState *OpenGLContext::CreateBlendState(const BlendStateDesc &desc) {
+	OpenGLBlendState *bs = new OpenGLBlendState();
 	bs->enabled = desc.enabled;
-	bs->eqCol = blendEqToGL[desc.eqCol];
-	bs->srcCol = blendFactorToGL[desc.srcCol];
-	bs->dstCol = blendFactorToGL[desc.dstCol];
-	bs->eqAlpha = blendEqToGL[desc.eqAlpha];
-	bs->srcAlpha = blendFactorToGL[desc.srcAlpha];
-	bs->dstAlpha = blendFactorToGL[desc.dstAlpha];
+	bs->eqCol = blendEqToGL[(int)desc.eqCol];
+	bs->srcCol = blendFactorToGL[(int)desc.srcCol];
+	bs->dstCol = blendFactorToGL[(int)desc.dstCol];
+	bs->eqAlpha = blendEqToGL[(int)desc.eqAlpha];
+	bs->srcAlpha = blendFactorToGL[(int)desc.srcAlpha];
+	bs->dstAlpha = blendFactorToGL[(int)desc.dstAlpha];
 #ifndef USING_GLES2
 	bs->logicEnabled = desc.logicEnabled;
-	bs->logicOp = logicOpToGL[desc.logicOp];
+	bs->logicOp = logicOpToGL[(int)desc.logicOp];
 #endif
+	bs->colorMask = desc.colorMask;
 	return bs;
 }
 
-Thin3DSamplerState *Thin3DGLContext::CreateSamplerState(const T3DSamplerStateDesc &desc) {
-	Thin3DGLSamplerState *samps = new Thin3DGLSamplerState();
-	samps->wrapS = texWrapToGL[desc.wrapS];
-	samps->wrapT = texWrapToGL[desc.wrapT];
-	samps->magFilt = texFilterToGL[desc.magFilt];
-	samps->minFilt = texFilterToGL[desc.minFilt];
-	samps->mipMinFilt = texMipFilterToGL[desc.minFilt][desc.mipFilt];
+SamplerState *OpenGLContext::CreateSamplerState(const SamplerStateDesc &desc) {
+	OpenGLSamplerState *samps = new OpenGLSamplerState();
+	samps->wrapS = texWrapToGL[(int)desc.wrapU];
+	samps->wrapT = texWrapToGL[(int)desc.wrapV];
+	samps->magFilt = texFilterToGL[(int)desc.magFilter];
+	samps->minFilt = texFilterToGL[(int)desc.minFilter];
+	samps->mipMinFilt = texMipFilterToGL[(int)desc.minFilter][(int)desc.mipFilter];
 	return samps;
 }
 
-Thin3DBuffer *Thin3DGLContext::CreateBuffer(size_t size, uint32_t usageFlags) {
-	return new Thin3DGLBuffer(size, usageFlags);
+RasterState *OpenGLContext::CreateRasterState(const RasterStateDesc &desc) {
+	OpenGLRasterState *rs = new OpenGLRasterState();
+	if (desc.cull == CullMode::NONE) {
+		rs->cullEnable = GL_FALSE;
+		return rs;
+	}
+	rs->cullEnable = GL_TRUE;
+	switch (desc.frontFace) {
+	case Facing::CW:
+		rs->frontFace = GL_CW;
+		break;
+	case Facing::CCW:
+		rs->frontFace = GL_CCW;
+		break;
+	}
+	switch (desc.cull) {
+	case CullMode::FRONT:
+		rs->cullMode = GL_FRONT;
+		break;
+	case CullMode::BACK:
+		rs->cullMode = GL_BACK;
+		break;
+	case CullMode::FRONT_AND_BACK:
+		rs->cullMode = GL_FRONT_AND_BACK;
+		break;
+	case CullMode::NONE:
+		// Unsupported
+		break;
+	}
+	return rs;
 }
 
-Thin3DShaderSet *Thin3DGLContext::CreateShaderSet(Thin3DShader *vshader, Thin3DShader *fshader) {
-	if (!vshader || !fshader) {
-		ELOG("ShaderSet requires both a valid vertex and a fragment shader: %p %p", vshader, fshader);
+class OpenGLBuffer : public Buffer, GfxResourceHolder {
+public:
+	OpenGLBuffer(size_t size, uint32_t flags) {
+		glGenBuffers(1, &buffer_);
+		target_ = (flags & BufferUsageFlag::INDEXDATA) ? GL_ELEMENT_ARRAY_BUFFER : GL_ARRAY_BUFFER;
+		usage_ = 0;
+		if (flags & BufferUsageFlag::DYNAMIC)
+			usage_ = GL_STREAM_DRAW;
+		else
+			usage_ = GL_STATIC_DRAW;
+		totalSize_ = size;
+		glBindBuffer(target_, buffer_);
+		glBufferData(target_, size, NULL, usage_);
+		register_gl_resource_holder(this);
+	}
+	~OpenGLBuffer() override {
+		unregister_gl_resource_holder(this);
+		glDeleteBuffers(1, &buffer_);
+	}
+
+	void Bind(int offset) {
+		// TODO: Can't support offset using ES 2.0
+		glBindBuffer(target_, buffer_);
+	}
+
+	void GLLost() override {
+		buffer_ = 0;
+	}
+
+	void GLRestore() override {
+		ILOG("Recreating vertex buffer after gl_restore");
+		totalSize_ = 0;  // Will cause a new glBufferData call. Should genBuffers again though?
+		glGenBuffers(1, &buffer_);
+	}
+
+	GLuint buffer_;
+	GLuint target_;
+	GLuint usage_;
+
+	size_t totalSize_;
+};
+
+Buffer *OpenGLContext::CreateBuffer(size_t size, uint32_t usageFlags) {
+	return new OpenGLBuffer(size, usageFlags);
+}
+
+void OpenGLContext::UpdateBuffer(Buffer *buffer, const uint8_t *data, size_t offset, size_t size, UpdateBufferFlags flags) {
+	OpenGLBuffer *buf = (OpenGLBuffer *)buffer;
+
+	buf->Bind(0);
+	if (size + offset > buf->totalSize_) {
+		Crash();
+	}
+	// if (flags & UPDATE_DISCARD) we could try to orphan the buffer using glBufferData.
+	glBufferSubData(buf->target_, offset, size, data);
+}
+
+Pipeline *OpenGLContext::CreateGraphicsPipeline(const PipelineDesc &desc) {
+	if (!desc.shaders.size()) {
+		ELOG("Pipeline requires at least one shader");
 		return NULL;
 	}
-	Thin3DGLShaderSet *shaderSet = new Thin3DGLShaderSet();
-	vshader->AddRef();
-	fshader->AddRef();
-	shaderSet->vshader = static_cast<Thin3DGLShader *>(vshader);
-	shaderSet->fshader = static_cast<Thin3DGLShader *>(fshader);
-	if (shaderSet->Link()) {
-		return shaderSet;
+	OpenGLPipeline *pipeline = new OpenGLPipeline();
+	for (auto iter : desc.shaders) {
+		iter->AddRef();
+		pipeline->shaders.push_back(static_cast<OpenGLShaderModule *>(iter));
+	}
+	if (pipeline->LinkShaders()) {
+		// Build the rest of the virtual pipeline object.
+		pipeline->prim = primToGL[(int)desc.prim];
+		pipeline->depthStencil = (OpenGLDepthStencilState *)desc.depthStencil;
+		pipeline->blend = (OpenGLBlendState *)desc.blend;
+		pipeline->raster = (OpenGLRasterState *)desc.raster;
+		pipeline->inputLayout = (OpenGLInputLayout *)desc.inputLayout;
+		pipeline->depthStencil->AddRef();
+		pipeline->blend->AddRef();
+		pipeline->raster->AddRef();
+		pipeline->inputLayout->AddRef();
+		return pipeline;
 	} else {
-		delete shaderSet;
+		delete pipeline;
 		return NULL;
 	}
 }
 
-void Thin3DGLContext::SetTextures(int start, int count, Thin3DTexture **textures) {
+void OpenGLContext::BindTextures(int start, int count, Texture **textures) {
 	for (int i = start; i < start + count; i++) {
-		Thin3DGLTexture *glTex = static_cast<Thin3DGLTexture *>(textures[i]);
+		OpenGLTexture *glTex = static_cast<OpenGLTexture *>(textures[i]);
 		glActiveTexture(GL_TEXTURE0 + i);
 		glTex->Bind();
 
@@ -760,9 +986,9 @@ void Thin3DGLContext::SetTextures(int start, int count, Thin3DTexture **textures
 }
 
 
-Thin3DShader *Thin3DGLContext::CreateVertexShader(const char *glsl_source, const char *hlsl_source, const char *vulkan_source) {
-	Thin3DGLShader *shader = new Thin3DGLShader(false);
-	if (shader->Compile(glsl_source)) {
+ShaderModule *OpenGLContext::CreateShaderModule(ShaderStage stage, ShaderLanguage language, const uint8_t *data, size_t dataSize) {
+	OpenGLShaderModule *shader = new OpenGLShaderModule(stage);
+	if (shader->Compile(language, data, dataSize)) {
 		return shader;
 	} else {
 		shader->Release();
@@ -770,20 +996,11 @@ Thin3DShader *Thin3DGLContext::CreateVertexShader(const char *glsl_source, const
 	}
 }
 
-Thin3DShader *Thin3DGLContext::CreateFragmentShader(const char *glsl_source, const char *hlsl_source, const char *vulkan_source) {
-	Thin3DGLShader *shader = new Thin3DGLShader(true);
-	if (shader->Compile(glsl_source)) {
-		return shader;
-	} else {
-		shader->Release();
-		return nullptr;
-	}
-}
-
-bool Thin3DGLShaderSet::Link() {
+bool OpenGLPipeline::LinkShaders() {
 	program_ = glCreateProgram();
-	glAttachShader(program_, vshader->GetShader());
-	glAttachShader(program_, fshader->GetShader());
+	for (auto iter : shaders) {
+		glAttachShader(program_, iter->GetShader());
+	}
 
 	// Bind all the common vertex data points. Mismatching ones will be ignored.
 	glBindAttribLocation(program_, SEM_POSITION, "Position");
@@ -828,7 +1045,7 @@ bool Thin3DGLShaderSet::Link() {
 	return true;
 }
 
-int Thin3DGLShaderSet::GetUniformLoc(const char *name) {
+int OpenGLPipeline::GetUniformLoc(const char *name) {
 	auto iter = uniforms_.find(name);
 	int loc = -1;
 	if (iter != uniforms_.end()) {
@@ -842,7 +1059,7 @@ int Thin3DGLShaderSet::GetUniformLoc(const char *name) {
 	return loc;
 }
 
-void Thin3DGLShaderSet::SetVector(const char *name, float *value, int n) {
+void OpenGLPipeline::SetVector(const char *name, float *value, int n) {
 	glUseProgram(program_);
 	int loc = GetUniformLoc(name);
 	if (loc != -1) {
@@ -855,7 +1072,7 @@ void Thin3DGLShaderSet::SetVector(const char *name, float *value, int n) {
 	}
 }
 
-void Thin3DGLShaderSet::SetMatrix4x4(const char *name, const float value[16]) {
+void OpenGLPipeline::SetMatrix4x4(const char *name, const float value[16]) {
 	glUseProgram(program_);
 	int loc = GetUniformLoc(name);
 	if (loc != -1) {
@@ -863,83 +1080,66 @@ void Thin3DGLShaderSet::SetMatrix4x4(const char *name, const float value[16]) {
 	}
 }
 
-void Thin3DGLShaderSet::Apply() {
+void OpenGLPipeline::Apply() {
 	glUseProgram(program_);
 }
 
-void Thin3DGLShaderSet::Unapply() {
+void OpenGLPipeline::Unapply() {
 	glUseProgram(0);
 }
 
-void Thin3DGLContext::SetRenderState(T3DRenderState rs, uint32_t value) {
-	switch (rs) {
-	case T3DRenderState::CULL_MODE:
-		switch (value) {
-		case T3DCullMode::NO_CULL: glDisable(GL_CULL_FACE); break;
-		case T3DCullMode::CCW: glEnable(GL_CULL_FACE); glCullFace(GL_CCW); break;   // TODO: Should be GL_FRONT
-		case T3DCullMode::CW: glEnable(GL_CULL_FACE); glCullFace(GL_CW); break;
-		}
-		break;
-	}
+void OpenGLContext::BindPipeline(Pipeline *pipeline) {
+	curPipeline_ = (OpenGLPipeline *)pipeline;
+	curPipeline_->blend->Apply();
+	curPipeline_->depthStencil->Apply();
+	curPipeline_->raster->Apply();
 }
 
-void Thin3DGLContext::Draw(T3DPrimitive prim, Thin3DShaderSet *shaderSet, Thin3DVertexFormat *format, Thin3DBuffer *vdata, int vertexCount, int offset) {
-	Thin3DGLShaderSet *ss = static_cast<Thin3DGLShaderSet *>(shaderSet);
-	Thin3DGLBuffer *vbuf = static_cast<Thin3DGLBuffer *>(vdata);
-	Thin3DGLVertexFormat *fmt = static_cast<Thin3DGLVertexFormat *>(format);
+void OpenGLContext::Draw(int vertexCount, int offset) {
+	curVBuffers_[0]->Bind(curVBufferOffsets_[0]);
+	curPipeline_->inputLayout->Apply();
+	curPipeline_->Apply();
 
-	vbuf->Bind();
-	fmt->Apply();
-	ss->Apply();
+	glDrawArrays(curPipeline_->prim, offset, vertexCount);
 
-	glDrawArrays(primToGL[prim], offset, vertexCount);
-
-	ss->Unapply();
-	fmt->Unapply();
+	curPipeline_->Unapply();
+	curPipeline_->inputLayout->Unapply();
 }
 
-void Thin3DGLContext::DrawIndexed(T3DPrimitive prim, Thin3DShaderSet *shaderSet, Thin3DVertexFormat *format, Thin3DBuffer *vdata, Thin3DBuffer *idata, int vertexCount, int offset) {
-	Thin3DGLShaderSet *ss = static_cast<Thin3DGLShaderSet *>(shaderSet);
-	Thin3DGLBuffer *vbuf = static_cast<Thin3DGLBuffer *>(vdata);
-	Thin3DGLBuffer *ibuf = static_cast<Thin3DGLBuffer *>(idata);
-	Thin3DGLVertexFormat *fmt = static_cast<Thin3DGLVertexFormat *>(format);
-
-	vbuf->Bind();
-	fmt->Apply();
-	ss->Apply();
+void OpenGLContext::DrawIndexed(int vertexCount, int offset) {
+	curVBuffers_[0]->Bind(curVBufferOffsets_[0]);
+	curPipeline_->inputLayout->Apply();
+	curPipeline_->Apply();
 	// Note: ibuf binding is stored in the VAO, so call this after binding the fmt.
-	ibuf->Bind();
+	curIBuffer_->Bind(curIBufferOffset_);
 
-	glDrawElements(primToGL[prim], vertexCount, GL_UNSIGNED_INT, (const void *)(size_t)offset);
+	glDrawElements(curPipeline_->prim, vertexCount, GL_UNSIGNED_INT, (const void *)(size_t)offset);
 	
-	ss->Unapply();
-	fmt->Unapply();
+	curPipeline_->Unapply();
+	curPipeline_->inputLayout->Unapply();
 }
 
-void Thin3DGLContext::DrawUP(T3DPrimitive prim, Thin3DShaderSet *shaderSet, Thin3DVertexFormat *format, const void *vdata, int vertexCount) {
-	Thin3DGLShaderSet *ss = static_cast<Thin3DGLShaderSet *>(shaderSet);
-	Thin3DGLVertexFormat *fmt = static_cast<Thin3DGLVertexFormat *>(format);
-
-	fmt->Apply(vdata);
-	ss->Apply();
+void OpenGLContext::DrawUP(const void *vdata, int vertexCount) {
+	curPipeline_->inputLayout->Apply(vdata);
+	curPipeline_->Apply();
 
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-	glDrawArrays(primToGL[prim], 0, vertexCount);
+	glDrawArrays(curPipeline_->prim, 0, vertexCount);
 
-	ss->Unapply();
-	fmt->Unapply();
+	curPipeline_->Unapply();
+	curPipeline_->inputLayout->Unapply();
 }
 
-void Thin3DGLContext::Clear(int mask, uint32_t colorval, float depthVal, int stencilVal) {
+void OpenGLContext::Clear(int mask, uint32_t colorval, float depthVal, int stencilVal) {
 	float col[4];
 	Uint8x4ToFloat4(col, colorval);
 	GLuint glMask = 0;
-	if (mask & T3DClear::COLOR) {
+	if (mask & ClearFlag::COLOR) {
 		glClearColor(col[0], col[1], col[2], col[3]);
 		glMask |= GL_COLOR_BUFFER_BIT;
 	}
-	if (mask & T3DClear::DEPTH) {
+	if (mask & ClearFlag::DEPTH) {
 #if defined(USING_GLES2)
 		glClearDepthf(depthVal);
 #else
@@ -947,18 +1147,18 @@ void Thin3DGLContext::Clear(int mask, uint32_t colorval, float depthVal, int ste
 #endif
 		glMask |= GL_DEPTH_BUFFER_BIT;
 	}
-	if (mask & T3DClear::STENCIL) {
+	if (mask & ClearFlag::STENCIL) {
 		glClearStencil(stencilVal);
 		glMask |= GL_STENCIL_BUFFER_BIT;
 	}
 	glClear(glMask);
 }
 
-Thin3DContext *T3DCreateGLContext() {
-	return new Thin3DGLContext();
+DrawContext *T3DCreateGLContext() {
+	return new OpenGLContext();
 }
 
-void Thin3DGLVertexFormat::Apply(const void *base) {
+void OpenGLInputLayout::Apply(const void *base) {
 	if (id_ != 0) {
 		glBindVertexArray(id_);
 	}
@@ -976,22 +1176,25 @@ void Thin3DGLVertexFormat::Apply(const void *base) {
 
 	intptr_t b = (intptr_t)base;
 	if (b != lastBase_) {
-		for (size_t i = 0; i < components_.size(); i++) {
-			switch (components_[i].type) {
-			case FLOATx2:
-				glVertexAttribPointer(components_[i].semantic, 2, GL_FLOAT, GL_FALSE, stride_, (void *)(b + (intptr_t)components_[i].offset));
+		for (size_t i = 0; i < desc.attributes.size(); i++) {
+			GLsizei stride = (GLsizei)desc.bindings[desc.attributes[i].binding].stride;
+			switch (desc.attributes[i].format) {
+			case DataFormat::R32G32_FLOAT:
+				glVertexAttribPointer(desc.attributes[i].location, 2, GL_FLOAT, GL_FALSE, stride, (void *)(b + (intptr_t)desc.attributes[i].offset));
 				break;
-			case FLOATx3:
-				glVertexAttribPointer(components_[i].semantic, 3, GL_FLOAT, GL_FALSE, stride_, (void *)(b + (intptr_t)components_[i].offset));
+			case DataFormat::R32G32B32_FLOAT:
+				glVertexAttribPointer(desc.attributes[i].location, 3, GL_FLOAT, GL_FALSE, stride, (void *)(b + (intptr_t)desc.attributes[i].offset));
 				break;
-			case FLOATx4:
-				glVertexAttribPointer(components_[i].semantic, 4, GL_FLOAT, GL_FALSE, stride_, (void *)(b + (intptr_t)components_[i].offset));
+			case DataFormat::R32G32B32A32_FLOAT:
+				glVertexAttribPointer(desc.attributes[i].location, 4, GL_FLOAT, GL_FALSE, stride, (void *)(b + (intptr_t)desc.attributes[i].offset));
 				break;
-			case UNORM8x4:
-				glVertexAttribPointer(components_[i].semantic, 4, GL_UNSIGNED_BYTE, GL_TRUE, stride_, (void *)(b + (intptr_t)components_[i].offset));
+			case DataFormat::R8G8B8A8_UNORM:
+				glVertexAttribPointer(desc.attributes[i].location, 4, GL_UNSIGNED_BYTE, GL_TRUE, stride, (void *)(b + (intptr_t)desc.attributes[i].offset));
 				break;
-			case INVALID:
-				ELOG("Thin3DGLVertexFormat: Invalid component type applied.");
+			case DataFormat::UNDEFINED:
+			default:
+				ELOG("Thin3DGLVertexFormat: Invalid or unknown component type applied.");
+				break;
 			}
 		}
 		if (id_ != 0) {
@@ -1000,9 +1203,9 @@ void Thin3DGLVertexFormat::Apply(const void *base) {
 	}
 }
 
-void Thin3DGLVertexFormat::Unapply() {
+void OpenGLInputLayout::Unapply() {
 	if (id_ == 0) {
-		for (int i = 0; i < SEM_MAX; i++) {
+		for (int i = 0; i < (int)SEM_MAX; i++) {
 			if (semanticsMask_ & (1 << i)) {
 				glDisableVertexAttribArray(i);
 			}
@@ -1011,3 +1214,432 @@ void Thin3DGLVertexFormat::Unapply() {
 		glBindVertexArray(0);
 	}
 }
+
+class OpenGLFramebuffer : public Framebuffer {
+public:
+	~OpenGLFramebuffer();
+	GLuint handle;
+	GLuint color_texture;
+	GLuint z_stencil_buffer;  // Either this is set, or the two below.
+	GLuint z_buffer;
+	GLuint stencil_buffer;
+
+	int width;
+	int height;
+	FBColorDepth colorDepth;
+};
+
+// On PC, we always use GL_DEPTH24_STENCIL8. 
+// On Android, we try to use what's available.
+
+#ifndef USING_GLES2
+OpenGLFramebuffer *OpenGLContext::fbo_ext_create(const FramebufferDesc &desc) {
+	OpenGLFramebuffer *fbo = new OpenGLFramebuffer();
+	fbo->width = desc.width;
+	fbo->height = desc.height;
+	fbo->colorDepth = desc.colorDepth;
+
+	// Color texture is same everywhere
+	glGenFramebuffersEXT(1, &fbo->handle);
+	glGenTextures(1, &fbo->color_texture);
+
+	// Create the surfaces.
+	glBindTexture(GL_TEXTURE_2D, fbo->color_texture);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+	// TODO: We could opt to only create 16-bit render targets on slow devices. For later.
+	switch (fbo->colorDepth) {
+	case FBO_8888:
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fbo->width, fbo->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+		break;
+	case FBO_4444:
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fbo->width, fbo->height, 0, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, NULL);
+		break;
+	case FBO_5551:
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fbo->width, fbo->height, 0, GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1, NULL);
+		break;
+	case FBO_565:
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, fbo->width, fbo->height, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, NULL);
+		break;
+	}
+
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+	fbo->stencil_buffer = 0;
+	fbo->z_buffer = 0;
+	// 24-bit Z, 8-bit stencil
+	glGenRenderbuffersEXT(1, &fbo->z_stencil_buffer);
+	glBindRenderbufferEXT(GL_RENDERBUFFER_EXT, fbo->z_stencil_buffer);
+	glRenderbufferStorageEXT(GL_RENDERBUFFER_EXT, GL_DEPTH_STENCIL_EXT, fbo->width, fbo->height);
+	//glRenderbufferStorageEXT(GL_RENDERBUFFER_EXT, GL_DEPTH24_STENCIL8, width, height);
+
+	// Bind it all together
+	glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, fbo->handle);
+	glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, GL_TEXTURE_2D, fbo->color_texture, 0);
+	glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_DEPTH_ATTACHMENT_EXT, GL_RENDERBUFFER_EXT, fbo->z_stencil_buffer);
+	glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_STENCIL_ATTACHMENT_EXT, GL_RENDERBUFFER_EXT, fbo->z_stencil_buffer);
+
+	GLenum status = glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT);
+	switch (status) {
+	case GL_FRAMEBUFFER_COMPLETE_EXT:
+		// ILOG("Framebuffer verified complete.");
+		break;
+	case GL_FRAMEBUFFER_UNSUPPORTED_EXT:
+		ELOG("GL_FRAMEBUFFER_UNSUPPORTED");
+		break;
+	case GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT_EXT:
+		ELOG("GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT ");
+		break;
+	default:
+		FLOG("Other framebuffer error: %i", status);
+		break;
+	}
+	// Unbind state we don't need
+	glBindRenderbufferEXT(GL_RENDERBUFFER_EXT, 0);
+	glBindTexture(GL_TEXTURE_2D, 0);
+
+	currentDrawHandle_ = fbo->handle;
+	currentReadHandle_ = fbo->handle;
+	return fbo;
+}
+#endif
+
+Framebuffer *OpenGLContext::CreateFramebuffer(const FramebufferDesc &desc) {
+	CheckGLExtensions();
+
+#ifndef USING_GLES2
+	if (!gl_extensions.ARB_framebuffer_object && gl_extensions.EXT_framebuffer_object) {
+		return fbo_ext_create(desc);
+	} else if (!gl_extensions.ARB_framebuffer_object) {
+		return nullptr;
+	}
+	// If GLES2, we have basic FBO support and can just proceed.
+#endif
+
+	OpenGLFramebuffer *fbo = new OpenGLFramebuffer();
+	fbo->width = desc.width;
+	fbo->height = desc.height;
+	fbo->colorDepth = desc.colorDepth;
+
+	// Color texture is same everywhere
+	glGenFramebuffers(1, &fbo->handle);
+	glGenTextures(1, &fbo->color_texture);
+
+	// Create the surfaces.
+	glBindTexture(GL_TEXTURE_2D, fbo->color_texture);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+	// TODO: We could opt to only create 16-bit render targets on slow devices. For later.
+	switch (fbo->colorDepth) {
+	case FBO_8888:
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fbo->width, fbo->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+		break;
+	case FBO_4444:
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fbo->width, fbo->height, 0, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, NULL);
+		break;
+	case FBO_5551:
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fbo->width, fbo->height, 0, GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1, NULL);
+		break;
+	case FBO_565:
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, fbo->width, fbo->height, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, NULL);
+		break;
+	}
+
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+	if (gl_extensions.IsGLES) {
+		if (gl_extensions.OES_packed_depth_stencil) {
+			ILOG("Creating %i x %i FBO using DEPTH24_STENCIL8", fbo->width, fbo->height);
+			// Standard method
+			fbo->stencil_buffer = 0;
+			fbo->z_buffer = 0;
+			// 24-bit Z, 8-bit stencil combined
+			glGenRenderbuffers(1, &fbo->z_stencil_buffer);
+			glBindRenderbuffer(GL_RENDERBUFFER, fbo->z_stencil_buffer);
+			glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8_OES, fbo->width, fbo->height);
+
+			// Bind it all together
+			glBindFramebuffer(GL_FRAMEBUFFER, fbo->handle);
+			glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->color_texture, 0);
+			glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, fbo->z_stencil_buffer);
+			glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, fbo->z_stencil_buffer);
+		} else {
+			ILOG("Creating %i x %i FBO using separate stencil", fbo->width, fbo->height);
+			// TEGRA
+			fbo->z_stencil_buffer = 0;
+			// 16/24-bit Z, separate 8-bit stencil
+			glGenRenderbuffers(1, &fbo->z_buffer);
+			glBindRenderbuffer(GL_RENDERBUFFER, fbo->z_buffer);
+			// Don't forget to make sure fbo_standard_z_depth() matches.
+			glRenderbufferStorage(GL_RENDERBUFFER, gl_extensions.OES_depth24 ? GL_DEPTH_COMPONENT24 : GL_DEPTH_COMPONENT16, fbo->width, fbo->height);
+
+			// 8-bit stencil buffer
+			glGenRenderbuffers(1, &fbo->stencil_buffer);
+			glBindRenderbuffer(GL_RENDERBUFFER, fbo->stencil_buffer);
+			glRenderbufferStorage(GL_RENDERBUFFER, GL_STENCIL_INDEX8, fbo->width, fbo->height);
+
+			// Bind it all together
+			glBindFramebuffer(GL_FRAMEBUFFER, fbo->handle);
+			glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->color_texture, 0);
+			glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, fbo->z_buffer);
+			glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, fbo->stencil_buffer);
+		}
+	} else {
+		fbo->stencil_buffer = 0;
+		fbo->z_buffer = 0;
+		// 24-bit Z, 8-bit stencil
+		glGenRenderbuffers(1, &fbo->z_stencil_buffer);
+		glBindRenderbuffer(GL_RENDERBUFFER, fbo->z_stencil_buffer);
+		glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, fbo->width, fbo->height);
+
+		// Bind it all together
+		glBindFramebuffer(GL_FRAMEBUFFER, fbo->handle);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->color_texture, 0);
+		glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, fbo->z_stencil_buffer);
+		glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, fbo->z_stencil_buffer);
+	}
+
+	GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+	switch (status) {
+	case GL_FRAMEBUFFER_COMPLETE:
+		// ILOG("Framebuffer verified complete.");
+		break;
+	case GL_FRAMEBUFFER_UNSUPPORTED:
+		ELOG("GL_FRAMEBUFFER_UNSUPPORTED");
+		break;
+	case GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT:
+		ELOG("GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT ");
+		break;
+	default:
+		FLOG("Other framebuffer error: %i", status);
+		break;
+	}
+	// Unbind state we don't need
+	glBindRenderbuffer(GL_RENDERBUFFER, 0);
+	glBindTexture(GL_TEXTURE_2D, 0);
+
+	currentDrawHandle_ = fbo->handle;
+	currentReadHandle_ = fbo->handle;
+	return fbo;
+}
+
+GLenum OpenGLContext::fbo_get_fb_target(bool read, GLuint **cached) {
+	bool supportsBlit = gl_extensions.ARB_framebuffer_object;
+	if (gl_extensions.IsGLES) {
+		supportsBlit = (gl_extensions.GLES3 || gl_extensions.NV_framebuffer_blit);
+	}
+
+	// Note: GL_FRAMEBUFFER_EXT and GL_FRAMEBUFFER have the same value, same with _NV.
+	if (supportsBlit) {
+		if (read) {
+			*cached = &currentReadHandle_;
+			return GL_READ_FRAMEBUFFER;
+		} else {
+			*cached = &currentDrawHandle_;
+			return GL_DRAW_FRAMEBUFFER;
+		}
+	} else {
+		*cached = &currentDrawHandle_;
+		return GL_FRAMEBUFFER;
+	}
+}
+
+void OpenGLContext::fbo_bind_fb_target(bool read, GLuint name) {
+	GLuint *cached;
+	GLenum target = fbo_get_fb_target(read, &cached);
+	if (*cached != name) {
+		if (gl_extensions.ARB_framebuffer_object || gl_extensions.IsGLES) {
+			glBindFramebuffer(target, name);
+		} else {
+#ifndef USING_GLES2
+			glBindFramebufferEXT(target, name);
+#endif
+		}
+		*cached = name;
+	}
+}
+
+void OpenGLContext::fbo_unbind() {
+#ifndef USING_GLES2
+	if (gl_extensions.ARB_framebuffer_object || gl_extensions.IsGLES) {
+		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	} else if (gl_extensions.EXT_framebuffer_object) {
+		glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, 0);
+	}
+#else
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+#endif
+
+#ifdef IOS
+	bindDefaultFBO();
+#endif
+
+	currentDrawHandle_ = 0;
+	currentReadHandle_ = 0;
+}
+
+void OpenGLContext::BindFramebufferAsRenderTarget(Framebuffer *fbo) {
+	OpenGLFramebuffer *fb = (OpenGLFramebuffer *)fbo;
+	// Without FBO_ARB / GLES3, this will collide with bind_for_read, but there's nothing
+	// in ES 2.0 that actually separate them anyway of course, so doesn't matter.
+	fbo_bind_fb_target(false, fb->handle);
+	// Always restore viewport after render target binding
+	glstate.viewport.restore();
+}
+
+void OpenGLContext::BindBackbufferAsRenderTarget() {
+	fbo_unbind();
+}
+
+// For GL_EXT_FRAMEBUFFER_BLIT and similar.
+void OpenGLContext::BindFramebufferForRead(Framebuffer *fbo) {
+	OpenGLFramebuffer *fb = (OpenGLFramebuffer *)fbo;
+	fbo_bind_fb_target(true, fb->handle);
+}
+
+void OpenGLContext::CopyFramebufferImage(Framebuffer *fbsrc, int srcLevel, int srcX, int srcY, int srcZ, Framebuffer *fbdst, int dstLevel, int dstX, int dstY, int dstZ, int width, int height, int depth) {
+	OpenGLFramebuffer *src = (OpenGLFramebuffer *)fbsrc;
+	OpenGLFramebuffer *dst = (OpenGLFramebuffer *)fbdst;
+#if defined(USING_GLES2)
+#ifndef IOS
+	glCopyImageSubDataOES(
+		src->color_texture, GL_TEXTURE_2D, srcLevel, srcX, srcY, srcZ,
+		dst->color_texture, GL_TEXTURE_2D, dstLevel, dstX, dstY, dstZ,
+		width, height, depth);
+	return;
+#endif
+#else
+	if (gl_extensions.ARB_copy_image) {
+		glCopyImageSubData(
+			src->color_texture, GL_TEXTURE_2D, srcLevel, srcX, srcY, srcZ,
+			dst->color_texture, GL_TEXTURE_2D, dstLevel, dstX, dstY, dstZ,
+			width, height, depth);
+		return;
+	} else if (gl_extensions.NV_copy_image) {
+		// Older, pre GL 4.x NVIDIA cards.
+		glCopyImageSubDataNV(
+			src->color_texture, GL_TEXTURE_2D, srcLevel, srcX, srcY, srcZ,
+			dst->color_texture, GL_TEXTURE_2D, dstLevel, dstX, dstY, dstZ,
+			width, height, depth);
+		return;
+	}
+#endif
+}
+
+bool OpenGLContext::BlitFramebuffer(Framebuffer *fbsrc, int srcX1, int srcY1, int srcX2, int srcY2, Framebuffer *fbdst, int dstX1, int dstY1, int dstX2, int dstY2, int channels, FBBlitFilter linearFilter) {
+	OpenGLFramebuffer *src = (OpenGLFramebuffer *)fbsrc;
+	OpenGLFramebuffer *dst = (OpenGLFramebuffer *)fbdst;
+	GLuint bits = 0;
+	if (channels & FB_COLOR_BIT)
+		bits |= GL_COLOR_BUFFER_BIT;
+	if (channels & FB_DEPTH_BIT)
+		bits |= GL_DEPTH_BUFFER_BIT;
+	if (channels & FB_STENCIL_BIT)
+		bits |= GL_STENCIL_BUFFER_BIT;
+	BindFramebufferAsRenderTarget(dst);
+	BindFramebufferForRead(src);
+	if (gl_extensions.GLES3 || gl_extensions.ARB_framebuffer_object) {
+		glBlitFramebuffer(srcX1, srcY1, srcX2, srcY2, dstX1, dstY1, dstX2, dstY2, bits, linearFilter == FB_BLIT_LINEAR ? GL_LINEAR : GL_NEAREST);
+#if defined(USING_GLES2) && defined(__ANDROID__)  // We only support this extension on Android, it's not even available on PC.
+		return true;
+	} else if (gl_extensions.NV_framebuffer_blit) {
+		glBlitFramebufferNV(srcX1, srcY1, srcX2, srcY2, dstX1, dstY1, dstX2, dstY2, bits, linearFilter == FB_BLIT_LINEAR ? GL_LINEAR : GL_NEAREST);
+#endif // defined(USING_GLES2) && defined(__ANDROID__)
+		return true;
+	} else {
+		return false;
+	}
+}
+
+uintptr_t OpenGLContext::GetFramebufferAPITexture(Framebuffer *fbo, int channelBits, int attachment) {
+	// Unimplemented
+	return 0;
+}
+
+void OpenGLContext::BindFramebufferAsTexture(Framebuffer *fbo, int binding, FBChannel channelBit, int color) {
+	OpenGLFramebuffer *fb = (OpenGLFramebuffer *)fbo;
+	// glActiveTexture(GL_TEXTURE0 + binding);
+	switch (channelBit) {
+	case FB_COLOR_BIT:
+	default:
+		if (fbo) {
+			glBindTexture(GL_TEXTURE_2D, fb->color_texture);
+		}
+		break;
+	}
+}
+
+OpenGLFramebuffer::~OpenGLFramebuffer() {
+	if (gl_extensions.ARB_framebuffer_object || gl_extensions.IsGLES) {
+		glBindFramebuffer(GL_FRAMEBUFFER, handle);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+		glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, 0);
+		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+		glDeleteFramebuffers(1, &handle);
+		glDeleteRenderbuffers(1, &z_stencil_buffer);
+		glDeleteRenderbuffers(1, &z_buffer);
+		glDeleteRenderbuffers(1, &stencil_buffer);
+	} else if (gl_extensions.EXT_framebuffer_object) {
+#ifndef USING_GLES2
+		glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, handle);
+		glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+		glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER_EXT, 0);
+		glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, 0);
+		glDeleteFramebuffersEXT(1, &handle);
+		glDeleteRenderbuffersEXT(1, &z_stencil_buffer);
+#endif
+	}
+
+	glDeleteTextures(1, &color_texture);
+}
+
+void OpenGLContext::GetFramebufferDimensions(Framebuffer *fbo, int *w, int *h) {
+	OpenGLFramebuffer *fb = (OpenGLFramebuffer *)fbo;
+	*w = fb->width;
+	*h = fb->height;
+}
+
+uint32_t OpenGLContext::GetDataFormatSupport(DataFormat fmt) const {
+	switch (fmt) {
+	case DataFormat::B8G8R8A8_UNORM:
+		return FMT_RENDERTARGET | FMT_TEXTURE;
+	case DataFormat::R4G4B4A4_UNORM_PACK16:
+		return FMT_RENDERTARGET | FMT_TEXTURE;
+	case DataFormat::B4G4R4A4_UNORM_PACK16:
+		return 0;  // native support
+	case DataFormat::A4B4G4R4_UNORM_PACK16:
+		return 0;  // Can support this if _REV formats are supported.
+
+	case DataFormat::R8G8B8A8_UNORM:
+		return FMT_RENDERTARGET | FMT_TEXTURE | FMT_INPUTLAYOUT;
+
+	case DataFormat::R32_FLOAT:
+	case DataFormat::R32G32_FLOAT:
+	case DataFormat::R32G32B32_FLOAT:
+	case DataFormat::R32G32B32A32_FLOAT:
+		return FMT_INPUTLAYOUT;
+
+	case DataFormat::R8_UNORM:
+		return 0;
+	case DataFormat::BC1_RGBA_UNORM_BLOCK:
+	case DataFormat::BC2_UNORM_BLOCK:
+	case DataFormat::BC3_UNORM_BLOCK:
+		return FMT_TEXTURE;
+	default:
+		return 0;
+	}
+}
+
+}  // namespace Draw

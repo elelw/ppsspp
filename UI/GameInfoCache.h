@@ -24,9 +24,12 @@
 #include "file/file_util.h"
 #include "Core/ELF/ParamSFO.h"
 #include "Core/Loaders.h"
+#include "UI/TextureUtil.h"
 
-class Thin3DContext;
-class Thin3DTexture;
+namespace Draw {
+	class DrawContext;
+	class Texture;
+}
 class PrioritizedWorkQueue;
 
 // A GameInfo holds information about a game, and also lets you do things that the VSH
@@ -140,11 +143,11 @@ public:
 
 	// Pre read the data, create a texture the next time (GL thread..)
 	std::string iconTextureData;
-	Thin3DTexture *iconTexture;
+	ManagedTexture *iconTexture;
 	std::string pic0TextureData;
-	Thin3DTexture *pic0Texture;
+	ManagedTexture *pic0Texture;
 	std::string pic1TextureData;
-	Thin3DTexture *pic1Texture;
+	ManagedTexture *pic1Texture;
 
 	std::string sndFileData;
 
@@ -190,7 +193,7 @@ public:
 	// but filled in later asynchronously in the background. So keep calling this,
 	// redrawing the UI often. Only set flags to GAMEINFO_WANTBG or WANTSND if you really want them 
 	// because they're big. bgTextures and sound may be discarded over time as well.
-	GameInfo *GetInfo(Thin3DContext *thin3d, const std::string &gamePath, int wantFlags);
+	GameInfo *GetInfo(Draw::DrawContext *draw, const std::string &gamePath, int wantFlags);
 	void FlushBGs();  // Gets rid of all BG textures. Also gets rid of bg sounds.
 
 	PrioritizedWorkQueue *WorkQueue() { return gameInfoWQ_; }
@@ -200,7 +203,7 @@ public:
 private:
 	void Init();
 	void Shutdown();
-	void SetupTexture(GameInfo *info, std::string &textureData, Thin3DContext *thin3d, Thin3DTexture *&tex, double &loadTime);
+	void SetupTexture(GameInfo *info, std::string &textureData, Draw::DrawContext *draw, ManagedTexture *&tex, double &loadTime);
 
 	// Maps ISO path to info.
 	std::map<std::string, GameInfo *> info_;

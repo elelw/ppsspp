@@ -212,6 +212,7 @@ public:
 	bool bDisableSlowFramebufEffects;
 	bool bFragmentTestCache;
 	int iSplineBezierQuality; // 0 = low , 1 = Intermediate , 2 = High
+	bool bHardwareTessellation;
 	std::string sPostShaderName;  // Off for off.
 	bool bGfxDebugOutput;
 
@@ -360,14 +361,7 @@ public:
 	float fAnalogLimiterDeadzone;
 	// GLES backend-specific hacks. Not saved to the ini file, do not add checkboxes. Will be made into
 	// proper options when good enough.
-	// PrescaleUV:
-	//   * Applies UV scale/offset when decoding verts. Get rid of some work in the vertex shader,
-	//     saves a uniform upload and is a prerequisite for future optimized hybrid
-	//     (SW skinning, HW transform) skinning.
-	//   * Still has major problems so off by default - need to store tex scale/offset per DeferredDrawCall,
-	//     which currently isn't done so if texscale/offset isn't static (like in Tekken 6) things go wrong.
-	bool bPrescaleUV;
-	bool bDisableAlphaTest;  // Helps PowerVR immensely, breaks some graphics
+	bool bDisableAlphaTest;  // Helps PowerVR performance immensely, breaks some graphics
 	// End GLES hacks.
 
 	// Use the hardware scaler to scale up the image to save fillrate. Similar to Windows' window size, really.

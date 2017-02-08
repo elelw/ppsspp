@@ -40,6 +40,7 @@
 #include "Core/Util/GameManager.h"
 #include "Core/Config.h"
 #include "UI/GameInfoCache.h"
+#include "UI/TextureUtil.h"
 
 GameInfoCache *g_gameInfoCache;
 
@@ -730,7 +731,7 @@ void GameInfoCache::WaitUntilDone(GameInfo *info) {
 
 
 // Runs on the main thread.
-GameInfo *GameInfoCache::GetInfo(Thin3DContext *thin3d, const std::string &gamePath, int wantFlags) {
+GameInfo *GameInfoCache::GetInfo(Draw::DrawContext *draw, const std::string &gamePath, int wantFlags) {
 	GameInfo *info = 0;
 
 	auto iter = info_.find(gamePath);
@@ -740,16 +741,16 @@ GameInfo *GameInfoCache::GetInfo(Thin3DContext *thin3d, const std::string &gameP
 			// Need to start over. We'll just add a new work item.
 			goto again;
 		}
-		if (thin3d && info->iconDataLoaded) {
-			SetupTexture(info, info->iconTextureData, thin3d, info->iconTexture, info->timeIconWasLoaded);
+		if (draw && info->iconDataLoaded) {
+			SetupTexture(info, info->iconTextureData, draw, info->iconTexture, info->timeIconWasLoaded);
 			info->iconDataLoaded = false;
 		}
-		if (thin3d && info->pic0DataLoaded) {
-			SetupTexture(info, info->pic0TextureData, thin3d, info->pic0Texture, info->timePic0WasLoaded);
+		if (draw && info->pic0DataLoaded) {
+			SetupTexture(info, info->pic0TextureData, draw, info->pic0Texture, info->timePic0WasLoaded);
 			info->pic0DataLoaded = false;
 		}
-		if (thin3d && info->pic1DataLoaded) {
-			SetupTexture(info, info->pic1TextureData, thin3d, info->pic1Texture, info->timePic1WasLoaded);
+		if (draw && info->pic1DataLoaded) {
+			SetupTexture(info, info->pic1TextureData, draw, info->pic1Texture, info->timePic1WasLoaded);
 			info->pic1DataLoaded = false;
 		}
 		iter->second->lastAccessedTime = time_now_d();
@@ -781,10 +782,11 @@ again:
 	return info;
 }
 
-void GameInfoCache::SetupTexture(GameInfo *info, std::string &textureData, Thin3DContext *thin3d, Thin3DTexture *&tex, double &loadTime) {
+void GameInfoCache::SetupTexture(GameInfo *info, std::string &textureData, Draw::DrawContext *thin3d, ManagedTexture *&tex, double &loadTime) {
+	using namespace Draw;
 	if (textureData.size()) {
 		if (!tex) {
-			tex = thin3d->CreateTextureFromFileData((const uint8_t *)textureData.data(), (int)textureData.size(), T3DImageType::DETECT);
+			tex = CreateTextureFromFileData(thin3d, (const uint8_t *)textureData.data(), (int)textureData.size(), ImageFileType::DETECT);
 			if (tex) {
 				loadTime = time_now_d();
 			}

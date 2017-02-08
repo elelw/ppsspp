@@ -22,6 +22,7 @@
 #include "i18n/i18n.h"
 #include "math/math_util.h"
 #include "profiler/profiler.h"
+#include "thin3d/thin3d.h"
 #include "Common/ColorConv.h"
 #include "Core/Config.h"
 #include "Core/Host.h"
@@ -140,17 +141,20 @@ void SamplerCache::DeviceRestore(VulkanContext *vulkan) {
 	vulkan_ = vulkan;
 }
 
-TextureCacheVulkan::TextureCacheVulkan(VulkanContext *vulkan)
-	: vulkan_(vulkan), samplerCache_(vulkan), secondCacheSizeEstimate_(0),
-	  clearCacheNextFrame_(false), lowMemoryMode_(false), texelsScaledThisFrame_(0) {
+TextureCacheVulkan::TextureCacheVulkan(Draw::DrawContext *draw, VulkanContext *vulkan)
+	: TextureCacheCommon(draw),
+		vulkan_(vulkan),
+		samplerCache_(vulkan),
+		secondCacheSizeEstimate_(0),
+	  clearCacheNextFrame_(false),
+		lowMemoryMode_(false),
+		texelsScaledThisFrame_(0) {
 	timesInvalidatedAllThisFrame_ = 0;
 	lastBoundTexture = nullptr;
 	decimationCounter_ = TEXCACHE_DECIMATION_INTERVAL;
 	allocator_ = new VulkanDeviceAllocator(vulkan_, TEXCACHE_MIN_SLAB_SIZE, TEXCACHE_MAX_SLAB_SIZE);
 
 	SetupTextureDecoder();
-
-	nextTexture_ = nullptr;
 }
 
 TextureCacheVulkan::~TextureCacheVulkan() {
@@ -634,9 +638,9 @@ void TextureCacheVulkan::SetTextureFramebuffer(TexCacheEntry *entry, VirtualFram
 
 		nextTexture_ = entry;
 	} else {
-		if (framebuffer->fbo_vk) {
-			delete framebuffer->fbo_vk;
-			framebuffer->fbo_vk = 0;
+		if (framebuffer->fbo) {
+			delete framebuffer->fbo;
+			framebuffer->fbo = nullptr;
 		}
 		gstate_c.needShaderTexClamp = false;
 	}
@@ -968,7 +972,7 @@ void TextureCacheVulkan::SetTexture() {
 			// Always rehash in this case, if one changed the rest all probably did.
 			rehash = true;
 			entry->status &= ~TexCacheEntry::STATUS_CLUT_RECHECK;
-		} else if ((gstate_c.textureChanged & TEXCHANGE_UPDATED) == 0) {
+		} else if (!gstate_c.IsDirty(DIRTY_TEXTURE_IMAGE)) {
 			// Okay, just some parameter change - the data didn't change, no need to rehash.
 			rehash = false;
 		}
@@ -1257,7 +1261,7 @@ void TextureCacheVulkan::BuildTexture(TexCacheEntry *const entry, VulkanPushBuff
 	}
 
 	// Don't scale the PPGe texture.
-	if (entry->addr > 0x05000000 && entry->addr < 0x08800000)
+	if (entry->addr > 0x05000000 && entry->addr < PSP_GetKernelMemoryEnd())
 		scaleFactor = 1;
 	if ((entry->status & TexCacheEntry::STATUS_CHANGE_FREQUENT) != 0 && scaleFactor != 1) {
 		// Remember for later that we /wanted/ to scale this texture.

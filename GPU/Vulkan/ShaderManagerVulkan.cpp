@@ -157,7 +157,7 @@ static void ConvertProjMatrixToVulkan(Matrix4x4 &in, bool invertedX, bool invert
 }
 
 ShaderManagerVulkan::ShaderManagerVulkan(VulkanContext *vulkan)
-	: vulkan_(vulkan), lastVShader_(nullptr), lastFShader_(nullptr), globalDirty_(0xFFFFFFFF) {
+	: vulkan_(vulkan), lastVShader_(nullptr), lastFShader_(nullptr) {
 	codeBuffer_ = new char[16384];
 	uboAlignment_ = vulkan_->GetPhysicalDeviceProperties().limits.minUniformBufferOffsetAlignment;
 	memset(&ub_base, 0, sizeof(ub_base));
@@ -187,7 +187,7 @@ uint32_t ShaderManagerVulkan::PushBoneBuffer(VulkanPushBuffer *dest, VkBuffer *b
 	return dest->PushAligned(&ub_bones, sizeof(ub_bones), uboAlignment_, buf);
 }
 
-void ShaderManagerVulkan::BaseUpdateUniforms(int dirtyUniforms) {
+void ShaderManagerVulkan::BaseUpdateUniforms(uint64_t dirtyUniforms) {
 	if (dirtyUniforms & DIRTY_TEXENV) {
 		Uint8x3ToFloat4(ub_base.texEnvColor, gstate.texenvcolor);
 	}
@@ -213,18 +213,12 @@ void ShaderManagerVulkan::BaseUpdateUniforms(int dirtyUniforms) {
 		const float heightFactor = (float)h * invH;
 
 		// First wrap xy, then half texel xy (for clamp.)
-		const float texclamp[4] = {
-			widthFactor,
-			heightFactor,
-			invW * 0.5f,
-			invH * 0.5f,
-		};
-		const float texclampoff[2] = {
-			gstate_c.curTextureXOffset * invW,
-			gstate_c.curTextureYOffset * invH,
-		};
-		CopyFloat4(ub_base.texClamp, texclamp);
-		CopyFloat2(ub_base.texClampOffset, texclampoff);
+		ub_base.texClamp[0] = widthFactor;
+		ub_base.texClamp[1] = heightFactor;
+		ub_base.texClamp[2] = invW * 0.5f;
+		ub_base.texClamp[3] = invH * 0.5f;
+		ub_base.texClampOffset[0] = gstate_c.curTextureXOffset * invW;
+		ub_base.texClampOffset[1] = gstate_c.curTextureYOffset * invH;
 	}
 
 	if (dirtyUniforms & DIRTY_PROJMATRIX) {
@@ -292,6 +286,11 @@ void ShaderManagerVulkan::BaseUpdateUniforms(int dirtyUniforms) {
 		CopyFloat3(ub_base.fogCoef_stencil, fogcoef_stencil);
 	}
 
+	// Note - this one is not in lighting but in transformCommon as it has uses beyond lighting
+	if (dirtyUniforms & DIRTY_MATAMBIENTALPHA) {
+		Uint8x3ToFloat4_AlphaUint8(ub_base.matAmbient, gstate.materialambient, gstate.getMaterialAmbientA());
+	}
+
 	// Texturing
 	if (dirtyUniforms & DIRTY_UVSCALEOFFSET) {
 		const float invW = 1.0f / (float)gstate_c.curTextureWidth;
@@ -300,56 +299,10 @@ void ShaderManagerVulkan::BaseUpdateUniforms(int dirtyUniforms) {
 		const int h = gstate.getTextureHeight(0);
 		const float widthFactor = (float)w * invW;
 		const float heightFactor = (float)h * invH;
-
-		static const float rescale[4] = { 1.0f, 2 * 127.5f / 128.f, 2 * 32767.5f / 32768.f, 1.0f };
-		const float factor = rescale[(gstate.vertType & GE_VTYPE_TC_MASK) >> GE_VTYPE_TC_SHIFT];
-
-		float uvscaleoff[4];
-
-		switch (gstate.getUVGenMode()) {
-		case GE_TEXMAP_TEXTURE_COORDS:
-			// Not sure what GE_TEXMAP_UNKNOWN is, but seen in Riviera.  Treating the same as GE_TEXMAP_TEXTURE_COORDS works.
-		case GE_TEXMAP_UNKNOWN:
-			if (g_Config.bPrescaleUV) {
-				// We are here but are prescaling UV in the decoder? Let's do the same as in the other case
-				// except consider *Scale and *Off to be 1 and 0.
-				uvscaleoff[0] = widthFactor;
-				uvscaleoff[1] = heightFactor;
-				uvscaleoff[2] = 0.0f;
-				uvscaleoff[3] = 0.0f;
-			} else {
-				uvscaleoff[0] = gstate_c.uv.uScale * factor * widthFactor;
-				uvscaleoff[1] = gstate_c.uv.vScale * factor * heightFactor;
-				uvscaleoff[2] = gstate_c.uv.uOff * widthFactor;
-				uvscaleoff[3] = gstate_c.uv.vOff * heightFactor;
-			}
-			break;
-
-			// These two work the same whether or not we prescale UV.
-
-		case GE_TEXMAP_TEXTURE_MATRIX:
-			// We cannot bake the UV coord scale factor in here, as we apply a matrix multiplication
-			// before this is applied, and the matrix multiplication may contain translation. In this case
-			// the translation will be scaled which breaks faces in Hexyz Force for example.
-			// So I've gone back to applying the scale factor in the shader.
-			uvscaleoff[0] = widthFactor;
-			uvscaleoff[1] = heightFactor;
-			uvscaleoff[2] = 0.0f;
-			uvscaleoff[3] = 0.0f;
-			break;
-
-		case GE_TEXMAP_ENVIRONMENT_MAP:
-			// In this mode we only use uvscaleoff to scale to the texture size.
-			uvscaleoff[0] = widthFactor;
-			uvscaleoff[1] = heightFactor;
-			uvscaleoff[2] = 0.0f;
-			uvscaleoff[3] = 0.0f;
-			break;
-
-		default:
-			ERROR_LOG_REPORT(G3D, "Unexpected UV gen mode: %d", gstate.getUVGenMode());
-		}
-		CopyFloat4(ub_base.uvScaleOffset, uvscaleoff);
+		ub_base.uvScaleOffset[0] = widthFactor;
+		ub_base.uvScaleOffset[1] = heightFactor;
+		ub_base.uvScaleOffset[2] = 0.0f;
+		ub_base.uvScaleOffset[3] = 0.0f;
 	}
 
 	if (dirtyUniforms & DIRTY_DEPTHRANGE) {
@@ -377,19 +330,17 @@ void ShaderManagerVulkan::BaseUpdateUniforms(int dirtyUniforms) {
 			viewZInvScale = 0.0;
 		}
 
-		float data[4] = { viewZScale, viewZCenter, viewZCenter, viewZInvScale };
-		CopyFloat4(ub_base.depthRange, data);
+		ub_base.depthRange[0] = viewZScale;
+		ub_base.depthRange[1] = viewZCenter;
+		ub_base.depthRange[2] = viewZCenter;
+		ub_base.depthRange[3] = viewZInvScale;
 	}
 }
 
-void ShaderManagerVulkan::LightUpdateUniforms(int dirtyUniforms) {
+void ShaderManagerVulkan::LightUpdateUniforms(uint64_t dirtyUniforms) {
 	// Lighting
 	if (dirtyUniforms & DIRTY_AMBIENT) {
 		Uint8x3ToFloat4_AlphaUint8(ub_lights.ambientColor, gstate.ambientcolor, gstate.getAmbientA());
-	}
-	if (dirtyUniforms & DIRTY_MATAMBIENTALPHA) {
-		// Note - this one is not in lighting but in transformCommon as it has uses beyond lighting
-		Uint8x3ToFloat4_AlphaUint8(ub_base.matAmbient, gstate.materialambient, gstate.getMaterialAmbientA());
 	}
 	if (dirtyUniforms & DIRTY_MATDIFFUSE) {
 		Uint8x3ToFloat4(ub_lights.materialDiffuse, gstate.materialdiffuse);
@@ -429,7 +380,7 @@ void ShaderManagerVulkan::LightUpdateUniforms(int dirtyUniforms) {
 	}
 }
 
-void ShaderManagerVulkan::BoneUpdateUniforms(int dirtyUniforms) {
+void ShaderManagerVulkan::BoneUpdateUniforms(uint64_t dirtyUniforms) {
 	for (int i = 0; i < 8; i++) {
 		if (dirtyUniforms & (DIRTY_BONEMATRIX0 << i)) {
 			ConvertMatrix4x3To4x4(ub_bones.bones[i], gstate.boneMatrix + 12 * i);
@@ -458,7 +409,7 @@ void ShaderManagerVulkan::Clear() {
 void ShaderManagerVulkan::ClearShaders() {
 	Clear();
 	DirtyShader();
-	DirtyUniform(0xFFFFFFFF);
+	gstate_c.Dirty(DIRTY_ALL_UNIFORMS);
 }
 
 void ShaderManagerVulkan::DirtyShader() {
@@ -474,14 +425,17 @@ void ShaderManagerVulkan::DirtyLastShader() { // disables vertex arrays
 	lastFShader_ = nullptr;
 }
 
-uint32_t ShaderManagerVulkan::UpdateUniforms() {
-	uint32_t dirty = globalDirty_;
-	if (globalDirty_) {
-		BaseUpdateUniforms(dirty);
-		LightUpdateUniforms(dirty);
-		BoneUpdateUniforms(dirty);
+uint64_t ShaderManagerVulkan::UpdateUniforms() {
+	uint64_t dirty = gstate_c.GetDirtyUniforms();
+	if (dirty != 0) {
+		if (dirty & DIRTY_BASE_UNIFORMS)
+			BaseUpdateUniforms(dirty);
+		if (dirty & DIRTY_LIGHT_UNIFORMS)
+			LightUpdateUniforms(dirty);
+		if (dirty & DIRTY_BONE_UNIFORMS)
+			BoneUpdateUniforms(dirty);
 	}
-	globalDirty_ = 0;
+	gstate_c.CleanUniforms();
 	return dirty;
 }
 

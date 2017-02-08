@@ -193,7 +193,10 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Common/ColorConv.cpp \
   $(SRC)/Common/KeyMap.cpp \
   $(SRC)/Common/LogManager.cpp \
-  $(SRC)/Common/MemArena.cpp \
+  $(SRC)/Common/MemArenaAndroid.cpp \
+  $(SRC)/Common/MemArenaDarwin.cpp \
+  $(SRC)/Common/MemArenaWin32.cpp \
+  $(SRC)/Common/MemArenaPosix.cpp \
   $(SRC)/Common/MemoryUtil.cpp \
   $(SRC)/Common/MsgHandler.cpp \
   $(SRC)/Common/FileUtil.cpp \
@@ -223,20 +226,18 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/GPU/Common/PostShader.cpp \
   $(SRC)/GPU/Debugger/Breakpoints.cpp \
   $(SRC)/GPU/Debugger/Stepping.cpp \
-  $(SRC)/GPU/GLES/Framebuffer.cpp \
-  $(SRC)/GPU/GLES/DepalettizeShader.cpp \
+  $(SRC)/GPU/GLES/FramebufferManagerGLES.cpp \
+  $(SRC)/GPU/GLES/DepalettizeShaderGLES.cpp \
   $(SRC)/GPU/GLES/GPU_GLES.cpp.arm \
-  $(SRC)/GPU/GLES/GLStateCache.cpp.arm \
-  $(SRC)/GPU/GLES/FBO.cpp \
-  $(SRC)/GPU/GLES/StencilBuffer.cpp.arm \
-  $(SRC)/GPU/GLES/TextureCache.cpp.arm \
+  $(SRC)/GPU/GLES/StencilBufferGLES.cpp.arm \
+  $(SRC)/GPU/GLES/TextureCacheGLES.cpp.arm \
   $(SRC)/GPU/GLES/DrawEngineGLES.cpp.arm \
-  $(SRC)/GPU/GLES/StateMapping.cpp.arm \
-  $(SRC)/GPU/GLES/ShaderManager.cpp.arm \
-  $(SRC)/GPU/GLES/VertexShaderGenerator.cpp.arm \
-  $(SRC)/GPU/GLES/FragmentShaderGenerator.cpp.arm \
-  $(SRC)/GPU/GLES/FragmentTestCache.cpp.arm \
-  $(SRC)/GPU/GLES/TextureScaler.cpp \
+  $(SRC)/GPU/GLES/StateMappingGLES.cpp.arm \
+  $(SRC)/GPU/GLES/ShaderManagerGLES.cpp.arm \
+  $(SRC)/GPU/GLES/VertexShaderGeneratorGLES.cpp.arm \
+  $(SRC)/GPU/GLES/FragmentShaderGeneratorGLES.cpp.arm \
+  $(SRC)/GPU/GLES/FragmentTestCacheGLES.cpp.arm \
+  $(SRC)/GPU/GLES/TextureScalerGLES.cpp \
   $(SRC)/GPU/Null/NullGpu.cpp \
   $(SRC)/GPU/Software/Clipper.cpp \
   $(SRC)/GPU/Software/Lighting.cpp \
@@ -415,6 +416,7 @@ LOCAL_SRC_FILES := \
   $(SRC)/UI/OnScreenDisplay.cpp \
   $(SRC)/UI/ProfilerDraw.cpp \
   $(SRC)/UI/NativeApp.cpp \
+  $(SRC)/UI/TextureUtil.cpp \
   $(SRC)/UI/ComboKeyMappingScreen.cpp
 
 ifneq ($(SKIPAPP),1)
@@ -525,7 +527,7 @@ endif
 
 $(call import-module,libzip)
 $(call import-module,native)
-$(call import-module,glslang)
+$(call import-module,glslang-build)
 
 ifeq ($(ANDROID_NDK_PROFILER),1)
   $(call import-module,android-ndk-profiler)

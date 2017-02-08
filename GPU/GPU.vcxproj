@@ -83,7 +83,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
-      <AdditionalIncludeDirectories>../common;..;../ext;../ext/native;../ext/native/ext/glew;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>../common;..;../ext;../ext/native;../ext/glew;../ext/snappy;</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_CRTDBG_MAP_ALLOC;USING_WIN_UI;_CRT_SECURE_NO_WARNINGS;WIN32;_ARCH_32=1;_M_IX86=1;_DEBUG;_LIB;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
       <FloatingPointModel>Fast</FloatingPointModel>
@@ -105,7 +105,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
-      <AdditionalIncludeDirectories>../common;..;../ext;../ext/native;../ext/native/ext/glew;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>../common;..;../ext;../ext/native;../ext/glew;../ext/snappy;</AdditionalIncludeDirectories>
       <EnableEnhancedInstructionSet>NotSet</EnableEnhancedInstructionSet>
       <FloatingPointModel>Fast</FloatingPointModel>
       <OmitFramePointers>false</OmitFramePointers>
@@ -131,7 +131,7 @@
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <AdditionalIncludeDirectories>../common;..;../ext;../ext/native;../ext/native/ext/glew;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>../common;..;../ext;../ext/native;../ext/glew;../ext/snappy;</AdditionalIncludeDirectories>
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
       <FloatingPointModel>Fast</FloatingPointModel>
@@ -157,7 +157,7 @@
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <AdditionalIncludeDirectories>../common;..;../ext;../ext/native;../ext/native/ext/glew;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>../common;..;../ext;../ext/native;../ext/glew;../ext/snappy;</AdditionalIncludeDirectories>
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <EnableEnhancedInstructionSet>NotSet</EnableEnhancedInstructionSet>
       <FloatingPointModel>Fast</FloatingPointModel>
@@ -206,32 +206,26 @@
     <ClInclude Include="Debugger\Stepping.h" />
     <ClInclude Include="Directx9\DepalettizeShaderDX9.h" />
     <ClInclude Include="Directx9\GPU_DX9.h" />
-    <ClInclude Include="Directx9\helper\dx_state.h" />
-    <ClInclude Include="Directx9\helper\dx_fbo.h" />
-    <ClInclude Include="Directx9\helper\global.h" />
     <ClInclude Include="Directx9\PixelShaderGeneratorDX9.h" />
     <ClInclude Include="Directx9\FramebufferDX9.h" />
     <ClInclude Include="Directx9\ShaderManagerDX9.h" />
-    <ClInclude Include="Directx9\StateMappingDX9.h" />
     <ClInclude Include="Directx9\TextureCacheDX9.h" />
     <ClInclude Include="Directx9\TextureScalerDX9.h" />
     <ClInclude Include="Directx9\DrawEngineDX9.h" />
     <ClInclude Include="Directx9\VertexShaderGeneratorDX9.h" />
     <ClInclude Include="ge_constants.h" />
     <ClInclude Include="GeDisasm.h" />
-    <ClInclude Include="GLES\DepalettizeShader.h" />
-    <ClInclude Include="GLES\FBO.h" />
-    <ClInclude Include="GLES\FragmentShaderGenerator.h" />
-    <ClInclude Include="GLES\FragmentTestCache.h" />
-    <ClInclude Include="GLES\Framebuffer.h" />
+    <ClInclude Include="GLES\DepalettizeShaderGLES.h" />
+    <ClInclude Include="GLES\FragmentShaderGeneratorGLES.h" />
+    <ClInclude Include="GLES\FragmentTestCacheGLES.h" />
+    <ClInclude Include="GLES\FramebufferManagerGLES.h" />
     <ClInclude Include="GLES\GPU_GLES.h" />
-    <ClInclude Include="GLES\GLStateCache.h" />
-    <ClInclude Include="GLES\ShaderManager.h" />
-    <ClInclude Include="GLES\StateMapping.h" />
-    <ClInclude Include="GLES\TextureCache.h" />
-    <ClInclude Include="GLES\TextureScaler.h" />
+    <ClInclude Include="GLES\ShaderManagerGLES.h" />
+    <ClInclude Include="GLES\StateMappingGLES.h" />
+    <ClInclude Include="GLES\TextureCacheGLES.h" />
+    <ClInclude Include="GLES\TextureScalerGLES.h" />
     <ClInclude Include="GLES\DrawEngineGLES.h" />
-    <ClInclude Include="GLES\VertexShaderGenerator.h" />
+    <ClInclude Include="GLES\VertexShaderGeneratorGLES.h" />
     <ClInclude Include="GPU.h" />
     <ClInclude Include="GPUCommon.h" />
     <ClInclude Include="GPUInterface.h" />
@@ -296,9 +290,6 @@
     <ClCompile Include="Debugger\Stepping.cpp" />
     <ClCompile Include="Directx9\DepalettizeShaderDX9.cpp" />
     <ClCompile Include="Directx9\GPU_DX9.cpp" />
-    <ClCompile Include="Directx9\helper\dx_state.cpp" />
-    <ClCompile Include="Directx9\helper\dx_fbo.cpp" />
-    <ClCompile Include="Directx9\helper\global.cpp" />
     <ClCompile Include="Directx9\PixelShaderGeneratorDX9.cpp" />
     <ClCompile Include="Directx9\FramebufferDX9.cpp" />
     <ClCompile Include="Directx9\ShaderManagerDX9.cpp" />
@@ -309,20 +300,18 @@
     <ClCompile Include="Directx9\DrawEngineDX9.cpp" />
     <ClCompile Include="Directx9\VertexShaderGeneratorDX9.cpp" />
     <ClCompile Include="GeDisasm.cpp" />
-    <ClCompile Include="GLES\DepalettizeShader.cpp" />
-    <ClCompile Include="GLES\FBO.cpp" />
-    <ClCompile Include="GLES\FragmentShaderGenerator.cpp" />
-    <ClCompile Include="GLES\FragmentTestCache.cpp" />
-    <ClCompile Include="GLES\Framebuffer.cpp" />
+    <ClCompile Include="GLES\DepalettizeShaderGLES.cpp" />
+    <ClCompile Include="GLES\FragmentShaderGeneratorGLES.cpp" />
+    <ClCompile Include="GLES\FragmentTestCacheGLES.cpp" />
+    <ClCompile Include="GLES\FramebufferManagerGLES.cpp" />
     <ClCompile Include="GLES\GPU_GLES.cpp" />
-    <ClCompile Include="GLES\GLStateCache.cpp" />
-    <ClCompile Include="GLES\ShaderManager.cpp" />
-    <ClCompile Include="GLES\StateMapping.cpp" />
-    <ClCompile Include="GLES\StencilBuffer.cpp" />
-    <ClCompile Include="GLES\TextureCache.cpp" />
-    <ClCompile Include="GLES\TextureScaler.cpp" />
+    <ClCompile Include="GLES\ShaderManagerGLES.cpp" />
+    <ClCompile Include="GLES\StateMappingGLES.cpp" />
+    <ClCompile Include="GLES\StencilBufferGLES.cpp" />
+    <ClCompile Include="GLES\TextureCacheGLES.cpp" />
+    <ClCompile Include="GLES\TextureScalerGLES.cpp" />
     <ClCompile Include="GLES\DrawEngineGLES.cpp" />
-    <ClCompile Include="GLES\VertexShaderGenerator.cpp" />
+    <ClCompile Include="GLES\VertexShaderGeneratorGLES.cpp" />
     <ClCompile Include="GPU.cpp" />
     <ClCompile Include="GPUCommon.cpp" />
     <ClCompile Include="GPUState.cpp" />

@@ -22,7 +22,10 @@
 #include "Core/System.h"
 #include "Core/Config.h"
 #include "Core/Reporting.h"
-#include "GPU/Directx9/StateMappingDX9.h"
+
+#include "gfx/d3d9_shader.h"
+#include "gfx/d3d9_state.h"
+
 #include "GPU/Directx9/GPU_DX9.h"
 #include "GPU/Directx9/ShaderManagerDX9.h"
 #include "GPU/Directx9/TextureCacheDX9.h"
@@ -47,6 +50,8 @@ static const D3DBLEND dxBlendFactorLookup[(size_t)BlendFactor::COUNT] = {
 	D3DBLEND_BLENDFACTOR,
 	D3DBLEND_INVBLENDFACTOR,
 #if 0   // TODO: Requires D3D9Ex
+	D3DBLEND_SRCCOLOR2,
+	D3DBLEND_INVSRCCOLOR2,
 	D3DBLEND_SRCCOLOR2,
 	D3DBLEND_INVSRCCOLOR2,
 #else
@@ -109,7 +114,7 @@ bool DrawEngineDX9::ApplyShaderBlending() {
 
 	fboTexNeedBind_ = true;
 
-	shaderManager_->DirtyUniform(DIRTY_SHADERBLEND);
+	gstate_c.Dirty(DIRTY_SHADERBLEND);
 	return true;
 }
 
@@ -123,13 +128,13 @@ inline void DrawEngineDX9::ResetShaderBlending() {
 void DrawEngineDX9::ApplyDrawState(int prim) {
 	// TODO: All this setup is soon so expensive that we'll need dirty flags, or simply do it in the command writes where we detect dirty by xoring. Silly to do all this work on every drawcall.
 
-	if (gstate_c.textureChanged != TEXCHANGE_UNCHANGED && !gstate.isModeClear() && gstate.isTextureMapEnabled()) {
+	if (gstate_c.IsDirty(DIRTY_TEXTURE_IMAGE | DIRTY_TEXTURE_PARAMS) && !gstate.isModeClear() && gstate.isTextureMapEnabled()) {
 		textureCache_->SetTexture();
-		gstate_c.textureChanged = TEXCHANGE_UNCHANGED;
+		gstate_c.Clean(DIRTY_TEXTURE_IMAGE | DIRTY_TEXTURE_PARAMS);
 		if (gstate_c.needShaderTexClamp) {
 			// We will rarely need to set this, so let's do it every time on use rather than in runloop.
 			// Most of the time non-framebuffer textures will be used which can be clamped themselves.
-			shaderManager_->DirtyUniform(DIRTY_TEXCLAMP);
+			gstate_c.Dirty(DIRTY_TEXCLAMP);
 		}
 	}
 
@@ -172,7 +177,7 @@ void DrawEngineDX9::ApplyDrawState(int prim) {
 			dxBlendFactorLookup[(size_t)blendState.srcColor], dxBlendFactorLookup[(size_t)blendState.dstColor],
 			dxBlendFactorLookup[(size_t)blendState.srcAlpha], dxBlendFactorLookup[(size_t)blendState.dstAlpha]);
 		if (blendState.dirtyShaderBlend) {
-			shaderManager_->DirtyUniform(DIRTY_SHADERBLEND);
+			gstate_c.Dirty(DIRTY_SHADERBLEND);
 		}
 		if (blendState.useBlendColor) {
 			dxstate.blendColor.setDWORD(blendState.blendColor);
@@ -295,10 +300,10 @@ void DrawEngineDX9::ApplyDrawState(int prim) {
 
 	dxstate.viewport.set(vpAndScissor.viewportX, vpAndScissor.viewportY, vpAndScissor.viewportW, vpAndScissor.viewportH, depthMin, depthMax);
 	if (vpAndScissor.dirtyProj) {
-		shaderManager_->DirtyUniform(DIRTY_PROJMATRIX);
+		gstate_c.Dirty(DIRTY_PROJMATRIX);
 	}
 	if (vpAndScissor.dirtyDepth) {
-		shaderManager_->DirtyUniform(DIRTY_DEPTHRANGE);
+		gstate_c.Dirty(DIRTY_DEPTHRANGE);
 	}
 }
 

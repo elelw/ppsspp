@@ -90,6 +90,7 @@
 #include "UI/MiscScreens.h"
 #include "UI/TiltEventProcessor.h"
 #include "UI/BackgroundAudio.h"
+#include "UI/TextureUtil.h"
 
 #if !defined(MOBILE_DEVICE)
 #include "Common/KeyMap.h"
@@ -117,7 +118,7 @@ static UI::Theme ui_theme;
 #include "android/android-ndk-profiler/prof.h"
 #endif
 
-Thin3DTexture *uiTexture;
+ManagedTexture *uiTexture;
 
 ScreenManager *screenManager;
 std::string config_filename;
@@ -139,17 +140,15 @@ struct PendingMessage {
 
 static recursive_mutex pendingMutex;
 static std::vector<PendingMessage> pendingMessages;
-static Thin3DContext *thin3d;
+static Draw::DrawContext *g_draw;
+static Draw::Pipeline *colorPipeline;
+static Draw::Pipeline *texColorPipeline;
 static UIContext *uiContext;
 static std::vector<std::string> inputboxValue;
 
 #ifdef _WIN32
 WindowsAudioBackend *winAudioBackend;
 #endif
-
-Thin3DContext *GetThin3D() {
-	return thin3d;
-}
 
 std::thread *graphicsLoadThread;
 
@@ -524,8 +523,9 @@ void NativeInit(int argc, const char *argv[], const char *savegame_dir, const ch
 }
 
 void NativeInitGraphics(GraphicsContext *graphicsContext) {
+	using namespace Draw;
 	Core_SetGraphicsContext(graphicsContext);
-	thin3d = graphicsContext->CreateThin3DContext();
+	g_draw = graphicsContext->GetDrawContext();
 
 	ui_draw2d.SetAtlas(&ui_atlas);
 	ui_draw2d_front.SetAtlas(&ui_atlas);
@@ -575,10 +575,7 @@ void NativeInitGraphics(GraphicsContext *graphicsContext) {
 	ui_theme.popupTitle.fgColor = 0xFF59BEE3;
 #endif
 
-	ui_draw2d.Init(thin3d);
-	ui_draw2d_front.Init(thin3d);
-
-	uiTexture = thin3d->CreateTextureFromFile("ui_atlas.zim", T3DImageType::ZIM);
+	uiTexture = CreateTextureFromFile(g_draw, "ui_atlas.zim", ImageFileType::ZIM);
 	if (!uiTexture) {
 		PanicAlert("Failed to load ui_atlas.zim.\n\nPlace it in the directory \"assets\" under your PPSSPP directory.");
 		ELOG("Failed to load ui_atlas.zim");
@@ -591,12 +588,43 @@ void NativeInitGraphics(GraphicsContext *graphicsContext) {
 	uiContext = new UIContext();
 	uiContext->theme = &ui_theme;
 
-	uiContext->Init(thin3d, thin3d->GetShaderSetPreset(SS_TEXTURE_COLOR_2D), thin3d->GetShaderSetPreset(SS_COLOR_2D), uiTexture, &ui_draw2d, &ui_draw2d_front);
+	Draw::InputLayout *inputLayout = ui_draw2d.CreateInputLayout(g_draw);
+	Draw::BlendState *blendNormal = g_draw->CreateBlendState({ true, 0xF, BlendFactor::SRC_ALPHA, BlendFactor::ONE_MINUS_SRC_ALPHA });
+	Draw::DepthStencilState *depth = g_draw->CreateDepthStencilState({ false, false, Comparison::LESS });
+	Draw::RasterState *rasterNoCull = g_draw->CreateRasterState({});
+
+	PipelineDesc colorDesc{
+		Primitive::TRIANGLE_LIST,
+		{ g_draw->GetVshaderPreset(VS_COLOR_2D), g_draw->GetFshaderPreset(FS_COLOR_2D) },
+		inputLayout, depth, blendNormal, rasterNoCull
+	};
+	PipelineDesc texColorDesc{
+		Primitive::TRIANGLE_LIST,
+		{ g_draw->GetVshaderPreset(VS_TEXTURE_COLOR_2D), g_draw->GetFshaderPreset(FS_TEXTURE_COLOR_2D) },
+		inputLayout, depth, blendNormal, rasterNoCull
+	};
+
+	colorPipeline = g_draw->CreateGraphicsPipeline(colorDesc);
+	texColorPipeline = g_draw->CreateGraphicsPipeline(texColorDesc);
+
+	inputLayout->Release();
+	rasterNoCull->Release();
+	blendNormal->Release();
+	depth->Release();
+
+	ui_draw2d.Init(g_draw, texColorPipeline);
+	ui_draw2d_front.Init(g_draw, texColorPipeline);
+
+	uiContext->Init(g_draw, texColorPipeline, colorPipeline, &ui_draw2d, &ui_draw2d_front);
+	RasterStateDesc desc;
+	desc.cull = CullMode::NONE;
+	desc.frontFace = Facing::CCW;
+
 	if (uiContext->Text())
 		uiContext->Text()->SetFont("Tahoma", 20, 0);
 
 	screenManager->setUIContext(uiContext);
-	screenManager->setThin3DContext(thin3d);
+	screenManager->setDrawContext(g_draw);
 
 #ifdef _WIN32
 	winAudioBackend = CreateAudioBackend((AudioBackendType)g_Config.iAudioBackend);
@@ -617,9 +645,8 @@ void NativeShutdownGraphics() {
 	delete g_gameInfoCache;
 	g_gameInfoCache = nullptr;
 
-	if (uiTexture->Release()) {
-		uiTexture = nullptr;
-	}
+	delete uiTexture;
+	uiTexture = nullptr;
 
 	delete uiContext;
 	uiContext = NULL;
@@ -627,10 +654,8 @@ void NativeShutdownGraphics() {
 	ui_draw2d.Shutdown();
 	ui_draw2d_front.Shutdown();
 
-	// TODO: Reconsider this annoying ref counting stuff.
-	if (thin3d->Release()) {
-		thin3d = nullptr;
-	}
+	colorPipeline->Release();
+	texColorPipeline->Release();
 }
 
 void TakeScreenshot() {
@@ -703,6 +728,8 @@ void DrawDownloadsOverlay(UIContext &dc) {
 
 void NativeRender(GraphicsContext *graphicsContext) {
 	g_GameManager.Update();
+	// If uitexture gets reloaded, make sure we use the latest one.
+	uiContext->FrameSetup(uiTexture->GetTexture());
 
 	float xres = dp_xres;
 	float yres = dp_yres;
@@ -743,8 +770,8 @@ void NativeRender(GraphicsContext *graphicsContext) {
 
 	if (resized) {
 		resized = false;
-
 		graphicsContext->Resize();
+
 		// TODO: Move this to new GraphicsContext objects for each backend.
 #ifndef _WIN32
 		if (GetGPUBackend() == GPUBackend::OPENGL) {

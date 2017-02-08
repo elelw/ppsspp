@@ -16,6 +16,7 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include <map>
+#include <d3d9.h>
 
 #include "base/logging.h"
 #include "Common/Log.h"
@@ -23,7 +24,8 @@
 #include "GPU/Directx9/TextureCacheDX9.h"
 #include "GPU/Directx9/DepalettizeShaderDX9.h"
 #include "GPU/Common/DepalettizeShaderCommon.h"
-#include "GPU/Directx9/helper/global.h"
+#include "gfx/d3d9_shader.h"
+#include "gfx/d3d9_state.h"
 
 namespace DX9 {
 
@@ -51,7 +53,7 @@ static const char *depalVShaderHLSL =
 
 DepalShaderCacheDX9::DepalShaderCacheDX9() : vertexShader_(nullptr) {
 	std::string errorMessage;
-	if (!DX9::CompileVertexShader(depalVShaderHLSL, &vertexShader_, nullptr, errorMessage)) {
+	if (!DX9::CompileVertexShader(pD3Ddevice, depalVShaderHLSL, &vertexShader_, nullptr, errorMessage)) {
 		ERROR_LOG(G3D, "error compling depal vshader: %s", errorMessage.c_str());
 	}
 }
@@ -89,7 +91,7 @@ LPDIRECT3DTEXTURE9 DepalShaderCacheDX9::GetClutTexture(GEPaletteFormat clutForma
 		usage = D3DUSAGE_DYNAMIC;  // TODO: Switch to using a staging texture?
 	}
 
-	HRESULT hr = pD3Ddevice->CreateTexture(texturePixels, 1, 1, usage, (D3DFORMAT)D3DFMT(dstFmt), pool, &tex->texture, NULL);
+	HRESULT hr = pD3Ddevice->CreateTexture(texturePixels, 1, 1, usage, dstFmt, pool, &tex->texture, NULL);
 	if (FAILED(hr)) {
 		ERROR_LOG(G3D, "Failed to create D3D texture for depal");
 		delete tex;
@@ -156,7 +158,7 @@ LPDIRECT3DPIXELSHADER9 DepalShaderCacheDX9::GetDepalettizePixelShader(GEPaletteF
 
 	LPDIRECT3DPIXELSHADER9 pshader;
 	std::string errorMessage;
-	if (!CompilePixelShader(buffer, &pshader, NULL, errorMessage)) {
+	if (!CompilePixelShader(pD3Ddevice, buffer, &pshader, NULL, errorMessage)) {
 		ERROR_LOG(G3D, "Failed to compile depal pixel shader: %s\n\n%s", buffer, errorMessage.c_str());
 		delete[] buffer;
 		return nullptr;

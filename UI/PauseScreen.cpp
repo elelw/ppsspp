@@ -69,19 +69,18 @@ void AsyncImageFileView::SetFilename(std::string filename) {
 		textureFailed_ = false;
 		filename_ = filename;
 		if (texture_) {
-			texture_->Release();
+			delete texture_;
 			texture_ = nullptr;
 		}
 	}
 }
 
 void AsyncImageFileView::Draw(UIContext &dc) {
+	using namespace Draw;
 	if (!texture_ && !textureFailed_ && !filename_.empty()) {
-		texture_ = dc.GetThin3DContext()->CreateTextureFromFile(filename_.c_str(), DETECT);
+		texture_ = CreateTextureFromFile(dc.GetDrawContext(), filename_.c_str(), DETECT);
 		if (!texture_)
 			textureFailed_ = true;
-		else if (textureAutoGen_)
-			texture_->AutoGenMipmaps();
 	}
 
 	if (HasFocus()) {
@@ -91,7 +90,7 @@ void AsyncImageFileView::Draw(UIContext &dc) {
 	// TODO: involve sizemode
 	if (texture_) {
 		dc.Flush();
-		dc.GetThin3DContext()->SetTexture(0, texture_);
+		dc.GetDrawContext()->BindTexture(0, texture_->GetTexture());
 		dc.Draw()->Rect(bounds_.x, bounds_.y, bounds_.w, bounds_.h, color_);
 		dc.Flush();
 		dc.RebindTexture();

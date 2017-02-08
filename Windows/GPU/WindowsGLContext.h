@@ -3,7 +3,9 @@
 #include "Common/CommonWindows.h"
 #include "Windows/GPU/WindowsGraphicsContext.h"
 
-class Thin3DContext;
+namespace Draw {
+	class DrawContext;
+}
 
 class WindowsGLContext : public WindowsGraphicsContext {
 public:
@@ -19,9 +21,10 @@ public:
 
 	void Resize() override;
 
-	Thin3DContext *CreateThin3DContext() override;
+	Draw::DrawContext *GetDrawContext() override { return draw_; }
 
 private:
+	Draw::DrawContext *draw_;
 	HDC hDC;     // Private GDI Device Context
 	HGLRC hRC;   // Permanent Rendering Context
 	HWND hWnd;   // Holds Our Window Handle
@@ -30,5 +33,6 @@ private:
 	HANDLE pauseEvent;
 	HANDLE resumeEvent;
 
-	int xres, yres;
+	int xres;
+	int yres;
 };

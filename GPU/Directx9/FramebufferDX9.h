@@ -23,7 +23,6 @@
 
 #include "d3d9.h"
 
-#include "GPU/Directx9/helper/dx_fbo.h"
 // Keeps track of allocated FBOs.
 // Also provides facilities for drawing and later converting raw
 // pixel data.
@@ -33,6 +32,7 @@
 #include "GPU/GPUCommon.h"
 #include "GPU/Common/FramebufferCommon.h"
 #include "Core/Config.h"
+#include "ext/native/thin3d/thin3d.h"
 
 namespace DX9 {
 
@@ -42,33 +42,31 @@ class ShaderManagerDX9;
 
 class FramebufferManagerDX9 : public FramebufferManagerCommon {
 public:
-	FramebufferManagerDX9();
+	FramebufferManagerDX9(Draw::DrawContext *draw);
 	~FramebufferManagerDX9();
 
-	void SetTextureCache(TextureCacheDX9 *tc) {
-		textureCache_ = tc;
-	}
+	void SetTextureCache(TextureCacheDX9 *tc);
 	void SetShaderManager(ShaderManagerDX9 *sm) {
 		shaderManager_ = sm;
 	}
-	void SetTransformDrawEngine(DrawEngineDX9 *td) {
-		transformDraw_ = td;
+	void SetDrawEngine(DrawEngineDX9 *td) {
+		drawEngine_ = td;
 	}
 
 	virtual void DrawPixels(VirtualFramebuffer *vfb, int dstX, int dstY, const u8 *srcPixels, GEBufferFormat srcPixelFormat, int srcStride, int width, int height) override;
 	virtual void DrawFramebufferToOutput(const u8 *srcPixels, GEBufferFormat srcPixelFormat, int srcStride, bool applyPostShader) override;
 	
-	void DrawActiveTexture(LPDIRECT3DTEXTURE9 texture, float x, float y, float w, float h, float destW, float destH, float u0, float v0, float u1, float v1, int uvRotation);
+	void DrawActiveTexture(float x, float y, float w, float h, float destW, float destH, float u0, float v0, float u1, float v1, int uvRotation);
 
 	void DestroyAllFBOs(bool forceDelete);
 
 	void EndFrame();
-	void Resized();
+	void Resized() override;
 	void DeviceLost();
 	void CopyDisplayToOutput();
-	void ReformatFramebufferFrom(VirtualFramebuffer *vfb, GEBufferFormat old);
+	void ReformatFramebufferFrom(VirtualFramebuffer *vfb, GEBufferFormat old) override;
 
-	void BlitFramebufferDepth(VirtualFramebuffer *src, VirtualFramebuffer *dst);
+	void BlitFramebufferDepth(VirtualFramebuffer *src, VirtualFramebuffer *dst) override;
 
 	void BindFramebufferColor(int stage, VirtualFramebuffer *framebuffer, int flags);
 
@@ -79,17 +77,13 @@ public:
 
 	virtual bool NotifyStencilUpload(u32 addr, int size, bool skipZero = false) override;
 
-	void DestroyFramebuf(VirtualFramebuffer *vfb) override;
-	void ResizeFramebufFBO(VirtualFramebuffer *vfb, u16 w, u16 h, bool force = false, bool skipCopy = false) override;
-
 	bool GetCurrentFramebuffer(GPUDebugBuffer &buffer, GPUDebugFramebufferType type, int maxRes);
 	bool GetCurrentDepthbuffer(GPUDebugBuffer &buffer);
 	bool GetCurrentStencilbuffer(GPUDebugBuffer &buffer);
-	static bool GetOutputFramebuffer(GPUDebugBuffer &buffer);
+	bool GetOutputFramebuffer(GPUDebugBuffer &buffer);
 
 	virtual void RebindFramebuffer() override;
 
-	FBO_DX9 *GetTempFBO(u16 w, u16 h, FBOColorDepth depth = FBO_8888);
 	LPDIRECT3DSURFACE9 GetOffscreenSurface(LPDIRECT3DSURFACE9 similarSurface, VirtualFramebuffer *vfb);
 	LPDIRECT3DSURFACE9 GetOffscreenSurface(D3DFORMAT fmt, u32 w, u32 h);
 
@@ -102,9 +96,6 @@ protected:
 	// Used by ReadFramebufferToMemory and later framebuffer block copies
 	void BlitFramebuffer(VirtualFramebuffer *dst, int dstX, int dstY, VirtualFramebuffer *src, int srcX, int srcY, int w, int h, int bpp) override;
 
-	void NotifyRenderFramebufferCreated(VirtualFramebuffer *vfb) override;
-	void NotifyRenderFramebufferSwitched(VirtualFramebuffer *prevVfb, VirtualFramebuffer *vfb, bool isClearingDepth) override;
-	void NotifyRenderFramebufferUpdated(VirtualFramebuffer *vfb, bool vfbFormatChanged) override;
 	bool CreateDownloadTempBuffer(VirtualFramebuffer *nvfb) override;
 	void UpdateDownloadTempBuffer(VirtualFramebuffer *nvfb) override;
 
@@ -113,16 +104,20 @@ private:
 	void CompileDraw2DProgram();
 	void DestroyDraw2DProgram();
 
-	void SetNumExtraFBOs(int num);
-
 	void PackFramebufferDirectx9_(VirtualFramebuffer *vfb, int x, int y, int w, int h);
 	void PackDepthbuffer(VirtualFramebuffer *vfb, int x, int y, int w, int h);
 	static bool GetRenderTargetFramebuffer(LPDIRECT3DSURFACE9 renderTarget, LPDIRECT3DSURFACE9 offscreen, int w, int h, GPUDebugBuffer &buffer);
-	
+
+	LPDIRECT3DDEVICE9 device_;
+
 	// Used by DrawPixels
 	LPDIRECT3DTEXTURE9 drawPixelsTex_;
 	int drawPixelsTexW_;
 	int drawPixelsTexH_;
+
+	LPDIRECT3DVERTEXSHADER9 pFramebufferVertexShader;
+	LPDIRECT3DPIXELSHADER9 pFramebufferPixelShader;
+	LPDIRECT3DVERTEXDECLARATION9 pFramebufferVertexDecl;
 
 	u8 *convBuf;
 
@@ -131,17 +126,17 @@ private:
 	LPDIRECT3DVERTEXSHADER9 stencilUploadVS_;
 	bool stencilUploadFailed_;
 
-	TextureCacheDX9 *textureCache_;
+	TextureCacheDX9 *textureCacheDX9_;
 	ShaderManagerDX9 *shaderManager_;
-	DrawEngineDX9 *transformDraw_;
+	DrawEngineDX9 *drawEngine_;
 	
 	// Used by post-processing shader
-	std::vector<FBO *> extraFBOs_;
+	std::vector<Draw::Framebuffer *> extraFBOs_;
 
 	bool resized_;
 
 	struct TempFBO {
-		FBO_DX9 *fbo;
+		Draw::Framebuffer *fbo;
 		int last_frame_used;
 	};
 	struct OffscreenSurface {

@@ -29,7 +29,7 @@
 #include "GPU/Directx9/FramebufferDX9.h"
 #include "GPU/Directx9/ShaderManagerDX9.h"
 #include "GPU/Directx9/DepalettizeShaderDX9.h"
-#include "GPU/Directx9/helper/dx_state.h"
+#include "gfx/d3d9_state.h"
 #include "GPU/Common/FramebufferCommon.h"
 #include "GPU/Common/TextureDecoder.h"
 #include "Core/Config.h"
@@ -62,7 +62,18 @@ namespace DX9 {
 #define TEXCACHE_MIN_PRESSURE 16 * 1024 * 1024  // Total in VRAM
 #define TEXCACHE_SECOND_MIN_PRESSURE 4 * 1024 * 1024
 
-TextureCacheDX9::TextureCacheDX9() : secondCacheSizeEstimate_(0), clearCacheNextFrame_(false), lowMemoryMode_(false), texelsScaledThisFrame_(0) {
+static const D3DVERTEXELEMENT9 g_FramebufferVertexElements[] = {
+	{ 0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
+	{ 0, 12, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0 },
+	D3DDECL_END()
+};
+
+TextureCacheDX9::TextureCacheDX9(Draw::DrawContext *draw)
+	: TextureCacheCommon(draw),
+		secondCacheSizeEstimate_(0),
+		clearCacheNextFrame_(false),
+		lowMemoryMode_(false),
+		texelsScaledThisFrame_(0) {
 	timesInvalidatedAllThisFrame_ = 0;
 	lastBoundTexture = INVALID_TEX;
 	decimationCounter_ = TEXCACHE_DECIMATION_INTERVAL;
@@ -84,9 +95,11 @@ TextureCacheDX9::TextureCacheDX9() : secondCacheSizeEstimate_(0), clearCacheNext
 	SetupTextureDecoder();
 
 	nextTexture_ = nullptr;
+	pD3Ddevice->CreateVertexDeclaration(g_FramebufferVertexElements, &pFramebufferVertexDecl);
 }
 
 TextureCacheDX9::~TextureCacheDX9() {
+	pFramebufferVertexDecl->Release();
 	Clear(true);
 }
 
@@ -127,7 +140,7 @@ void TextureCacheDX9::DeleteTexture(TexCache::iterator it) {
 
 void TextureCacheDX9::ForgetLastTexture() {
 	lastBoundTexture = INVALID_TEX;
-	gstate_c.textureChanged |= TEXCHANGE_PARAMSONLY;
+	gstate_c.Dirty(DIRTY_TEXTURE_PARAMS);
 }
 
 // Removes old textures.
@@ -560,9 +573,9 @@ void TextureCacheDX9::SetTextureFramebuffer(TexCacheEntry *entry, VirtualFramebu
 
 		nextTexture_ = entry;
 	} else {
-		if (framebuffer->fbo_dx9) {
-			fbo_destroy(framebuffer->fbo_dx9);
-			framebuffer->fbo_dx9 = 0;
+		if (framebuffer->fbo) {
+			delete framebuffer->fbo;
+			framebuffer->fbo = nullptr;
 		}
 		pD3Ddevice->SetTexture(0, NULL);
 		gstate_c.needShaderTexClamp = false;
@@ -662,8 +675,8 @@ public:
 		UV uv;
 	};
 
-	TextureShaderApplierDX9(LPDIRECT3DPIXELSHADER9 pshader, float bufferW, float bufferH, int renderW, int renderH, float xoff, float yoff)
-		: pshader_(pshader), bufferW_(bufferW), bufferH_(bufferH), renderW_(renderW), renderH_(renderH) {
+	TextureShaderApplierDX9(LPDIRECT3DPIXELSHADER9 pshader, LPDIRECT3DVERTEXDECLARATION9 decl, float bufferW, float bufferH, int renderW, int renderH, float xoff, float yoff)
+		: pshader_(pshader), decl_(decl), bufferW_(bufferW), bufferH_(bufferH), renderW_(renderW), renderH_(renderH) {
 		static const Pos pos[4] = {
 			{-1,  1, 0},
 			{ 1,  1, 0},
@@ -724,7 +737,7 @@ public:
 	void Use(LPDIRECT3DVERTEXSHADER9 vshader) {
 		pD3Ddevice->SetPixelShader(pshader_);
 		pD3Ddevice->SetVertexShader(vshader);
-		pD3Ddevice->SetVertexDeclaration(pFramebufferVertexDecl);
+		pD3Ddevice->SetVertexDeclaration(decl_);
 	}
 
 	void Shade() {
@@ -736,7 +749,8 @@ public:
 		pD3Ddevice->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
 		pD3Ddevice->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
 
-		DXSetViewport(0, 0, renderW_, renderH_);
+		D3DVIEWPORT9 vp{ 0, 0, (DWORD)renderW_, (DWORD)renderH_, 0.0f, 1.0f };
+		pD3Ddevice->SetViewport(&vp);
 		HRESULT hr = pD3Ddevice->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, 2, verts_, (3 + 2) * sizeof(float));
 		if (FAILED(hr)) {
 			ERROR_LOG_REPORT(G3D, "Depal render failed: %08x", hr);
@@ -747,6 +761,7 @@ public:
 
 protected:
 	LPDIRECT3DPIXELSHADER9 pshader_;
+	LPDIRECT3DVERTEXDECLARATION9 decl_;
 	PosUV verts_[4];
 	float bufferW_;
 	float bufferH_;
@@ -764,14 +779,14 @@ void TextureCacheDX9::ApplyTextureFramebuffer(TexCacheEntry *entry, VirtualFrame
 	if (pshader) {
 		LPDIRECT3DTEXTURE9 clutTexture = depalShaderCache_->GetClutTexture(clutFormat, clutHash_, clutBuf_);
 
-		FBO_DX9 *depalFBO = framebufferManager_->GetTempFBO(framebuffer->renderWidth, framebuffer->renderHeight, FBO_8888);
-		fbo_bind_as_render_target(depalFBO);
+		Draw::Framebuffer *depalFBO = framebufferManager_->GetTempFBO(framebuffer->renderWidth, framebuffer->renderHeight, Draw::FBO_8888);
+		draw_->BindFramebufferAsRenderTarget(depalFBO);
 		shaderManager_->DirtyLastShader();
 
 		float xoff = -0.5f / framebuffer->renderWidth;
 		float yoff = 0.5f / framebuffer->renderHeight;
 
-		TextureShaderApplierDX9 shaderApply(pshader, framebuffer->bufferWidth, framebuffer->bufferHeight, framebuffer->renderWidth, framebuffer->renderHeight, xoff, yoff);
+		TextureShaderApplierDX9 shaderApply(pshader, pFramebufferVertexDecl, framebuffer->bufferWidth, framebuffer->bufferHeight, framebuffer->renderWidth, framebuffer->renderHeight, xoff, yoff);
 		shaderApply.ApplyBounds(gstate_c.vertBounds, gstate_c.curTextureXOffset, gstate_c.curTextureYOffset, xoff, yoff);
 		shaderApply.Use(depalShaderCache_->GetDepalettizeVertexShader());
 
@@ -787,7 +802,7 @@ void TextureCacheDX9::ApplyTextureFramebuffer(TexCacheEntry *entry, VirtualFrame
 
 		shaderApply.Shade();
 
-		fbo_bind_color_as_texture(depalFBO, 0);
+		draw_->BindFramebufferAsTexture(depalFBO, 0, Draw::FB_COLOR_BIT, 0);
 
 		const u32 bytesPerColor = clutFormat == GE_CMODE_32BIT_ABGR8888 ? sizeof(u32) : sizeof(u16);
 		const u32 clutTotalColors = clutMaxBytes_ / bytesPerColor;
@@ -931,7 +946,7 @@ void TextureCacheDX9::SetTexture(bool force) {
 			// Always rehash in this case, if one changed the rest all probably did.
 			rehash = true;
 			entry->status &= ~TexCacheEntry::STATUS_CLUT_RECHECK;
-		} else if ((gstate_c.textureChanged & TEXCHANGE_UPDATED) == 0) {
+		} else if (!gstate_c.IsDirty(DIRTY_TEXTURE_IMAGE)) {
 			// Okay, just some parameter change - the data didn't change, no need to rehash.
 			rehash = false;
 		}
@@ -1235,7 +1250,7 @@ void TextureCacheDX9::BuildTexture(TexCacheEntry *const entry, bool replaceImage
 	}
 
 	// Don't scale the PPGe texture.
-	if (entry->addr > 0x05000000 && entry->addr < 0x08800000)
+	if (entry->addr > 0x05000000 && entry->addr < PSP_GetKernelMemoryEnd())
 		scaleFactor = 1;
 	if ((entry->status & TexCacheEntry::STATUS_CHANGE_FREQUENT) != 0 && scaleFactor != 1) {
 		// Remember for later that we /wanted/ to scale this texture.
@@ -1340,7 +1355,7 @@ ReplacedTextureFormat FromD3D9Format(u32 fmt) {
 	}
 }
 
-u32 ToD3D9Format(ReplacedTextureFormat fmt) {
+D3DFORMAT ToD3D9Format(ReplacedTextureFormat fmt) {
 	switch (fmt) {
 	case ReplacedTextureFormat::F_5650:
 		return D3DFMT_R5G6B5;
@@ -1369,9 +1384,9 @@ void TextureCacheDX9::LoadTextureLevel(TexCacheEntry &entry, ReplacedTexture &re
 		}
 		int levels = scaleFactor == 1 ? maxLevel + 1 : 1;
 		int tw = w, th = h;
-		D3DFORMAT tfmt = (D3DFORMAT)D3DFMT(dstFmt);
+		D3DFORMAT tfmt = (D3DFORMAT)(dstFmt);
 		if (replaced.GetSize(level, tw, th)) {
-			tfmt = (D3DFORMAT)D3DFMT(ToD3D9Format(replaced.Format(level)));
+			tfmt = ToD3D9Format(replaced.Format(level));
 		} else {
 			tw *= scaleFactor;
 			th *= scaleFactor;

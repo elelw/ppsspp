@@ -27,7 +27,7 @@
 
 #define QUAD_INDICES_MAX 65536
 
-DrawEngineCommon::DrawEngineCommon() : dec_(nullptr) {
+DrawEngineCommon::DrawEngineCommon() : dec_(nullptr), decOptions_{} {
 	quadIndices_ = new u16[6 * QUAD_INDICES_MAX];
 	decJitCache_ = new VertexDecoderJitCache();
 }
@@ -124,7 +124,7 @@ void DrawEngineCommon::ApplyClearToMemory(int x1, int y1, int x2, int y2, u32 cl
 	const int width = x2 - x1;
 
 	// Simple, but often alpha is different and gums up the works.
-	if (singleByteClear) {
+	if (singleByteClear && (bpp == 4 || clearColor == 0)) {
 		const int byteStride = stride * bpp;
 		const int byteWidth = width * bpp;
 		addr += x1 * bpp;
@@ -140,6 +140,8 @@ void DrawEngineCommon::ApplyClearToMemory(int x1, int y1, int x2, int y2, u32 cl
 		}
 
 		// This will most often be true - rarely is the width not aligned.
+		// TODO: We should really use non-temporal stores here to avoid the cache,
+		// as it's unlikely that these bytes will be read.
 		if ((width & 3) == 0 && (x1 & 3) == 0) {
 			u64 val64 = clearColor | ((u64)clearColor << 32);
 			int xstride = 2;
@@ -188,7 +190,6 @@ bool DrawEngineCommon::TestBoundingBox(void* control_points, int vertexCount, u3
 	// Try to skip NormalizeVertices if it's pure positions. No need to bother with a vertex decoder
 	// and a large vertex format.
 	if ((vertType & 0xFFFFFF) == GE_VTYPE_POS_FLOAT) {
-		// memcpy(verts, control_points, 12 * vertexCount);
 		verts = (float *)control_points;
 	} else if ((vertType & 0xFFFFFF) == GE_VTYPE_POS_8BIT) {
 		const s8 *vtx = (const s8 *)control_points;
@@ -438,8 +439,8 @@ u32 DrawEngineCommon::NormalizeVertices(u8 *outPtr, u8 *bufPtr, const u8 *inPtr,
 			if (vertType & GE_VTYPE_TC_MASK) {
 				reader.ReadUV(sv.uv);
 			} else {
-				sv.uv[0] = 0;  // This will get filled in during tesselation
-				sv.uv[1] = 0;
+				sv.uv[0] = 0.0f;  // This will get filled in during tesselation
+				sv.uv[1] = 0.0f;
 			}
 			if (vertType & GE_VTYPE_COL_MASK) {
 				reader.ReadColor0_8888(sv.color);
@@ -450,8 +451,8 @@ u32 DrawEngineCommon::NormalizeVertices(u8 *outPtr, u8 *bufPtr, const u8 *inPtr,
 				// Normals are generated during tesselation anyway, not sure if any need to supply
 				reader.ReadNrm((float *)&sv.nrm);
 			} else {
-				sv.nrm.x = 0;
-				sv.nrm.y = 0;
+				sv.nrm.x = 0.0f;
+				sv.nrm.y = 0.0f;
 				sv.nrm.z = 1.0f;
 			}
 			reader.ReadPos((float *)&sv.pos);

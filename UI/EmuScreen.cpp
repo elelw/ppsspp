@@ -44,8 +44,7 @@
 #include "Core/System.h"
 #include "GPU/GPUState.h"
 #include "GPU/GPUInterface.h"
-#include "GPU/GLES/FBO.h"
-#include "GPU/GLES/Framebuffer.h"
+#include "GPU/GLES/FramebufferManagerGLES.h"
 #include "Core/HLE/sceCtrl.h"
 #include "Core/HLE/sceDisplay.h"
 #include "Core/HLE/sceSas.h"
@@ -179,7 +178,7 @@ void EmuScreen::bootGame(const std::string &filename) {
 	}
 	// Preserve the existing graphics context.
 	coreParam.graphicsContext = PSP_CoreParameter().graphicsContext;
-	coreParam.thin3d = screenManager()->getThin3DContext();
+	coreParam.thin3d = screenManager()->getDrawContext();
 	coreParam.enableSound = g_Config.bEnableSound;
 	coreParam.fileToStart = filename;
 	coreParam.mountIso = "";
@@ -968,6 +967,8 @@ static void DrawFPS(DrawBuffer *draw2d, const Bounds &bounds) {
 }
 
 void EmuScreen::render() {
+	using namespace Draw;
+
 	if (invalid_) {
 		// It's possible this might be set outside PSP_RunLoopFor().
 		// In this case, we need to double check it here.
@@ -989,18 +990,18 @@ void EmuScreen::render() {
 	bool useBufferedRendering = g_Config.iRenderingMode != FB_NON_BUFFERED_MODE;
 
 	if (!useBufferedRendering) {
-		Thin3DContext *thin3d = screenManager()->getThin3DContext();
-		thin3d->Clear(T3DClear::COLOR | T3DClear::DEPTH | T3DClear::STENCIL, 0xFF000000, 0.0f, 0);
+		DrawContext *draw = screenManager()->getDrawContext();
+		draw->Clear(ClearFlag::COLOR | ClearFlag::DEPTH | ClearFlag::STENCIL, 0xFF000000, 0.0f, 0);
 
-		T3DViewport viewport;
+		Viewport viewport;
 		viewport.TopLeftX = 0;
 		viewport.TopLeftY = 0;
 		viewport.Width = pixel_xres;
 		viewport.Height = pixel_yres;
 		viewport.MaxDepth = 1.0;
 		viewport.MinDepth = 0.0;
-		thin3d->SetViewports(1, &viewport);
-		thin3d->SetTargetSize(pixel_xres, pixel_yres);
+		draw->SetViewports(1, &viewport);
+		draw->SetTargetSize(pixel_xres, pixel_yres);
 	}
 
 	PSP_BeginHostFrame();
@@ -1026,16 +1027,13 @@ void EmuScreen::render() {
 	if (invalid_)
 		return;
 
-	if (useBufferedRendering && GetGPUBackend() == GPUBackend::OPENGL)
-		fbo_unbind();
-
 	if (!osm.IsEmpty() || g_Config.bShowDebugStats || g_Config.iShowFPSCounter || g_Config.bShowTouchControls || g_Config.bShowDeveloperMenu || g_Config.bShowAudioDebug || saveStatePreview_->GetVisibility() != UI::V_GONE || g_Config.bShowFrameProfiler) {
-		Thin3DContext *thin3d = screenManager()->getThin3DContext();
+		DrawContext *thin3d = screenManager()->getDrawContext();
 
 		// This sets up some important states but not the viewport.
 		screenManager()->getUIContext()->Begin();
 
-		T3DViewport viewport;
+		Viewport viewport;
 		viewport.TopLeftX = 0;
 		viewport.TopLeftY = 0;
 		viewport.Width = pixel_xres;

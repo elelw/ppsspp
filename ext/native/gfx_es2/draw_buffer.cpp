@@ -32,41 +32,48 @@ DrawBuffer::~DrawBuffer() {
 	delete [] verts_;
 }
 
-void DrawBuffer::Init(Thin3DContext *t3d) {
+void DrawBuffer::Init(Draw::DrawContext *t3d, Draw::Pipeline *pipeline) {
+	using namespace Draw;
+
 	if (inited_)
 		return;
 
-	t3d_ = t3d;
+	draw_ = t3d;
 	inited_ = true;
 
-	std::vector<Thin3DVertexComponent> components;
-	components.push_back(Thin3DVertexComponent("Position", SEM_POSITION, FLOATx3, 0));
-	components.push_back(Thin3DVertexComponent("TexCoord0", SEM_TEXCOORD0, FLOATx2, 12));
-	components.push_back(Thin3DVertexComponent("Color0", SEM_COLOR0, UNORM8x4, 20));
-
-	Thin3DShader *vshader = t3d_->GetVshaderPreset(VS_TEXTURE_COLOR_2D);
-
-	vformat_ = t3d_->CreateVertexFormat(components, 24, vshader);
-	if (vformat_->RequiresBuffer()) {
-		vbuf_ = t3d_->CreateBuffer(MAX_VERTS * sizeof(Vertex), T3DBufferUsage::DYNAMIC | T3DBufferUsage::VERTEXDATA);
+	if (pipeline->RequiresBuffer()) {
+		vbuf_ = draw_->CreateBuffer(MAX_VERTS * sizeof(Vertex), BufferUsageFlag::DYNAMIC | BufferUsageFlag::VERTEXDATA);
 	} else {
 		vbuf_ = nullptr;
 	}
+}
+
+Draw::InputLayout *DrawBuffer::CreateInputLayout(Draw::DrawContext *t3d) {
+	using namespace Draw;
+	InputLayoutDesc desc = {
+		{
+			{ sizeof(Vertex), false },
+		},
+		{
+			{ 0, SEM_POSITION, DataFormat::R32G32B32_FLOAT, 0 },
+			{ 0, SEM_TEXCOORD0, DataFormat::R32G32_FLOAT, 12 },
+			{ 0, SEM_COLOR0, DataFormat::R8G8B8A8_UNORM, 20 },
+		},
+	};
+
+	return t3d->CreateInputLayout(desc);
 }
 
 void DrawBuffer::Shutdown() {
 	if (vbuf_) {
 		vbuf_->Release();
 	}
-	vformat_->Release();
-
 	inited_ = false;
 }
 
-void DrawBuffer::Begin(Thin3DShaderSet *program, DrawBufferPrimitiveMode dbmode) {
-	shaderSet_ = program;
+void DrawBuffer::Begin(Draw::Pipeline *program) {
+	pipeline_ = program;
 	count_ = 0;
-	mode_ = dbmode;
 }
 
 void DrawBuffer::End() {
@@ -74,7 +81,8 @@ void DrawBuffer::End() {
 }
 
 void DrawBuffer::Flush(bool set_blend_state) {
-	if (!shaderSet_) {
+	using namespace Draw;
+	if (!pipeline_) {
 		ELOG("No program set!");
 		return;
 	}
@@ -82,14 +90,15 @@ void DrawBuffer::Flush(bool set_blend_state) {
 	if (count_ == 0)
 		return;
 
-	shaderSet_->SetMatrix4x4("WorldViewProj", drawMatrix_.getReadPtr());
-
+	pipeline_->SetMatrix4x4("WorldViewProj", drawMatrix_.getReadPtr());
+	draw_->BindPipeline(pipeline_);
 	if (vbuf_) {
-		vbuf_->SubData((const uint8_t *)verts_, 0, sizeof(Vertex) * count_);
+		draw_->UpdateBuffer(vbuf_, (const uint8_t *)verts_, 0, sizeof(Vertex) * count_, Draw::UPDATE_DISCARD);
+		draw_->BindVertexBuffers(0, 1, &vbuf_, nullptr);
 		int offset = 0;
-		t3d_->Draw(mode_ == DBMODE_NORMAL ? PRIM_TRIANGLES : PRIM_LINES, shaderSet_, vformat_, vbuf_, count_, offset);
+		draw_->Draw(count_, offset);
 	} else {
-		t3d_->DrawUP(mode_ == DBMODE_NORMAL ? PRIM_TRIANGLES : PRIM_LINES, shaderSet_, vformat_, (const void *)verts_, count_);
+		draw_->DrawUP((const void *)verts_, count_);
 	}
 	count_ = 0;
 }
@@ -400,7 +409,7 @@ void DrawBuffer::MeasureTextCount(int font, const char *text, int count, float *
 }
 
 void DrawBuffer::MeasureTextRect(int font, const char *text, int count, const Bounds &bounds, float *w, float *h, int align) {
-	if (!text || (uint32_t)font >= atlas->num_fonts) {
+	if (!text || (uint32_t)font >= (uint32_t)atlas->num_fonts) {
 		*w = 0;
 		*h = 0;
 		return;

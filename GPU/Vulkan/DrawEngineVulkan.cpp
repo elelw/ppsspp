@@ -71,16 +71,12 @@ DrawEngineVulkan::DrawEngineVulkan(VulkanContext *vulkan)
 	framebufferManager_(nullptr),
 	numDrawCalls(0),
 	vertexCountInDrawCalls(0),
-	uvScale(nullptr),
 	fboTexNeedBind_(false),
 	fboTexBound_(false),
 	curFrame_(0),
-	nullTexture_(nullptr) {
+	nullTexture_(nullptr),
+	stats_{}  {
 
-	memset(&stats_, 0, sizeof(stats_));
-
-	memset(&decOptions_, 0, sizeof(decOptions_));
-	decOptions_.expandAllUVtoFloat = false;  // this may be a good idea though.
 	decOptions_.expandAllWeightsToFloat = false;
 	decOptions_.expand8BitNormalsToFloat = false;
 
@@ -95,11 +91,9 @@ DrawEngineVulkan::DrawEngineVulkan(VulkanContext *vulkan)
 
 	indexGen.Setup(decIndex);
 
-	if (g_Config.bPrescaleUV) {
-		uvScale = new UVScale[MAX_DEFERRED_DRAW_CALLS];
-	}
-
 	InitDeviceObjects();
+
+	tessDataTransfer = new TessellationDataTransferVulkan();
 }
 
 void DrawEngineVulkan::InitDeviceObjects() {
@@ -202,7 +196,8 @@ DrawEngineVulkan::~DrawEngineVulkan() {
 	FreeMemoryPages(transformedExpanded, 3 * TRANSFORMED_VERTEX_BUFFER_SIZE);
 
 	DestroyDeviceObjects();
-	delete[] uvScale;
+
+	delete tessDataTransfer;
 }
 
 void DrawEngineVulkan::FrameData::Destroy(VulkanContext *vulkan) {
@@ -358,9 +353,7 @@ void DrawEngineVulkan::SubmitPrim(void *verts, void *inds, GEPrimitiveType prim,
 		dc.indexUpperBound = vertexCount - 1;
 	}
 
-	if (uvScale) {
-		uvScale[numDrawCalls] = gstate_c.uv;
-	}
+	uvScale[numDrawCalls] = gstate_c.uv;
 
 	numDrawCalls++;
 	vertexCountInDrawCalls += vertexCount;
@@ -368,7 +361,7 @@ void DrawEngineVulkan::SubmitPrim(void *verts, void *inds, GEPrimitiveType prim,
 	if (prim == GE_PRIM_RECTANGLES && (gstate.getTextureAddress(0) & 0x3FFFFFFF) == (gstate.getFrameBufAddress() & 0x3FFFFFFF)) {
 		// Rendertarget == texture?
 		if (!g_Config.bDisableSlowFramebufEffects) {
-			gstate_c.textureChanged |= TEXCHANGE_PARAMSONLY;
+			gstate_c.Dirty(DIRTY_TEXTURE_PARAMS);
 			Flush(cmd_);
 		}
 	}
@@ -480,18 +473,12 @@ void DrawEngineVulkan::DecodeVerts(VulkanPushBuffer *push, uint32_t *bindOffset,
 		dest = (u8 *)push->Push(vertsToDecode * dec_->GetDecVtxFmt().stride, bindOffset, vkbuf);
 	}
 
-	if (uvScale) {
-		const UVScale origUV = gstate_c.uv;
-		for (int i = 0; i < numDrawCalls; i++) {
-			gstate_c.uv = uvScale[i];
-			DecodeVertsStep(dest, i, decodedVerts);  // Note that this can modify i
-		}
-		gstate_c.uv = origUV;
-	} else {
-		for (int i = 0; i < numDrawCalls; i++) {
-			DecodeVertsStep(dest, i, decodedVerts);  // Note that this can modify i
-		}
+	const UVScale origUV = gstate_c.uv;
+	for (int i = 0; i < numDrawCalls; i++) {
+		gstate_c.uv = uvScale[i];
+		DecodeVertsStep(dest, i, decodedVerts);  // Note that this can modify i
 	}
+	gstate_c.uv = origUV;
 
 	// Sanity check
 	if (indexGen.Prim() < 0) {
@@ -613,7 +600,7 @@ void DrawEngineVulkan::DirtyAllUBOs() {
 	dirtyUniforms_ = DIRTY_BASE_UNIFORMS | DIRTY_LIGHT_UNIFORMS | DIRTY_BONE_UNIFORMS;
 	imageView = VK_NULL_HANDLE;
 	sampler = VK_NULL_HANDLE;
-	gstate_c.textureChanged = TEXCHANGE_UPDATED;
+	gstate_c.Dirty(DIRTY_TEXTURE_IMAGE);
 }
 
 //void DrawEngineVulkan::ApplyDrawStateLate() {
@@ -643,14 +630,14 @@ void DrawEngineVulkan::DoFlush(VkCommandBuffer cmd) {
 	FrameData *frame = &frame_[curFrame_ & 1];
 
 	bool textureNeedsApply = false;
-	if (gstate_c.textureChanged != TEXCHANGE_UNCHANGED && !gstate.isModeClear() && gstate.isTextureMapEnabled()) {
+	if (gstate_c.IsDirty(DIRTY_TEXTURE_IMAGE | DIRTY_TEXTURE_PARAMS) && !gstate.isModeClear() && gstate.isTextureMapEnabled()) {
 		textureCache_->SetTexture();
+		gstate_c.Clean(DIRTY_TEXTURE_IMAGE | DIRTY_TEXTURE_PARAMS);
 		textureNeedsApply = true;
-		gstate_c.textureChanged = TEXCHANGE_UNCHANGED;
 		if (gstate_c.needShaderTexClamp) {
 			// We will rarely need to set this, so let's do it every time on use rather than in runloop.
 			// Most of the time non-framebuffer textures will be used which can be clamped themselves.
-			shaderManager_->DirtyUniform(DIRTY_TEXCLAMP);
+			gstate_c.Dirty(DIRTY_TEXCLAMP);
 		}
 	}
 
@@ -865,7 +852,7 @@ void DrawEngineVulkan::DoFlush(VkCommandBuffer cmd) {
 			int scissorY2 = gstate.getScissorY2() + 1;
 			framebufferManager_->SetSafeSize(scissorX2, scissorY2);
 
-			if (g_Config.bBlockTransferGPU && gstate.isClearModeColorMask() && (gstate.isClearModeAlphaMask() || gstate.FrameBufFormat() == GE_FORMAT_565)) {
+			if (g_Config.bBlockTransferGPU && (gstate_c.featureFlags & GPU_USE_CLEAR_RAM_HACK) && gstate.isClearModeColorMask() && (gstate.isClearModeAlphaMask() || gstate.FrameBufFormat() == GE_FORMAT_565)) {
 				ApplyClearToMemory(scissorX1, scissorY1, scissorX2, scissorY2, result.color);
 			}
 		}
@@ -917,4 +904,8 @@ void DrawEngineVulkan::Resized() {
 
 bool DrawEngineVulkan::IsCodePtrVertexDecoder(const u8 *ptr) const {
 	return decJitCache_->IsInSpace(ptr);
+}
+
+void DrawEngineVulkan::TessellationDataTransferVulkan::SendDataToShader(const float * pos, const float * tex, const float * col, int size, bool hasColor, bool hasTexCoords)
+{
 }

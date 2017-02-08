@@ -100,8 +100,6 @@ enum DoLightComputation {
 bool GenerateVulkanGLSLVertexShader(const ShaderID &id, char *buffer, bool *usesLighting) {
 	char *p = buffer;
 
-	// #define USE_FOR_LOOP
-
 	WRITE(p, "%s", vulkan_glsl_preamble);
 
 	bool highpFog = false;
@@ -110,7 +108,7 @@ bool GenerateVulkanGLSLVertexShader(const ShaderID &id, char *buffer, bool *uses
 	bool isModeThrough = id.Bit(VS_BIT_IS_THROUGH);
 	bool lmode = id.Bit(VS_BIT_LMODE) && !isModeThrough;  // TODO: Different expression than in shaderIDgen
 	bool doTexture = id.Bit(VS_BIT_DO_TEXTURE);
-	bool doTextureProjection = id.Bit(VS_BIT_DO_TEXTURE_PROJ);
+	bool doTextureTransform = id.Bit(VS_BIT_DO_TEXTURE_TRANSFORM);
 
 	GETexMapMode uvGenMode = static_cast<GETexMapMode>(id.Bits(VS_BIT_UVGEN_MODE, 2));
 
@@ -163,7 +161,6 @@ bool GenerateVulkanGLSLVertexShader(const ShaderID &id, char *buffer, bool *uses
 		numBoneWeights = 1 + id.Bits(VS_BIT_BONES, 3);
 		WRITE(p, "%s", boneWeightDecl[numBoneWeights]);
 	}
-	int texFmtScale = id.Bits(VS_BIT_TEXCOORD_FMTSCALE, 2);
 
 	if (useHWTransform)
 		WRITE(p, "layout (location = %d) in vec3 position;\n", PspAttributeLocation::POSITION);
@@ -174,9 +171,12 @@ bool GenerateVulkanGLSLVertexShader(const ShaderID &id, char *buffer, bool *uses
 	if (useHWTransform && hasNormal)
 		WRITE(p, "layout (location = %d) in vec3 normal;\n", PspAttributeLocation::NORMAL);
 
+	bool texcoordInVec3 = false;
 	if (doTexture && hasTexcoord) {
-		if (!useHWTransform && doTextureProjection && !throughmode)
+		if (!useHWTransform && doTextureTransform && !throughmode) {
 			WRITE(p, "layout (location = %d) in vec3 texcoord;\n", PspAttributeLocation::TEXCOORD);
+			texcoordInVec3 = true;
+		}
 		else
 			WRITE(p, "layout (location = %d) in vec2 texcoord;\n", PspAttributeLocation::TEXCOORD);
 	}
@@ -186,19 +186,13 @@ bool GenerateVulkanGLSLVertexShader(const ShaderID &id, char *buffer, bool *uses
 			WRITE(p, "layout (location = %d) in vec3 color1;\n", PspAttributeLocation::COLOR1);
 	}
 
-	bool prescale = g_Config.bPrescaleUV && !throughmode && (uvGenMode == GE_TEXMAP_TEXTURE_COORDS || uvGenMode == GE_TEXMAP_UNKNOWN);
-
 	WRITE(p, "layout (location = 1) %sout vec4 v_color0;\n", shading);
 	if (lmode) {
 		WRITE(p, "layout (location = 2) %sout vec3 v_color1;\n", shading);
 	}
 
 	if (doTexture) {
-		if (doTextureProjection) {
-			WRITE(p, "layout (location = 0) out vec3 v_texcoord;\n");
-		} else {
-			WRITE(p, "layout (location = 0) out vec2 v_texcoord;\n");
-		}
+		WRITE(p, "layout (location = 0) out vec3 v_texcoord;\n");
 	}
 
 	if (enableFog) {
@@ -223,10 +217,10 @@ bool GenerateVulkanGLSLVertexShader(const ShaderID &id, char *buffer, bool *uses
 	if (!useHWTransform) {
 		// Simple pass-through of vertex data to fragment shader
 		if (doTexture) {
-			if (throughmode && doTextureProjection) {
-				WRITE(p, "  v_texcoord = vec3(texcoord, 1.0);\n");
-			} else {
+			if (texcoordInVec3) {
 				WRITE(p, "  v_texcoord = texcoord;\n");
+			} else {
+				WRITE(p, "  v_texcoord = vec3(texcoord, 1.0);\n");
 			}
 		}
 		if (hasColor) {
@@ -431,22 +425,24 @@ bool GenerateVulkanGLSLVertexShader(const ShaderID &id, char *buffer, bool *uses
 			}
 		}
 
+		bool scaleUV = !throughmode && (uvGenMode == GE_TEXMAP_TEXTURE_COORDS || uvGenMode == GE_TEXMAP_UNKNOWN);
+
 		// Step 3: UV generation
 		if (doTexture) {
 			switch (uvGenMode) {
 			case GE_TEXMAP_TEXTURE_COORDS:  // Scale-offset. Easy.
 			case GE_TEXMAP_UNKNOWN: // Not sure what this is, but Riviera uses it.  Treating as coords works.
-				if (prescale) {
+				if (scaleUV) {
 					if (hasTexcoord) {
-						WRITE(p, "  v_texcoord = texcoord;\n");
+						WRITE(p, "  v_texcoord = vec3(texcoord.xy, 0.0);\n");
 					} else {
-						WRITE(p, "  v_texcoord = vec2(0.0);\n");
+						WRITE(p, "  v_texcoord = vec3(0.0);\n");
 					}
 				} else {
 					if (hasTexcoord) {
-						WRITE(p, "  v_texcoord = texcoord * base.uvscaleoffset.xy + base.uvscaleoffset.zw;\n");
+						WRITE(p, "  v_texcoord = vec3(texcoord.xy * base.uvscaleoffset.xy + base.uvscaleoffset.zw, 0.0);\n");
 					} else {
-						WRITE(p, "  v_texcoord = base.uvscaleoffset.zw;\n");
+						WRITE(p, "  v_texcoord = vec3(base.uvscaleoffset.zw, 0.0);\n");
 					}
 				}
 				break;
@@ -460,11 +456,9 @@ bool GenerateVulkanGLSLVertexShader(const ShaderID &id, char *buffer, bool *uses
 					break;
 				case GE_PROJMAP_UV:  // Use unscaled UV as source
 				{
-					// prescale is false here.
+					// scaleUV is false here.
 					if (hasTexcoord) {
-						static const char *rescaleuv[4] = { "", " * 1.9921875", " * 1.999969482421875", "" }; // 2*127.5f/128.f, 2*32767.5f/32768.f, 1.0f};
-						const char *factor = rescaleuv[texFmtScale];
-						temp_tc = StringFromFormat("vec4(texcoord.xy %s, 0.0, 1.0)", factor);
+						temp_tc = "vec4(texcoord.xy, 0.0, 1.0)";
 					} else {
 						temp_tc = "vec4(0.0, 0.0, 0.0, 1.0)";
 					}
@@ -489,7 +483,7 @@ bool GenerateVulkanGLSLVertexShader(const ShaderID &id, char *buffer, bool *uses
 			break;
 
 			case GE_TEXMAP_ENVIRONMENT_MAP:  // Shade mapping - use dots from light sources.
-				WRITE(p, "  v_texcoord = base.uvscaleoffset.xy * vec2(1.0 + dot(normalize(light.pos[%i]), worldnormal), 1.0 + dot(normalize(light.pos[%i]), worldnormal)) * 0.5;\n", ls0, ls1);
+				WRITE(p, "  v_texcoord = vec3(base.uvscaleoffset.xy * vec2(1.0 + dot(normalize(light.pos[%i]), worldnormal), 1.0 + dot(normalize(light.pos[%i]), worldnormal)) * 0.5, 1.0);\n", ls0, ls1);
 				break;
 
 			default:

@@ -19,8 +19,9 @@
 
 #include "GPU/GPUCommon.h"
 #include "GPU/Common/GPUDebugInterface.h"
+#include "thin3d/thin3d.h"
 
-typedef struct {
+struct FormatBuffer {
 	union {
 		u8 *data;
 		u16 *as16;
@@ -42,15 +43,13 @@ typedef struct {
 	inline u32 Get32(int x, int y, int stride) {
 		return as32[x + y * stride];
 	}
-} FormatBuffer;
+};
 
-class ShaderManager;
-class Thin3DContext;
-class Thin3DTexture;
+class ShaderManagerGLES;
 
 class SoftGPU : public GPUCommon {
 public:
-	SoftGPU(GraphicsContext *gfxCtx, Thin3DContext *_thin3D);
+	SoftGPU(GraphicsContext *gfxCtx, Draw::DrawContext *_thin3D);
 	~SoftGPU();
 	void InitClear() override {}
 	void ExecuteOp(u32 op, u32 diff) override;
@@ -97,15 +96,14 @@ protected:
 	void CopyToCurrentFboFromDisplayRam(int srcwidth, int srcheight);
 
 private:
-	void CopyDisplayToOutputInternal();
+	void CopyDisplayToOutputInternal() override;
 
 	bool framebufferDirty_;
 	u32 displayFramebuf_;
 	u32 displayStride_;
 	GEBufferFormat displayFormat_;
 
-	GraphicsContext *gfxCtx_;
-	Thin3DTexture *fbTex;
-	Thin3DContext *thin3d;
+	Draw::Texture *fbTex;
+	Draw::Pipeline *texColor;
 	std::vector<u32> fbTexBuffer;
 };

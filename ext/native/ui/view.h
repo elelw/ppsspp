@@ -34,7 +34,9 @@ class DrawBuffer;
 class Texture;
 class UIContext;
 
-class Thin3DTexture;
+namespace Draw {
+	class Texture;
+}
 
 
 // I don't generally like namespaces but I think we do need one for UI, so many potentially-clashing names.
@@ -823,19 +825,19 @@ private:
 
 // TextureView takes a texture that is assumed to be alive during the lifetime
 // of the view.
-class Thin3DTextureView : public InertView {
+class TextureView : public InertView {
 public:
-	Thin3DTextureView(Thin3DTexture *texture, ImageSizeMode sizeMode, LayoutParams *layoutParams = 0)
+	TextureView(Draw::Texture *texture, ImageSizeMode sizeMode, LayoutParams *layoutParams = 0)
 		: InertView(layoutParams), texture_(texture), color_(0xFFFFFFFF), sizeMode_(sizeMode) {}
 
 	void GetContentDimensions(const UIContext &dc, float &w, float &h) const override;
 	void Draw(UIContext &dc) override;
 
-	void SetTexture(Thin3DTexture *texture) { texture_ = texture; }
+	void SetTexture(Draw::Texture *texture) { texture_ = texture; }
 	void SetColor(uint32_t color) { color_ = color; }
 
 private:
-	Thin3DTexture *texture_;
+	Draw::Texture *texture_;
 	uint32_t color_;
 	ImageSizeMode sizeMode_;
 };

@@ -82,12 +82,12 @@
 #include "GPU/Common/SplineCommon.h"
 #include "GPU/Common/VertexDecoderCommon.h"
 #include "GPU/Common/SoftwareTransformCommon.h"
-#include "GPU/GLES/GLStateCache.h"
-#include "GPU/GLES/FragmentTestCache.h"
-#include "GPU/GLES/StateMapping.h"
-#include "GPU/GLES/TextureCache.h"
+#include "ext/native/gfx/GLStateCache.h"
+#include "GPU/GLES/FragmentTestCacheGLES.h"
+#include "GPU/GLES/StateMappingGLES.h"
+#include "GPU/GLES/TextureCacheGLES.h"
 #include "GPU/GLES/DrawEngineGLES.h"
-#include "GPU/GLES/ShaderManager.h"
+#include "GPU/GLES/ShaderManagerGLES.h"
 #include "GPU/GLES/GPU_GLES.h"
 
 extern const GLuint glprim[8] = {
@@ -126,13 +126,14 @@ DrawEngineGLES::DrawEngineGLES()
 		vertexCountInDrawCalls(0),
 		decodeCounter_(0),
 		dcid_(0),
-		uvScale(nullptr),
 		fboTexNeedBind_(false),
 		fboTexBound_(false) {
+
+	decOptions_.expandAllWeightsToFloat = false;
+	decOptions_.expand8BitNormalsToFloat = false;
+
 	decimationCounter_ = VERTEXCACHE_DECIMATION_INTERVAL;
 	bufferDecimationCounter_ = VERTEXCACHE_NAME_DECIMATION_INTERVAL;
-	memset(&decOptions_, 0, sizeof(decOptions_));
-	decOptions_.expandAllUVtoFloat = false;
 	// Allocate nicely aligned memory. Maybe graphics drivers will
 	// appreciate it.
 	// All this is a LOT of memory, need to see if we can cut down somehow.
@@ -142,13 +143,12 @@ DrawEngineGLES::DrawEngineGLES()
 	transformed = (TransformedVertex *)AllocateMemoryPages(TRANSFORMED_VERTEX_BUFFER_SIZE, MEM_PROT_READ | MEM_PROT_WRITE);
 	transformedExpanded = (TransformedVertex *)AllocateMemoryPages(3 * TRANSFORMED_VERTEX_BUFFER_SIZE, MEM_PROT_READ | MEM_PROT_WRITE);
 
-	if (g_Config.bPrescaleUV) {
-		uvScale = new UVScale[MAX_DEFERRED_DRAW_CALLS];
-	}
 	indexGen.Setup(decIndex);
 
 	InitDeviceObjects();
 	register_gl_resource_holder(this);
+
+	tessDataTransfer = new TessellationDataTransferGLES(gl_extensions.VersionGEThan(3, 0, 0));
 }
 
 DrawEngineGLES::~DrawEngineGLES() {
@@ -160,7 +160,8 @@ DrawEngineGLES::~DrawEngineGLES() {
 	FreeMemoryPages(transformedExpanded, 3 * TRANSFORMED_VERTEX_BUFFER_SIZE);
 
 	unregister_gl_resource_holder(this);
-	delete [] uvScale;
+
+	delete tessDataTransfer;
 }
 
 void DrawEngineGLES::RestoreVAO() {
@@ -327,9 +328,7 @@ void DrawEngineGLES::SubmitPrim(void *verts, void *inds, GEPrimitiveType prim, i
 		dc.indexUpperBound = vertexCount - 1;
 	}
 
-	if (uvScale) {
-		uvScale[numDrawCalls] = gstate_c.uv;
-	}
+	uvScale[numDrawCalls] = gstate_c.uv;
 
 	numDrawCalls++;
 	vertexCountInDrawCalls += vertexCount;
@@ -342,25 +341,19 @@ void DrawEngineGLES::SubmitPrim(void *verts, void *inds, GEPrimitiveType prim, i
 	if (prim == GE_PRIM_RECTANGLES && (gstate.getTextureAddress(0) & 0x3FFFFFFF) == (gstate.getFrameBufAddress() & 0x3FFFFFFF)) {
 		// Rendertarget == texture?
 		if (!g_Config.bDisableSlowFramebufEffects) {
-			gstate_c.textureChanged |= TEXCHANGE_PARAMSONLY;
+			gstate_c.Dirty(DIRTY_TEXTURE_PARAMS);
 			Flush();
 		}
 	}
 }
 
 void DrawEngineGLES::DecodeVerts() {
-	if (uvScale) {
-		const UVScale origUV = gstate_c.uv;
-		for (; decodeCounter_ < numDrawCalls; decodeCounter_++) {
-			gstate_c.uv = uvScale[decodeCounter_];
-			DecodeVertsStep();
-		}
-		gstate_c.uv = origUV;
-	} else {
-		for (; decodeCounter_ < numDrawCalls; decodeCounter_++) {
-			DecodeVertsStep();
-		}
+	const UVScale origUV = gstate_c.uv;
+	for (; decodeCounter_ < numDrawCalls; decodeCounter_++) {
+		gstate_c.uv = uvScale[decodeCounter_];
+		DecodeVertsStep();
 	}
+	gstate_c.uv = origUV;
 	// Sanity check
 	if (indexGen.Prim() < 0) {
 		ERROR_LOG_REPORT(G3D, "DecodeVerts: Failed to deduce prim: %i", indexGen.Prim());
@@ -396,26 +389,15 @@ void DrawEngineGLES::DecodeVertsStep() {
 		//    Expand the lower and upper bounds as we go.
 		int lastMatch = i;
 		const int total = numDrawCalls;
-		if (uvScale) {
-			for (int j = i + 1; j < total; ++j) {
-				if (drawCalls[j].verts != dc.verts)
-					break;
-				if (memcmp(&uvScale[j], &uvScale[i], sizeof(uvScale[0])) != 0)
-					break;
+		for (int j = i + 1; j < total; ++j) {
+			if (drawCalls[j].verts != dc.verts)
+				break;
+			if (memcmp(&uvScale[j], &uvScale[i], sizeof(uvScale[0])) != 0)
+				break;
 
-				indexLowerBound = std::min(indexLowerBound, (int)drawCalls[j].indexLowerBound);
-				indexUpperBound = std::max(indexUpperBound, (int)drawCalls[j].indexUpperBound);
-				lastMatch = j;
-			}
-		} else {
-			for (int j = i + 1; j < total; ++j) {
-				if (drawCalls[j].verts != dc.verts)
-					break;
-
-				indexLowerBound = std::min(indexLowerBound, (int)drawCalls[j].indexLowerBound);
-				indexUpperBound = std::max(indexUpperBound, (int)drawCalls[j].indexUpperBound);
-				lastMatch = j;
-			}
+			indexLowerBound = std::min(indexLowerBound, (int)drawCalls[j].indexLowerBound);
+			indexUpperBound = std::max(indexUpperBound, (int)drawCalls[j].indexUpperBound);
+			lastMatch = j;
 		}
 
 		// 2. Loop through the drawcalls, translating indices as we go.
@@ -543,9 +525,7 @@ ReliableHashType DrawEngineGLES::ComputeHash() {
 			i = lastMatch;
 		}
 	}
-	if (uvScale) {
-		fullhash += DoReliableHash(&uvScale[0], sizeof(uvScale[0]) * numDrawCalls, 0x0123e658);
-	}
+	fullhash += DoReliableHash(&uvScale[0], sizeof(uvScale[0]) * numDrawCalls, 0x0123e658);
 
 	return fullhash;
 }
@@ -689,7 +669,7 @@ void DrawEngineGLES::DoFlush() {
 			useCache = false;
 
 		if (useCache) {
-			u32 id = dcid_;
+			u32 id = dcid_ ^ gstate.getUVGenMode();  // This can have an effect on which UV decoder we need to use! And hence what the decoded data will look like. See #9263
 			auto iter = vai_.find(id);
 			VertexArrayInfo *vai;
 			if (iter != vai_.end()) {
@@ -872,7 +852,11 @@ rotateVBO:
 		SetupDecFmtForDraw(program, dec_->GetDecVtxFmt(), vbo ? 0 : decoded);
 
 		if (useElements) {
-			glDrawElements(glprim[prim], vertexCount, GL_UNSIGNED_SHORT, ebo ? 0 : (GLvoid*)decIndex);
+			if (gstate_c.bezier || gstate_c.spline)
+				// Instanced rendering for instanced tessellation
+				glDrawElementsInstanced(glprim[prim], vertexCount, GL_UNSIGNED_SHORT, ebo ? 0 : (GLvoid*)decIndex, numPatches);
+			else
+				glDrawElements(glprim[prim], vertexCount, GL_UNSIGNED_SHORT, ebo ? 0 : (GLvoid*)decIndex);
 		} else {
 			glDrawArrays(glprim[prim], 0, vertexCount);
 		}
@@ -993,7 +977,7 @@ rotateVBO:
 			int scissorY2 = gstate.getScissorY2() + 1;
 			framebufferManager_->SetSafeSize(scissorX2, scissorY2);
 
-			if (g_Config.bBlockTransferGPU && colorMask && (alphaMask || gstate.FrameBufFormat() == GE_FORMAT_565)) {
+			if (g_Config.bBlockTransferGPU && (gstate_c.featureFlags & GPU_USE_CLEAR_RAM_HACK) && colorMask && (alphaMask || gstate.FrameBufFormat() == GE_FORMAT_565)) {
 				ApplyClearToMemory(scissorX1, scissorY1, scissorX2, scissorY2, clearColor);
 			}
 		}
@@ -1031,13 +1015,6 @@ void DrawEngineGLES::Resized() {
 		delete iter->second;
 	}
 	decoderMap_.clear();
-
-	if (g_Config.bPrescaleUV && !uvScale) {
-		uvScale = new UVScale[MAX_DEFERRED_DRAW_CALLS];
-	} else if (!g_Config.bPrescaleUV && uvScale) {
-		delete uvScale;
-		uvScale = 0;
-	}
 }
 
 GLuint DrawEngineGLES::BindBuffer(const void *p, size_t sz) {
@@ -1139,4 +1116,102 @@ void DrawEngineGLES::DecimateBuffers() {
 
 bool DrawEngineGLES::IsCodePtrVertexDecoder(const u8 *ptr) const {
 	return decJitCache_->IsInSpace(ptr);
+}
+
+void DrawEngineGLES::TessellationDataTransferGLES::SendDataToShader(const float *pos, const float *tex, const float *col, int size, bool hasColor, bool hasTexCoords) {
+#ifndef USING_GLES2
+	if (isAllowTexture1D) {
+		// Position
+		glActiveTexture(GL_TEXTURE3);
+		glBindTexture(GL_TEXTURE_1D, data_tex[0]);
+		glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		if (prevSize < size) {
+			glTexImage1D(GL_TEXTURE_1D, 0, GL_RGB32F, size, 0, GL_RGB, GL_FLOAT, (GLfloat*)pos);
+			prevSize = size;
+		} else {
+			glTexSubImage1D(GL_TEXTURE_1D, 0, 0, size, GL_RGB, GL_FLOAT, (GLfloat*)pos);
+		}
+
+		// Texcoords
+		if (hasTexCoords) {
+			glActiveTexture(GL_TEXTURE4);
+			glBindTexture(GL_TEXTURE_1D, data_tex[1]);
+			glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+			glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+			glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+			glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+			if (prevSizeTex < size) {
+				glTexImage1D(GL_TEXTURE_1D, 0, GL_RGB32F, size, 0, GL_RGB, GL_FLOAT, (GLfloat*)tex);
+				prevSizeTex = size;
+			} else {
+				glTexSubImage1D(GL_TEXTURE_1D, 0, 0, size, GL_RGB, GL_FLOAT, (GLfloat*)tex);
+			}
+		}
+
+		// Color
+		glActiveTexture(GL_TEXTURE5);
+		glBindTexture(GL_TEXTURE_1D, data_tex[2]);
+		glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		int sizeColor = hasColor ? size : 1;
+		if (prevSizeCol < sizeColor) {
+			glTexImage1D(GL_TEXTURE_1D, 0, GL_RGBA32F, sizeColor, 0, GL_RGBA, GL_FLOAT, (GLfloat*)col);
+			prevSizeCol = sizeColor;
+		} else {
+			glTexSubImage1D(GL_TEXTURE_1D, 0, 0, sizeColor, GL_RGBA, GL_FLOAT, (GLfloat*)col);
+		}
+	} else 
+#endif
+	{
+		// Position
+		glActiveTexture(GL_TEXTURE3);
+		glBindTexture(GL_TEXTURE_2D, data_tex[0]);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		if (prevSize < size) {
+			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB32F, size, 1, 0, GL_RGB, GL_FLOAT, (GLfloat*)pos);
+			prevSize = size;
+		} else {
+			glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, size, 1, GL_RGB, GL_FLOAT, (GLfloat*)pos);
+		}
+
+		// Texcoords
+		if (hasTexCoords) {
+			glActiveTexture(GL_TEXTURE4);
+			glBindTexture(GL_TEXTURE_2D, data_tex[1]);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+			if (prevSizeTex < size) {
+				glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB32F, size, 1, 0, GL_RGB, GL_FLOAT, (GLfloat*)tex);
+				prevSizeTex = size;
+			} else {
+				glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, size, 1, GL_RGB, GL_FLOAT, (GLfloat*)tex);
+			}
+		}
+
+		// Color
+		glActiveTexture(GL_TEXTURE5);
+		glBindTexture(GL_TEXTURE_2D, data_tex[2]);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		int sizeColor = hasColor ? size : 1;
+		if (prevSizeCol < sizeColor) {
+			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, sizeColor, 1, 0, GL_RGBA, GL_FLOAT, (GLfloat*)col);
+			prevSizeCol = sizeColor;
+		} else {
+			glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, sizeColor, 1, GL_RGBA, GL_FLOAT, (GLfloat*)col);
+		}
+	}
+	glActiveTexture(GL_TEXTURE0);
 }

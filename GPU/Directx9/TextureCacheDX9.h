@@ -18,10 +18,9 @@
 #pragma once
 
 #include <map>
+#include <d3d9.h>
 
 #include "../Globals.h"
-#include "helper/global.h"
-#include "helper/dx_fbo.h"
 #include "GPU/GPU.h"
 #include "GPU/GPUInterface.h"
 #include "GPU/Directx9/TextureScalerDX9.h"
@@ -37,7 +36,7 @@ class ShaderManagerDX9;
 
 class TextureCacheDX9 : public TextureCacheCommon {
 public:
-	TextureCacheDX9();
+	TextureCacheDX9(Draw::DrawContext *draw);
 	~TextureCacheDX9();
 
 	void SetTexture(bool force = false);
@@ -66,7 +65,7 @@ public:
 	// Only used by Qt UI?
 	bool DecodeTexture(u8 *output, const GPUgstate &state);
 
-	void ForgetLastTexture();
+	void ForgetLastTexture() override;
 
 	void SetFramebufferSamplingParams(u16 bufferWidth, u16 bufferHeight);
 
@@ -111,6 +110,8 @@ private:
 	TextureScalerDX9 scaler;
 
 	u32 clutHash_;
+
+	LPDIRECT3DVERTEXDECLARATION9 pFramebufferVertexDecl;
 
 	LPDIRECT3DTEXTURE9 lastBoundTexture;
 	float maxAnisotropyLevel;

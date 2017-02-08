@@ -86,7 +86,7 @@ private:
 
 class TextureCacheVulkan : public TextureCacheCommon {
 public:
-	TextureCacheVulkan(VulkanContext *vulkan);
+	TextureCacheVulkan(Draw::DrawContext *draw, VulkanContext *vulkan);
 	~TextureCacheVulkan();
 
 	void SetTexture();
@@ -95,8 +95,8 @@ public:
 	void Clear(bool delete_them);
 	void StartFrame();
 	void EndFrame();
-	void Invalidate(u32 addr, int size, GPUInvalidationType type);
-	void InvalidateAll(GPUInvalidationType type);
+	void Invalidate(u32 addr, int size, GPUInvalidationType type) override;
+	void InvalidateAll(GPUInvalidationType type) override;
 	void ClearNextFrame();
 
 	void DeviceLost();
@@ -111,17 +111,17 @@ public:
 	void SetShaderManager(ShaderManagerVulkan *sm) {
 		shaderManager_ = sm;
 	}
-	void SetTransformDrawEngine(DrawEngineVulkan *td) {
-		transformDraw_ = td;
+	void SetDrawEngine(DrawEngineVulkan *td) {
+		drawEngine_ = td;
 	}
 
 	size_t NumLoadedTextures() const {
 		return cache.size();
 	}
 
-	void ForgetLastTexture() {
+	void ForgetLastTexture() override {
 		lastBoundTexture = nullptr;
-		gstate_c.textureChanged |= TEXCHANGE_PARAMSONLY;
+		gstate_c.Dirty(DIRTY_TEXTURE_PARAMS);
 	}
 
 	void ApplyTexture(VulkanPushBuffer *uploadBuffer, VkImageView &imageView, VkSampler &sampler);
@@ -171,7 +171,7 @@ private:
 	FramebufferManagerVulkan *framebufferManager_;
 	DepalShaderCacheVulkan *depalShaderCache_;
 	ShaderManagerVulkan *shaderManager_;
-	DrawEngineVulkan *transformDraw_;
+	DrawEngineVulkan *drawEngine_;
 
 	const char *nextChangeReason_;
 	bool nextNeedsRehash_;

@@ -19,7 +19,7 @@
 
 #include "Core/Reporting.h"
 #include "Core/Config.h"
-#include "GPU/Directx9/helper/global.h"
+#include "gfx/d3d9_shader.h"
 #include "GPU/Directx9/PixelShaderGeneratorDX9.h"
 #include "GPU/ge_constants.h"
 #include "GPU/Common/GPUStateUtils.h"
@@ -112,10 +112,7 @@ bool GenerateFragmentShaderDX9(const ShaderID &id, char *buffer) {
 
 	WRITE(p, "struct PS_IN {\n");
 	if (doTexture) {
-		if (doTextureProjection)
-			WRITE(p, "  float3 v_texcoord: TEXCOORD0;\n");
-		else
-			WRITE(p, "  float2 v_texcoord: TEXCOORD0;\n");
+		WRITE(p, "  float3 v_texcoord: TEXCOORD0;\n");
 	}
 	WRITE(p, "  float4 v_color0: COLOR0;\n");
 	if (lmode) {

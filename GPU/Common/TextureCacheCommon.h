@@ -42,15 +42,22 @@ struct VirtualFramebuffer;
 
 class CachedTextureVulkan;
 
+namespace Draw {
+class DrawContext;
+}
+
 class TextureCacheCommon {
 public:
-	TextureCacheCommon();
+	TextureCacheCommon(Draw::DrawContext *draw);
 	virtual ~TextureCacheCommon();
 
 	void LoadClut(u32 clutAddr, u32 loadBytes);
 	bool GetCurrentClutBuffer(GPUDebugBuffer &buffer);
 
-	virtual bool SetOffsetTexture(u32 offset);
+	virtual bool SetOffsetTexture(u32 offset) = 0;
+	virtual void Invalidate(u32 addr, int size, GPUInvalidationType type) = 0;
+	virtual void InvalidateAll(GPUInvalidationType type) = 0;
+	virtual void ForgetLastTexture() = 0;
 
 	// FramebufferManager keeps TextureCache updated about what regions of memory are being rendered to.
 	void NotifyFramebuffer(u32 address, VirtualFramebuffer *framebuffer, FramebufferNotification msg);
@@ -174,6 +181,7 @@ protected:
 
 	void DecimateVideos();
 
+	Draw::DrawContext *draw_;
 	TextureReplacer replacer;
 
 	TexCache cache;

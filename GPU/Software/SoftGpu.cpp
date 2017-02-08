@@ -38,31 +38,65 @@
 
 const int FB_WIDTH = 480;
 const int FB_HEIGHT = 272;
+
+struct Vertex {
+	float x, y, z;
+	float u, v;
+	uint32_t rgba;
+};
+
 FormatBuffer fb;
 FormatBuffer depthbuf;
 u32 clut[4096];
 
-static Thin3DVertexFormat *vformat = nullptr;
-static Thin3DDepthStencilState *depth = nullptr;
-static Thin3DBuffer *vdata = nullptr;
-static Thin3DBuffer *idata = nullptr;
+static Draw::SamplerState *samplerNearest = nullptr;
+static Draw::SamplerState *samplerLinear = nullptr;
+static Draw::Buffer *vdata = nullptr;
+static Draw::Buffer *idata = nullptr;
 
-SoftGPU::SoftGPU(GraphicsContext *gfxCtx, Thin3DContext *_thin3D)
-	: gfxCtx_(gfxCtx), thin3d(_thin3D)
+SoftGPU::SoftGPU(GraphicsContext *gfxCtx, Draw::DrawContext *draw)
+	: GPUCommon(gfxCtx, draw)
 {
-	fbTex = thin3d->CreateTexture(LINEAR2D, RGBA8888, 480, 272, 1, 1);
+	using namespace Draw;
+	TextureDesc desc{};
+	desc.type = TextureType::LINEAR2D;
+	desc.format = DataFormat::R8G8B8A8_UNORM;
+	desc.width = 480;
+	desc.height = 272;
+	desc.depth = 1;
+	desc.mipLevels = 1;
+	fbTex = draw_->CreateTexture(desc);
 
-	std::vector<Thin3DVertexComponent> components;
-	components.push_back(Thin3DVertexComponent("Position", SEM_POSITION, FLOATx3, 0));
-	components.push_back(Thin3DVertexComponent("TexCoord0", SEM_TEXCOORD0, FLOATx2, 12));
-	components.push_back(Thin3DVertexComponent("Color0", SEM_COLOR0, UNORM8x4, 20));
+	InputLayoutDesc inputDesc = {
+		{
+			{ sizeof(Vertex), false },
+		},
+		{
+			{ 0, SEM_POSITION, DataFormat::R32G32B32_FLOAT, 0 },
+			{ 0, SEM_TEXCOORD0, DataFormat::R32G32_FLOAT, 12 },
+			{ 0, SEM_COLOR0, DataFormat::R8G8B8A8_UNORM, 20 },
+		},
+	};
 
-	Thin3DShader *vshader = thin3d->GetVshaderPreset(VS_TEXTURE_COLOR_2D);
-	vformat = thin3d->CreateVertexFormat(components, 24, vshader);
+	ShaderModule *vshader = draw_->GetVshaderPreset(VS_TEXTURE_COLOR_2D);
 
-	vdata = thin3d->CreateBuffer(24 * 4, T3DBufferUsage::DYNAMIC | T3DBufferUsage::VERTEXDATA);
-	idata = thin3d->CreateBuffer(sizeof(int) * 6, T3DBufferUsage::DYNAMIC | T3DBufferUsage::INDEXDATA);
-	depth = thin3d->CreateDepthStencilState(false, false, T3DComparison::LESS);
+	vdata = draw_->CreateBuffer(sizeof(Vertex) * 4, BufferUsageFlag::DYNAMIC | BufferUsageFlag::VERTEXDATA);
+	idata = draw_->CreateBuffer(sizeof(int) * 6, BufferUsageFlag::DYNAMIC | BufferUsageFlag::INDEXDATA);
+
+	InputLayout *inputLayout = draw_->CreateInputLayout(inputDesc);
+	DepthStencilState *depth = draw_->CreateDepthStencilState({ false, false, Comparison::LESS });
+	BlendState *blendstateOff = draw_->CreateBlendState({ false, 0xF });
+	RasterState *rasterNoCull = draw_->CreateRasterState({});
+
+	samplerNearest = draw_->CreateSamplerState({ TextureFilter::NEAREST, TextureFilter::NEAREST, TextureFilter::NEAREST });
+	samplerLinear = draw_->CreateSamplerState({ TextureFilter::LINEAR, TextureFilter::LINEAR, TextureFilter::LINEAR });
+
+	PipelineDesc pipelineDesc{
+		Primitive::TRIANGLE_LIST,
+		{ draw_->GetVshaderPreset(VS_TEXTURE_COLOR_2D), draw_->GetFshaderPreset(FS_TEXTURE_COLOR_2D) },
+		inputLayout, depth, blendstateOff, rasterNoCull
+	};
+	texColor = draw_->CreateGraphicsPipeline(pipelineDesc);
 
 	fb.data = Memory::GetPointer(0x44000000); // TODO: correct default address?
 	depthbuf.data = Memory::GetPointer(0x44000000); // TODO: correct default address?
@@ -83,8 +117,9 @@ void SoftGPU::DeviceRestore() {
 }
 
 SoftGPU::~SoftGPU() {
-	vformat->Release();
-	vformat = nullptr;
+	texColor->Release();
+	texColor = nullptr;
+
 	fbTex->Release();
 	fbTex = nullptr;
 
@@ -92,8 +127,10 @@ SoftGPU::~SoftGPU() {
 	vdata = nullptr;
 	idata->Release();
 	idata = nullptr;
-	depth->Release();
-	depth = nullptr;
+	samplerNearest->Release();
+	samplerNearest = nullptr;
+	samplerLinear->Release();
+	samplerLinear = nullptr;
 }
 
 void SoftGPU::SetDisplayFramebuffer(u32 framebuf, u32 stride, GEBufferFormat format) {
@@ -105,33 +142,29 @@ void SoftGPU::SetDisplayFramebuffer(u32 framebuf, u32 stride, GEBufferFormat for
 }
 
 // Copies RGBA8 data from RAM to the currently bound render target.
-void SoftGPU::CopyToCurrentFboFromDisplayRam(int srcwidth, int srcheight)
-{
-	if (!thin3d)
+void SoftGPU::CopyToCurrentFboFromDisplayRam(int srcwidth, int srcheight) {
+	using namespace Draw;
+
+	if (!draw_)
 		return;
 	float dstwidth = (float)PSP_CoreParameter().pixelWidth;
 	float dstheight = (float)PSP_CoreParameter().pixelHeight;
 
-	T3DViewport viewport = {0.0f, 0.0f, dstwidth, dstheight, 0.0f, 1.0f};
-	thin3d->SetViewports(1, &viewport);
-
-	thin3d->SetBlendState(thin3d->GetBlendStatePreset(BS_OFF));
-	Thin3DSamplerState *sampler;
+	Viewport viewport = {0.0f, 0.0f, dstwidth, dstheight, 0.0f, 1.0f};
+	draw_->SetViewports(1, &viewport);
+	SamplerState *sampler;
 	if (g_Config.iBufFilter == SCALE_NEAREST) {
-		sampler = thin3d->GetSamplerStatePreset(T3DSamplerStatePreset::SAMPS_NEAREST);
+		sampler = samplerNearest;
 	} else {
-		sampler = thin3d->GetSamplerStatePreset(T3DSamplerStatePreset::SAMPS_LINEAR);
+		sampler = samplerLinear;
 	}
-	thin3d->SetSamplerStates(0, 1, &sampler);
-	thin3d->SetDepthStencilState(depth);
-	thin3d->SetRenderState(T3DRenderState::CULL_MODE, T3DCullMode::NO_CULL);
-	thin3d->SetScissorEnabled(false);
+	draw_->SetScissorRect(0, 0, dstwidth, dstheight);
 
 	float u0 = 0.0f;
 	float u1;
+	bool hasImage = true;
 	if (!Memory::IsValidAddress(displayFramebuf_)) {
-		u8 data[] = {0, 0, 0, 0};
-		fbTex->SetImageData(0, 0, 0, 1, 1, 1, 0, 4, data);
+		hasImage = false;
 		u1 = 1.0f;
 	} else if (displayFormat_ == GE_FORMAT_8888) {
 		u8 *data = Memory::GetPointer(displayFramebuf_);
@@ -167,7 +200,6 @@ void SoftGPU::CopyToCurrentFboFromDisplayRam(int srcwidth, int srcheight)
 		fbTex->SetImageData(0, 0, 0, srcwidth, srcheight, 1, 0, srcwidth * 4, (const uint8_t *)&fbTexBuffer[0]);
 		u1 = 1.0f;
 	}
-	fbTex->Finalize(0);
 
 	float x, y, w, h;
 	CenterDisplayOutputRect(&x, &y, &w, &h, 480.0f, 272.0f, dstwidth, dstheight, ROTATION_LOCKED_HORIZONTAL);
@@ -188,42 +220,44 @@ void SoftGPU::CopyToCurrentFboFromDisplayRam(int srcwidth, int srcheight)
 	x2 -= 1.0f;
 	y2 -= 1.0f;
 
-	struct Vertex {
-		float x, y, z;
-		float u, v;
-		uint32_t rgba;
-	};
+	if (hasImage) {
+		float v0 = 1.0f;
+		float v1 = 0.0f;
 
-	float v0 = 1.0f;
-	float v1 = 0.0f;
+		if (GetGPUBackend() == GPUBackend::VULKAN) {
+			std::swap(v0, v1);
+		}
 
-	if (GetGPUBackend() == GPUBackend::VULKAN) {
-		std::swap(v0, v1);
+		draw_->BindSamplerStates(0, 1, &sampler);
+
+		const Vertex verts[4] = {
+			{ x, y, 0,    u0, v0,  0xFFFFFFFF }, // TL
+			{ x, y2, 0,   u0, v1,  0xFFFFFFFF }, // BL
+			{ x2, y2, 0,  u1, v1,  0xFFFFFFFF }, // BR
+			{ x2, y, 0,   u1, v0,  0xFFFFFFFF }, // TR
+		};
+		draw_->UpdateBuffer(vdata, (const uint8_t *)verts, 0, sizeof(verts), Draw::UPDATE_DISCARD);
+
+		int indexes[] = { 0, 1, 2, 0, 2, 3 };
+		draw_->UpdateBuffer(idata, (const uint8_t *)indexes, 0, sizeof(indexes), Draw::UPDATE_DISCARD);
+
+		draw_->BindTexture(0, fbTex);
+
+		static const float identity4x4[16] = {
+			1.0f, 0.0f, 0.0f, 0.0f,
+			0.0f, 1.0f, 0.0f, 0.0f,
+			0.0f, 0.0f, 1.0f, 0.0f,
+			0.0f, 0.0f, 0.0f, 1.0f,
+		};
+
+		texColor->SetMatrix4x4("WorldViewProj", identity4x4);
+		draw_->BindPipeline(texColor);
+		draw_->BindVertexBuffers(0, 1, &vdata, nullptr);
+		draw_->BindIndexBuffer(idata, 0);
+		draw_->DrawIndexed(6, 0);
+	} else {
+		draw_->Clear(Draw::COLOR, 0, 0, 0);
 	}
-
-	const Vertex verts[4] = {
-		{x, y, 0,    u0, v0,  0xFFFFFFFF}, // TL
-		{x, y2, 0,   u0, v1,  0xFFFFFFFF}, // BL
-		{x2, y2, 0,  u1, v1,  0xFFFFFFFF}, // BR
-		{x2, y, 0,   u1, v0,  0xFFFFFFFF}, // TR
-	};
-	vdata->SetData((const uint8_t *)verts, sizeof(verts));
-
-	int indexes[] = {0, 1, 2, 0, 2, 3};
-	idata->SetData((const uint8_t *)indexes, sizeof(indexes));
-
-	thin3d->SetTexture(0, fbTex);
-	Thin3DShaderSet *texColor = thin3d->GetShaderSetPreset(SS_TEXTURE_COLOR_2D);
-
-	static const float identity4x4[16] = {
-		1.0f, 0.0f, 0.0f, 0.0f,
-		0.0f, 1.0f, 0.0f, 0.0f,
-		0.0f, 0.0f, 1.0f, 0.0f,
-		0.0f, 0.0f, 0.0f, 1.0f,
-	};
-
-	texColor->SetMatrix4x4("WorldViewProj", identity4x4);
-	thin3d->DrawIndexed(T3DPrimitive::PRIM_TRIANGLES, texColor, vformat, vdata, idata, 6, 0);
 }
 
 void SoftGPU::CopyDisplayToOutput()
@@ -263,40 +297,12 @@ void SoftGPU::FastRunLoop(DisplayList &list) {
 	}
 }
 
-int EstimatePerVertexCost() {
-	// TODO: This is transform cost, also account for rasterization cost somehow... although it probably
-	// runs in parallel with transform.
-
-	// Also, this is all pure guesswork. If we can find a way to do measurements, that would be great.
-
-	// GTA wants a low value to run smooth, GoW wants a high value (otherwise it thinks things
-	// went too fast and starts doing all the work over again).
-
-	int cost = 20;
-	if (gstate.isLightingEnabled()) {
-		cost += 10;
-	}
-
-	for (int i = 0; i < 4; i++) {
-		if (gstate.isLightChanEnabled(i))
-			cost += 10;
-	}
-	if (gstate.getUVGenMode() != GE_TEXMAP_TEXTURE_COORDS) {
-		cost += 20;
-	}
-	// TODO: morphcount
-
-	return cost;
-}
-
-void SoftGPU::ExecuteOp(u32 op, u32 diff)
-{
+void SoftGPU::ExecuteOp(u32 op, u32 diff) {
 	u32 cmd = op >> 24;
 	u32 data = op & 0xFFFFFF;
 
 	// Handle control and drawing commands here directly. The others we delegate.
-	switch (cmd)
-	{
+	switch (cmd) {
 	case GE_CMD_BASE:
 		break;
 
@@ -715,14 +721,15 @@ void SoftGPU::ExecuteOp(u32 op, u32 diff)
 		break;
 
 	case GE_CMD_PROJMATRIXNUMBER:
-		gstate.projmtxnum = data & 0xF;
+		gstate.projmtxnum = data & 0x1F;
 		break;
 
 	case GE_CMD_PROJMATRIXDATA:
 		{
-			int num = gstate.projmtxnum & 0xF;
+			int num = gstate.projmtxnum & 0x1F; // NOTE: Changed from 0xF to catch overflows
 			gstate.projMatrix[num] = getFloat24(data);
-			gstate.projmtxnum = (++num) & 0xF;
+			if (num <= 16)
+				gstate.projmtxnum = (++num) & 0x1F;
 		}
 		break;
 

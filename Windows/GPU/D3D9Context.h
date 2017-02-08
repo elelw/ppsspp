@@ -23,12 +23,13 @@
 #include "Windows/GPU/WindowsGraphicsContext.h"
 #include <d3d9.h>
 
-class Thin3DContext;
+namespace Draw {
+	class DrawContext;
+}
 
 class D3D9Context : public WindowsGraphicsContext {
 public:
-	D3D9Context() : has9Ex(false), d3d(nullptr), d3dEx(nullptr), adapterId(-1), device(nullptr), deviceEx(nullptr), hDC(nullptr), hRC(nullptr), hWnd(nullptr), hD3D9(nullptr) {
-		memset(&pp, 0, sizeof(pp));
+	D3D9Context() : draw_(nullptr), has9Ex_(false), d3d_(nullptr), d3dEx_(nullptr), adapterId_(-1), device_(nullptr), deviceEx_(nullptr), hDC_(nullptr), hWnd_(nullptr), hD3D9_(nullptr), presentParams_{} {
 	}
 
 	bool Init(HINSTANCE hInst, HWND window, std::string *error_message) override;
@@ -38,19 +39,19 @@ public:
 
 	void Resize() override;
 
-	Thin3DContext *CreateThin3DContext() override;
+	Draw::DrawContext *GetDrawContext() override { return draw_; }
 
 private:
-	bool has9Ex;
-	LPDIRECT3D9 d3d;
-	LPDIRECT3D9EX d3dEx;
-	int adapterId;
-	LPDIRECT3DDEVICE9 device;
-	LPDIRECT3DDEVICE9EX deviceEx;
-	HDC hDC;     // Private GDI Device Context
-	HGLRC hRC;   // Permanent Rendering Context
-	HWND hWnd;   // Holds Our Window Handle
-	HMODULE hD3D9;
-	D3DPRESENT_PARAMETERS pp;
+	Draw::DrawContext *draw_;
+	bool has9Ex_;
+	LPDIRECT3D9 d3d_;
+	LPDIRECT3D9EX d3dEx_;
+	int adapterId_;
+	LPDIRECT3DDEVICE9 device_;
+	LPDIRECT3DDEVICE9EX deviceEx_;
+	HDC hDC_;     // Private GDI Device Context
+	HWND hWnd_;   // Holds Our Window Handle
+	HMODULE hD3D9_;
+	D3DPRESENT_PARAMETERS presentParams_;
 };
 

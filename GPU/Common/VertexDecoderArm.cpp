@@ -119,9 +119,9 @@ static const JitLookup jitLookup[] = {
 	{&VertexDecoder::Step_WeightsU16Skin, &VertexDecoderJitCache::Jit_WeightsU16Skin},
 	{&VertexDecoder::Step_WeightsFloatSkin, &VertexDecoderJitCache::Jit_WeightsFloatSkin},
 
-	{&VertexDecoder::Step_TcU8, &VertexDecoderJitCache::Jit_TcU8},
-	{&VertexDecoder::Step_TcU16, &VertexDecoderJitCache::Jit_TcU16},
 	{&VertexDecoder::Step_TcFloat, &VertexDecoderJitCache::Jit_TcFloat},
+	{&VertexDecoder::Step_TcU8ToFloat, &VertexDecoderJitCache::Jit_TcU8ToFloat},
+	{&VertexDecoder::Step_TcU16ToFloat, &VertexDecoderJitCache::Jit_TcU16ToFloat},
 	{&VertexDecoder::Step_TcU16Double, &VertexDecoderJitCache::Jit_TcU16Double},
 
 	{&VertexDecoder::Step_TcU8Prescale, &VertexDecoderJitCache::Jit_TcU8Prescale},
@@ -286,6 +286,7 @@ JittedVertexDecoder VertexDecoderJitCache::Compile(const VertexDecoder &dec, int
 	PLD(srcReg, 64);
 	for (int i = 0; i < dec.numSteps_; i++) {
 		if (!CompileStep(dec, i)) {
+			EndWrite();
 			// Reset the code ptr and return zero to indicate that we failed.
 			SetCodePtr(const_cast<u8 *>(start));
 			char temp[1024] = {0};
@@ -563,21 +564,6 @@ void VertexDecoderJitCache::Jit_WeightsFloatSkin() {
 	Jit_ApplyWeights();
 }
 
-// Fill last two bytes with zeroes to align to 4 bytes. LDRH does it for us, handy.
-void VertexDecoderJitCache::Jit_TcU8() {
-	LDRB(tempReg1, srcReg, dec_->tcoff);
-	LDRB(tempReg2, srcReg, dec_->tcoff + 1);
-	ORR(tempReg1, tempReg1, Operand2(tempReg2, ST_LSL, 8));
-	STR(tempReg1, dstReg, dec_->decFmt.uvoff);
-}
-
-void VertexDecoderJitCache::Jit_TcU16() {
-	LDRH(tempReg1, srcReg, dec_->tcoff);
-	LDRH(tempReg2, srcReg, dec_->tcoff + 2);
-	ORR(tempReg1, tempReg1, Operand2(tempReg2, ST_LSL, 16));
-	STR(tempReg1, dstReg, dec_->decFmt.uvoff);
-}
-
 void VertexDecoderJitCache::Jit_TcFloat() {
 	LDR(tempReg1, srcReg, dec_->tcoff);
 	LDR(tempReg2, srcReg, dec_->tcoff + 4);
@@ -662,6 +648,33 @@ void VertexDecoderJitCache::Jit_TcU8Prescale() {
 	}
 }
 
+void VertexDecoderJitCache::Jit_TcU8ToFloat() {
+	if (cpu_info.bNEON) {
+		// TODO: Needs testing
+		ADD(scratchReg, srcReg, dec_->tcoff);
+		VLD1_lane(I_16, neonScratchReg, scratchReg, 0, false);
+		VMOVL(I_8 | I_UNSIGNED, neonScratchRegQ, neonScratchReg);  // Widen to 16-bit
+		VMOVL(I_16 | I_UNSIGNED, neonScratchRegQ, neonScratchReg);  // Widen to 32-bit
+		VCVT(F_32 | I_UNSIGNED, neonScratchRegQ, neonScratchRegQ);
+		VMOV_neon(F_32, neonScratchReg2, by128);
+		VMUL(F_32, neonScratchReg, neonScratchReg, neonScratchReg2);
+		ADD(scratchReg2, dstReg, dec_->decFmt.uvoff);
+		VST1(F_32, neonScratchReg, scratchReg2, 1, ALIGN_NONE);
+	} else {
+		LDRB(tempReg1, srcReg, dec_->tcoff);
+		LDRB(tempReg2, srcReg, dec_->tcoff + 1);
+		VMOV(fpScratchReg, tempReg1);
+		VMOV(fpScratchReg2, tempReg2);
+		VCVT(fpScratchReg, fpScratchReg, TO_FLOAT);
+		VCVT(fpScratchReg2, fpScratchReg2, TO_FLOAT);
+		MOVI2F(S15, by128, scratchReg);
+		VMUL(fpScratchReg, fpScratchReg, S15);
+		VMUL(fpScratchReg2, fpScratchReg2, S15);
+		VSTR(fpScratchReg, dstReg, dec_->decFmt.uvoff);
+		VSTR(fpScratchReg2, dstReg, dec_->decFmt.uvoff + 4);
+	}
+}
+
 void VertexDecoderJitCache::Jit_TcU16Prescale() {
 	if (cpu_info.bNEON) {
 		// TODO: Needs testing
@@ -684,6 +697,32 @@ void VertexDecoderJitCache::Jit_TcU16Prescale() {
 		VMUL(fpScratchReg2, fpScratchReg2, fpVscaleReg);
 		VADD(fpScratchReg, fpScratchReg, fpUoffsetReg);
 		VADD(fpScratchReg2, fpScratchReg2, fpVoffsetReg);
+		VSTR(fpScratchReg, dstReg, dec_->decFmt.uvoff);
+		VSTR(fpScratchReg2, dstReg, dec_->decFmt.uvoff + 4);
+	}
+}
+
+void VertexDecoderJitCache::Jit_TcU16ToFloat() {
+	if (cpu_info.bNEON) {
+		// TODO: Needs testing
+		ADD(scratchReg, srcReg, dec_->tcoff);
+		VLD1_lane(I_32, neonScratchReg, scratchReg, 0, false);
+		VMOVL(I_16 | I_UNSIGNED, neonScratchRegQ, neonScratchReg);  // Widen to 32-bit
+		VCVT(F_32 | I_UNSIGNED, neonScratchRegQ, neonScratchRegQ);
+		ADD(scratchReg2, dstReg, dec_->decFmt.uvoff);
+		VMOV_neon(F_32, neonScratchReg2, by32768);
+		VMUL(F_32, neonScratchReg, neonScratchReg, neonScratchReg2);
+		VST1(F_32, neonScratchReg, scratchReg2, 1, ALIGN_NONE);
+	} else {
+		LDRH(tempReg1, srcReg, dec_->tcoff);
+		LDRH(tempReg2, srcReg, dec_->tcoff + 2);
+		VMOV(fpScratchReg, tempReg1);
+		VMOV(fpScratchReg2, tempReg2);
+		VCVT(fpScratchReg, fpScratchReg, TO_FLOAT);
+		VCVT(fpScratchReg2, fpScratchReg2, TO_FLOAT);
+		MOVI2F(S15, by32768, scratchReg);
+		VMUL(fpScratchReg, fpScratchReg, S15);
+		VMUL(fpScratchReg2, fpScratchReg2, S15);
 		VSTR(fpScratchReg, dstReg, dec_->decFmt.uvoff);
 		VSTR(fpScratchReg2, dstReg, dec_->decFmt.uvoff + 4);
 	}

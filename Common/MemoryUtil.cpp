@@ -50,7 +50,7 @@ static SYSTEM_INFO sys_info;
 
 #ifdef _WIN32
 // Win32 flags are odd...
-uint32_t ConvertProtFlagsWin32(uint32_t flags) {
+static uint32_t ConvertProtFlagsWin32(uint32_t flags) {
 	uint32_t protect = 0;
 	switch (flags) {
 	case 0: protect = PAGE_NOACCESS; break;
@@ -67,7 +67,7 @@ uint32_t ConvertProtFlagsWin32(uint32_t flags) {
 
 #else
 
-uint32_t ConvertProtFlagsUnix(uint32_t flags) {
+static uint32_t ConvertProtFlagsUnix(uint32_t flags) {
 	uint32_t protect = 0;
 	if (flags & MEM_PROT_READ)
 		protect |= PROT_READ;
@@ -117,6 +117,9 @@ static void *SearchForFreeMem(size_t size) {
 void *AllocateExecutableMemory(size_t size) {
 #if defined(_WIN32)
 	void *ptr;
+	DWORD prot = PAGE_EXECUTE_READWRITE;
+	if (PlatformIsWXExclusive())
+		prot = PAGE_READWRITE;
 #if defined(_M_X64)
 	if ((uintptr_t)&hint_location > 0xFFFFFFFFULL) {
 		if (sys_info.dwPageSize == 0)
@@ -131,14 +134,16 @@ void *AllocateExecutableMemory(size_t size) {
 			ptr = SearchForFreeMem(aligned_size);
 		}
 		if (ptr) {
-			ptr = VirtualAlloc(ptr, aligned_size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+			ptr = VirtualAlloc(ptr, aligned_size, MEM_RESERVE | MEM_COMMIT, prot);
 		} else {
 			ERROR_LOG(COMMON, "Unable to find nearby executable memory for jit");
 		}
 	}
 	else
 #endif
-		ptr = VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+	{
+		ptr = VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, prot);
+	}
 #else
 	static char *map_hint = 0;
 #if defined(_M_X64)
@@ -155,7 +160,12 @@ void *AllocateExecutableMemory(size_t size) {
 		map_hint -= round_page(size); /* round down to the next page if we're in high memory */
 	}
 #endif
-	void* ptr = mmap(map_hint, size, PROT_READ | PROT_WRITE	| PROT_EXEC,
+
+	int prot = PROT_READ | PROT_WRITE | PROT_EXEC;
+	if (PlatformIsWXExclusive())
+		prot = PROT_READ | PROT_WRITE;  // POST_EXEC is added later in this case.
+
+	void* ptr = mmap(map_hint, size, prot,
 		MAP_ANON | MAP_PRIVATE
 #if defined(_M_X64) && defined(MAP_32BIT)
 		| ((uintptr_t) map_hint == 0 ? MAP_32BIT : 0)
@@ -172,6 +182,7 @@ void *AllocateExecutableMemory(size_t size) {
 
 	if (ptr == failed_result) {
 		ptr = nullptr;
+		ERROR_LOG(MEMMAP, "Failed to allocate executable memory (%d)", (int)size);
 		PanicAlert("Failed to allocate executable memory\n%s", GetLastErrorMsg());
 	}
 #if defined(_M_X64) && !defined(_WIN32)
@@ -186,24 +197,27 @@ void *AllocateExecutableMemory(size_t size) {
 		}
 	}
 #endif
-
 	return ptr;
 }
 
 void *AllocateMemoryPages(size_t size, uint32_t memProtFlags) {
-	size = (size + 4095) & (~4095);
+	size = round_page(size);
 #ifdef _WIN32
 	uint32_t protect = ConvertProtFlagsWin32(memProtFlags);
 	void* ptr = VirtualAlloc(0, size, MEM_COMMIT, protect);
+	if (!ptr)
+		PanicAlert("Failed to allocate raw memory");
 #else
 	uint32_t protect = ConvertProtFlagsUnix(memProtFlags);
-	void* ptr = mmap(0, size, protect, MAP_ANON | MAP_PRIVATE, -1, 0);
+	void *ptr = mmap(0, size, protect, MAP_ANON | MAP_PRIVATE, -1, 0);
+	if (ptr == MAP_FAILED) {
+		ERROR_LOG(MEMMAP, "Failed to allocate memory pages: errno=%d", errno);
+		return nullptr;
+	}
 #endif
 
 	// printf("Mapped memory at %p (size %ld)\n", ptr,
 	//	(unsigned long)size);
-	if (ptr == NULL)
-		PanicAlert("Failed to allocate raw memory");
 	return ptr;
 }
 
@@ -232,7 +246,8 @@ void *AllocateAlignedMemory(size_t size, size_t alignment) {
 void FreeMemoryPages(void *ptr, size_t size) {
 	if (!ptr)
 		return;
-	size = (size + 4095) & (~4095);
+	uintptr_t page_size = GetMemoryProtectPageSize();
+	size = (size + page_size - 1) & (~(page_size - 1));
 #ifdef _WIN32
 	if (!VirtualFree(ptr, 0, MEM_RELEASE))
 		PanicAlert("FreeMemoryPages failed!\n%s", GetLastErrorMsg());
@@ -262,29 +277,40 @@ bool PlatformIsWXExclusive() {
 #endif
 }
 
-void ProtectMemoryPages(const void* ptr, size_t size, uint32_t memProtFlags) {
-	VERBOSE_LOG(JIT, "ProtectMemoryPages: %p (%d) : r%d w%d x%d", ptr, (int)size, (memProtFlags & MEM_PROT_READ) != 0, (memProtFlags & MEM_PROT_WRITE) != 0, (memProtFlags & MEM_PROT_EXEC) != 0);
+bool ProtectMemoryPages(const void* ptr, size_t size, uint32_t memProtFlags) {
+	VERBOSE_LOG(JIT, "ProtectMemoryPages: %p (%d) : r%d w%d x%d", ptr, (int)size,
+			(memProtFlags & MEM_PROT_READ) != 0, (memProtFlags & MEM_PROT_WRITE) != 0, (memProtFlags & MEM_PROT_EXEC) != 0);
 
 	if (PlatformIsWXExclusive()) {
-		if ((memProtFlags & (MEM_PROT_WRITE | MEM_PROT_EXEC)) == (MEM_PROT_WRITE | MEM_PROT_EXEC))
+		if ((memProtFlags & (MEM_PROT_WRITE | MEM_PROT_EXEC)) == (MEM_PROT_WRITE | MEM_PROT_EXEC)) {
+			ERROR_LOG(MEMMAP, "Bad memory protection %d!", memProtFlags);
 			PanicAlert("Bad memory protect : W^X is in effect, can't both write and exec");
+		}
 	}
 	// Note - VirtualProtect will affect the full pages containing the requested range.
 	// mprotect does not seem to, at least not on Android unless I made a mistake somewhere, so we manually round.
 #ifdef _WIN32
 	uint32_t protect = ConvertProtFlagsWin32(memProtFlags);
 	DWORD oldValue;
-	if (!VirtualProtect((void *)ptr, size, protect, &oldValue))
+	if (!VirtualProtect((void *)ptr, size, protect, &oldValue)) {
 		PanicAlert("WriteProtectMemory failed!\n%s", GetLastErrorMsg());
+		return false;
+	}
+	return true;
 #else
 	uint32_t protect = ConvertProtFlagsUnix(memProtFlags);
-	uint32_t page_size = GetMemoryProtectPageSize();
+	uintptr_t page_size = GetMemoryProtectPageSize();
 
 	uintptr_t start = (uintptr_t)ptr;
 	uintptr_t end = (uintptr_t)ptr + size;
 	start &= ~(page_size - 1);
 	end = (end + page_size - 1) & ~(page_size - 1);
-	mprotect((void *)start, end - start, protect);
+	int retval = mprotect((void *)start, end - start, protect);
+	if (retval != 0) {
+		ERROR_LOG(MEMMAP, "mprotect failed (%p)! errno=%d (%s)", (void *)start, errno, strerror(errno));
+		return false;
+	}
+	return true;
 #endif
 }
 

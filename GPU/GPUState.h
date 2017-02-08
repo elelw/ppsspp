@@ -23,6 +23,7 @@
 #include "GPU/GPU.h"
 #include "GPU/ge_constants.h"
 #include "Common/Common.h"
+#include "GPU/Common/ShaderCommon.h"
 
 class PointerWrap;
 
@@ -393,8 +394,10 @@ struct GPUgstate {
 	bool isModeThrough() const { return (vertType & GE_VTYPE_THROUGH) != 0; }
 	bool areNormalsReversed() const { return reversenormals & 1; }
 	bool isSkinningEnabled() const { return ((vertType & GE_VTYPE_WEIGHT_MASK) != GE_VTYPE_WEIGHT_NONE); }
+	int getNumMorphWeights() const { return ((vertType & GE_VTYPE_MORPHCOUNT_MASK) >> GE_VTYPE_MORPHCOUNT_SHIFT) + 1; }
 
 	GEPatchPrimType getPatchPrimitiveType() const { return static_cast<GEPatchPrimType>(patchprimitive & 3); }
+	bool isPatchNormalsReversed() const { return patchfacing & 1; }
 
 	// Transfers
 	u32 getTransferSrcAddress() const { return (transfersrc & 0xFFFFF0) | ((transfersrcw & 0xFF0000) << 8); }
@@ -438,12 +441,6 @@ struct UVScale {
 	float uOff, vOff;
 };
 
-enum TextureChangeReason {
-	TEXCHANGE_UNCHANGED = 0x00,
-	TEXCHANGE_UPDATED = 0x01,
-	TEXCHANGE_PARAMSONLY = 0x02,
-};
-
 #define FLAG_BIT(x) (1 << x)
 
 // Some of these are OpenGL-specific even though this file is neutral, unfortunately.
@@ -458,6 +455,10 @@ enum {
 	GPU_USE_DEPTH_RANGE_HACK = FLAG_BIT(6),
 	GPU_SUPPORTS_WIDE_LINES = FLAG_BIT(7),
 	GPU_SUPPORTS_ANISOTROPY = FLAG_BIT(8),
+	GPU_USE_CLEAR_RAM_HACK = FLAG_BIT(9),
+	GPU_SUPPORTS_INSTANCE_RENDERING = FLAG_BIT(10),
+	GPU_SUPPORTS_VERTEX_TEXTURE_FETCH = FLAG_BIT(11),
+	GPU_SUPPORTS_TEXTURE_FLOAT = FLAG_BIT(12),
 	GPU_SUPPORTS_LARGE_VIEWPORTS = FLAG_BIT(16),
 	GPU_SUPPORTS_ACCURATE_DEPTH = FLAG_BIT(17),
 	GPU_SUPPORTS_VAO = FLAG_BIT(18),
@@ -484,7 +485,21 @@ struct KnownVertexBounds {
 };
 
 struct GPUStateCache {
-	bool Supports(int flag) { return (featureFlags & flag) != 0; }
+	bool Supports(u32 flags) { return (featureFlags & flags) != 0; } // Return true if ANY of flags are true.
+	bool SupportsAll(u32 flags) { return (featureFlags & flags) == flags; } // Return true if ALL flags are true.
+	uint64_t GetDirtyUniforms() { return dirty & DIRTY_ALL_UNIFORMS; }
+	void Dirty(u64 what) {
+		dirty |= what;
+	}
+	void CleanUniforms() {
+		dirty &= ~DIRTY_ALL_UNIFORMS;
+	}
+	void Clean(u64 what) {
+		dirty &= ~what;
+	}
+	bool IsDirty(u64 what) const {
+		return (dirty & what) != 0ULL;
+	}
 
 	u32 featureFlags;
 
@@ -492,11 +507,11 @@ struct GPUStateCache {
 	u32 indexAddr;
 	u32 offsetAddr;
 
-	u8 textureChanged;
+	uint64_t dirty;
+
 	bool textureFullAlpha;
 	bool textureSimpleAlpha;
 	bool vertexFullAlpha;
-	bool framebufChanged;
 
 	int skipDrawReason;
 
@@ -534,6 +549,14 @@ struct GPUStateCache {
 	u32 curRTRenderWidth;
 	u32 curRTRenderHeight;
 	u32 curRTOffsetX;
+
+	bool bezier;
+	bool spline;
+	int bezier_count_u;
+	int spline_count_u;
+	int spline_count_v;
+	int spline_type_u;
+	int spline_type_v;
 
 	u32 getRelativeAddress(u32 data) const;
 	void Reset();

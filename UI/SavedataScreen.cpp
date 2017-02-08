@@ -66,7 +66,7 @@ public:
 
 	void CreatePopupContents(UI::ViewGroup *parent) override {
 		using namespace UI;
-		GameInfo *ginfo = g_gameInfoCache->GetInfo(screenManager()->getThin3DContext(), savePath_, GAMEINFO_WANTBG | GAMEINFO_WANTSIZE);
+		GameInfo *ginfo = g_gameInfoCache->GetInfo(screenManager()->getDrawContext(), savePath_, GAMEINFO_WANTBG | GAMEINFO_WANTSIZE);
 		LinearLayout *content = new LinearLayout(ORIENT_VERTICAL);
 		parent->Add(content);
 		if (!ginfo)
@@ -80,7 +80,7 @@ public:
 			std::string savedata_title = ginfo->paramSFO.GetValueString("SAVEDATA_TITLE");
 
 			if (ginfo->iconTexture) {
-				toprow->Add(new Thin3DTextureView(ginfo->iconTexture, IS_FIXED, new LinearLayoutParams(Margins(10, 5))));
+				toprow->Add(new TextureView(ginfo->iconTexture->GetTexture(), IS_FIXED, new LinearLayoutParams(Margins(10, 5))));
 			}
 			LinearLayout *topright = new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(WRAP_CONTENT, WRAP_CONTENT, 1.0f));
 			topright->SetSpacing(1.0f);
@@ -153,13 +153,13 @@ static std::string CleanSaveString(std::string str) {
 }
 
 void SavedataButton::Draw(UIContext &dc) {
-	GameInfo *ginfo = g_gameInfoCache->GetInfo(dc.GetThin3DContext(), savePath_, GAMEINFO_WANTSIZE);
-	Thin3DTexture *texture = 0;
+	GameInfo *ginfo = g_gameInfoCache->GetInfo(dc.GetDrawContext(), savePath_, GAMEINFO_WANTSIZE);
+	Draw::Texture *texture = 0;
 	u32 color = 0, shadowColor = 0;
 	using namespace UI;
 
 	if (ginfo->iconTexture) {
-		texture = ginfo->iconTexture;
+		texture = ginfo->iconTexture->GetTexture();
 	}
 
 	int x = bounds_.x;
@@ -193,11 +193,6 @@ void SavedataButton::Draw(UIContext &dc) {
 		float nw = h * tw / th;
 		x += (w - nw) / 2.0f;
 		w = nw;
-
-		if (texture->Width() >= w * 2 || texture->Height() >= h * 2) {
-			// Better to use mipmaps, then.  This is probably a large savestate screenshot.
-			texture->AutoGenMipmaps();
-		}
 	}
 
 	int txOffset = down_ ? 4 : 0;
@@ -229,7 +224,7 @@ void SavedataButton::Draw(UIContext &dc) {
 
 	if (texture) {
 		dc.Draw()->Flush();
-		dc.GetThin3DContext()->SetTexture(0, texture);
+		dc.GetDrawContext()->BindTexture(0, texture);
 		dc.Draw()->DrawTexRect(x, y, x + w, y + h, 0, 0, 1, 1, color);
 		dc.Draw()->Flush();
 	}
@@ -381,7 +376,7 @@ void SavedataScreen::CreateViews() {
 }
 
 UI::EventReturn SavedataScreen::OnSavedataButtonClick(UI::EventParams &e) {
-	GameInfo *ginfo = g_gameInfoCache->GetInfo(screenManager()->getThin3DContext(), e.s, 0);
+	GameInfo *ginfo = g_gameInfoCache->GetInfo(screenManager()->getDrawContext(), e.s, 0);
 	screenManager()->push(new SavedataPopupScreen(e.s, ginfo->GetTitle()));
 	// the game path: e.s;
 	return UI::EVENT_DONE;

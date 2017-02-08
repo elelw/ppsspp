@@ -61,7 +61,7 @@ private:
 	UI::EventReturn OnCwCheat(UI::EventParams &e);
 
 	// As we load metadata in the background, we need to be able to update these after the fact.
-	UI::Thin3DTextureView *texvGameIcon_;
+	UI::TextureView *texvGameIcon_;
 	UI::TextView *tvTitle_;
 	UI::TextView *tvGameSize_;
 	UI::TextView *tvSaveDataSize_;
@@ -73,4 +73,5 @@ private:
 	UI::Choice *btnDeleteGameConfig_;
 	UI::Choice *btnDeleteSaveData_;
 	std::vector<UI::Choice *> otherChoices_;
+	std::vector<std::string> saveDirs;
 };
