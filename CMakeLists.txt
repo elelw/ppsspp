@@ -745,6 +745,10 @@ elseif(IOS)
 		ios/ViewController.h
 		ios/iOSCoreAudio.mm
 		ios/iOSCoreAudio.h
+		ios/CameraHelper.mm
+		ios/CameraHelper.h
+		ios/LocationHelper.mm
+		ios/LocationHelper.h
 		ios/SubtleVolume.h
 		ios/SubtleVolume.mm
 		ios/iCade/iCadeReaderView.h
