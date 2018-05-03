@@ -16,15 +16,17 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-#include <math.h>
-#include "base/mutex.h"
-#include "Globals.h"
+#include <cmath>
+#include <mutex>
+
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/FunctionWrappers.h"
 #include "Core/MIPS/MIPS.h"
 #include "Core/CoreTiming.h"
 #include "Core/MemMapHelpers.h"
+#include "Core/Replay.h"
 #include "Common/ChunkFile.h"
+#include "Core/Util/AudioFormat.h"  // for clamp_u8
 #include "Core/HLE/sceCtrl.h"
 #include "Core/HLE/sceDisplay.h"
 #include "Core/HLE/sceKernel.h"
@@ -46,9 +48,7 @@ enum {
 	CTRL_WAIT_NEGATIVE = 2,
 };
 
-// Returned control data
-struct _ctrl_data
-{
+struct CtrlData {
 	u32_le frame;
 	u32_le buttons;
 	// The PSP has only one stick, but has space for more info.
@@ -71,8 +71,8 @@ static bool analogEnabled = false;
 static int ctrlLatchBufs = 0;
 static u32 ctrlOldButtons = 0;
 
-static _ctrl_data ctrlBufs[NUM_CTRL_BUFFERS];
-static _ctrl_data ctrlCurrent;
+static CtrlData ctrlBufs[NUM_CTRL_BUFFERS];
+static CtrlData ctrlCurrent;
 static u32 ctrlBuf = 0;
 static u32 ctrlBufRead = 0;
 static CtrlLatch latch;
@@ -84,7 +84,7 @@ static int ctrlIdleBack = -1;
 static int ctrlCycle = 0;
 
 static std::vector<SceUID> waitingThreads;
-static recursive_mutex ctrlMutex;
+static std::mutex ctrlMutex;
 
 static int ctrlTimer = -1;
 
@@ -101,16 +101,18 @@ const u32 CTRL_EMU_RAPIDFIRE_MASK = CTRL_UP | CTRL_DOWN | CTRL_LEFT | CTRL_RIGHT
 
 static void __CtrlUpdateLatch()
 {
-	lock_guard guard(ctrlMutex);
+	std::lock_guard<std::mutex> guard(ctrlMutex);
+	u64 t = CoreTiming::GetGlobalTimeUs();
+
+	u32 buttons = ctrlCurrent.buttons;
+	if (emuRapidFire && (emuRapidFireFrames % 10) < 5)
+		buttons &= CTRL_EMU_RAPIDFIRE_MASK;
+
+	ReplayApplyCtrl(buttons, ctrlCurrent.analog, t);
 
 	// Copy in the current data to the current buffer.
 	ctrlBufs[ctrlBuf] = ctrlCurrent;
-	u32 buttons = ctrlCurrent.buttons;
-	if (emuRapidFire && (emuRapidFireFrames % 10) < 5)
-	{
-		ctrlBufs[ctrlBuf].buttons &= CTRL_EMU_RAPIDFIRE_MASK;
-		buttons &= CTRL_EMU_RAPIDFIRE_MASK;
-	}
+	ctrlBufs[ctrlBuf].buttons = buttons;
 
 	u32 changed = buttons ^ ctrlOldButtons;
 	latch.btnMake |= buttons & changed;
@@ -122,7 +124,7 @@ static void __CtrlUpdateLatch()
 
 	ctrlOldButtons = buttons;
 
-	ctrlBufs[ctrlBuf].frame = (u32) CoreTiming::GetGlobalTimeUs();
+	ctrlBufs[ctrlBuf].frame = (u32)t;
 	if (!analogEnabled)
 		memset(ctrlBufs[ctrlBuf].analog, CTRL_ANALOG_CENTER, sizeof(ctrlBufs[ctrlBuf].analog));
 
@@ -144,14 +146,14 @@ static int __CtrlResetLatch()
 
 u32 __CtrlPeekButtons()
 {
-	lock_guard guard(ctrlMutex);
+	std::lock_guard<std::mutex> guard(ctrlMutex);
 
 	return ctrlCurrent.buttons;
 }
 
 void __CtrlPeekAnalog(int stick, float *x, float *y)
 {
-	lock_guard guard(ctrlMutex);
+	std::lock_guard<std::mutex> guard(ctrlMutex);
 
 	*x = (ctrlCurrent.analog[stick][CTRL_ANALOG_X] - 127.5f) / 127.5f;
 	*y = -(ctrlCurrent.analog[stick][CTRL_ANALOG_Y] - 127.5f) / 127.5f;
@@ -170,27 +172,27 @@ u32 __CtrlReadLatch()
 
 void __CtrlButtonDown(u32 buttonBit)
 {
-	lock_guard guard(ctrlMutex);
+	std::lock_guard<std::mutex> guard(ctrlMutex);
 	ctrlCurrent.buttons |= buttonBit;
 }
 
 void __CtrlButtonUp(u32 buttonBit)
 {
-	lock_guard guard(ctrlMutex);
+	std::lock_guard<std::mutex> guard(ctrlMutex);
 	ctrlCurrent.buttons &= ~buttonBit;
 }
 
 void __CtrlSetAnalogX(float x, int stick)
 {
 	u8 scaled = clamp_u8((int)ceilf(x * 127.5f + 127.5f));
-	lock_guard guard(ctrlMutex);
+	std::lock_guard<std::mutex> guard(ctrlMutex);
 	ctrlCurrent.analog[stick][CTRL_ANALOG_X] = scaled;
 }
 
 void __CtrlSetAnalogY(float y, int stick)
 {
 	u8 scaled = clamp_u8((int)ceilf(-y * 127.5f + 127.5f));
-	lock_guard guard(ctrlMutex);
+	std::lock_guard<std::mutex> guard(ctrlMutex);
 	ctrlCurrent.analog[stick][CTRL_ANALOG_Y] = scaled;
 }
 
@@ -199,13 +201,15 @@ void __CtrlSetRapidFire(bool state)
 	emuRapidFire = state;
 }
 
-static int __CtrlReadSingleBuffer(PSPPointer<_ctrl_data> data, bool negative)
+static int __CtrlReadSingleBuffer(PSPPointer<CtrlData> data, bool negative)
 {
 	if (data.IsValid())
 	{
 		*data = ctrlBufs[ctrlBufRead];
 		ctrlBufRead = (ctrlBufRead + 1) % NUM_CTRL_BUFFERS;
 
+		// Mask out buttons games aren't allowed to see.
+		data->buttons &= CTRL_MASK_USER;
 		if (negative)
 			data->buttons = ~data->buttons;
 
@@ -240,7 +244,7 @@ static int __CtrlReadBuffer(u32 ctrlDataPtr, u32 nBufs, bool negative, bool peek
 	ctrlBufRead = (ctrlBuf - availBufs + NUM_CTRL_BUFFERS) % NUM_CTRL_BUFFERS;
 
 	int done = 0;
-	auto data = PSPPointer<_ctrl_data>::Create(ctrlDataPtr);
+	auto data = PSPPointer<CtrlData>::Create(ctrlDataPtr);
 	for (u32 i = 0; i < availBufs; ++i)
 		done += __CtrlReadSingleBuffer(data++, negative);
 
@@ -268,7 +272,7 @@ retry:
 		if (wVal == 0)
 			goto retry;
 
-		PSPPointer<_ctrl_data> ctrlDataPtr;
+		PSPPointer<CtrlData> ctrlDataPtr;
 		ctrlDataPtr = __KernelGetWaitValue(threadID, error);
 		int retVal = __CtrlReadSingleBuffer(ctrlDataPtr, wVal == CTRL_WAIT_NEGATIVE);
 		__KernelResumeThreadFromWait(threadID, retVal);
@@ -304,7 +308,7 @@ void __CtrlInit()
 	ctrlIdleBack = -1;
 	ctrlCycle = 0;
 
-	lock_guard guard(ctrlMutex);
+	std::lock_guard<std::mutex> guard(ctrlMutex);
 
 	ctrlBuf = 1;
 	ctrlBufRead = 0;
@@ -321,12 +325,12 @@ void __CtrlInit()
 	analogEnabled = false;
 
 	for (u32 i = 0; i < NUM_CTRL_BUFFERS; i++)
-		memcpy(&ctrlBufs[i], &ctrlCurrent, sizeof(_ctrl_data));
+		memcpy(&ctrlBufs[i], &ctrlCurrent, sizeof(CtrlData));
 }
 
 void __CtrlDoState(PointerWrap &p)
 {
-	lock_guard guard(ctrlMutex);
+	std::lock_guard<std::mutex> guard(ctrlMutex);
 
 	auto s = p.Section("sceCtrl", 1, 3);
 	if (!s)
@@ -338,7 +342,7 @@ void __CtrlDoState(PointerWrap &p)
 
 	p.DoVoid(ctrlBufs, sizeof(ctrlBufs));
 	if (s <= 2) {
-		_ctrl_data dummy = {0};
+		CtrlData dummy = {0};
 		p.Do(dummy);
 	}
 	p.Do(ctrlBuf);
@@ -499,24 +503,28 @@ static int sceCtrlPeekBufferNegative(u32 ctrlDataPtr, u32 nBufs)
 	return done;
 }
 
-static u32 sceCtrlPeekLatch(u32 latchDataPtr)
-{
-	DEBUG_LOG(SCECTRL, "sceCtrlPeekLatch(%08x)", latchDataPtr);
-
-	if (Memory::IsValidAddress(latchDataPtr))
-		Memory::WriteStruct(latchDataPtr, &latch);
-
-	return ctrlLatchBufs;
+void __CtrlWriteUserLatch(CtrlLatch *userLatch) {
+	*userLatch = latch;
+	userLatch->btnBreak &= CTRL_MASK_USER;
+	userLatch->btnMake &= CTRL_MASK_USER;
+	userLatch->btnPress &= CTRL_MASK_USER;
+	userLatch->btnRelease &= CTRL_MASK_USER;
 }
 
-static u32 sceCtrlReadLatch(u32 latchDataPtr)
-{
-	DEBUG_LOG(SCECTRL, "sceCtrlReadLatch(%08x)", latchDataPtr);
+static u32 sceCtrlPeekLatch(u32 latchDataPtr) {
+	auto userLatch = PSPPointer<CtrlLatch>::Create(latchDataPtr);
+	if (userLatch.IsValid()) {
+		__CtrlWriteUserLatch(userLatch);
+	}
+	return hleLogSuccessI(SCECTRL, ctrlLatchBufs);
+}
 
-	if (Memory::IsValidAddress(latchDataPtr))
-		Memory::WriteStruct(latchDataPtr, &latch);
-
-	return __CtrlResetLatch();
+static u32 sceCtrlReadLatch(u32 latchDataPtr) {
+	auto userLatch = PSPPointer<CtrlLatch>::Create(latchDataPtr);
+	if (userLatch.IsValid()) {
+		__CtrlWriteUserLatch(userLatch);
+	}
+	return hleLogSuccessI(SCECTRL, __CtrlResetLatch());
 }
 
 static const HLEFunction sceCtrl[] =
@@ -530,8 +538,8 @@ static const HLEFunction sceCtrl[] =
 	{0X3A622550, &WrapI_UU<sceCtrlPeekBufferPositive>,     "sceCtrlPeekBufferPositive",        'i', "xx"},
 	{0XC152080A, &WrapI_UU<sceCtrlPeekBufferNegative>,     "sceCtrlPeekBufferNegative",        'i', "xx"},
 	{0X60B81F86, &WrapI_UU<sceCtrlReadBufferNegative>,     "sceCtrlReadBufferNegative",        'i', "xx"},
-	{0XB1D0E5CD, &WrapU_U<sceCtrlPeekLatch>,               "sceCtrlPeekLatch",                 'x', "x" },
-	{0X0B588501, &WrapU_U<sceCtrlReadLatch>,               "sceCtrlReadLatch",                 'x', "x" },
+	{0XB1D0E5CD, &WrapU_U<sceCtrlPeekLatch>,               "sceCtrlPeekLatch",                 'i', "x" },
+	{0X0B588501, &WrapU_U<sceCtrlReadLatch>,               "sceCtrlReadLatch",                 'i', "x" },
 	{0X348D99D4, nullptr,                                  "sceCtrlSetSuspendingExtraSamples", '?', ""  },
 	{0XAF5960F3, nullptr,                                  "sceCtrlGetSuspendingExtraSamples", '?', ""  },
 	{0XA68FD260, nullptr,                                  "sceCtrlClearRapidFire",            '?', ""  },

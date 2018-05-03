@@ -1,3 +1,4 @@
+#include "ppsspp_config.h"
 #include "base/display.h"
 #include "ui/ui.h"
 #include "ui/view.h"
@@ -5,15 +6,15 @@
 #include "gfx_es2/draw_buffer.h"
 #include "gfx_es2/draw_text.h"
 
-UIContext::UIContext()
-	: ui_pipeline_(0), uitexture_(0), uidrawbuffer_(0), uidrawbufferTop_(0) {
-	fontScaleX_ = 1.0f;
-	fontScaleY_ = 1.0f;
+#include "Common/Log.h"
+
+UIContext::UIContext() {
 	fontStyle_ = new UI::FontStyle();
 	bounds_ = Bounds(0, 0, dp_xres, dp_yres);
 }
 
 UIContext::~UIContext() {
+	sampler_->Release();
 	delete fontStyle_;
 	delete textDrawer_;
 }
@@ -26,20 +27,22 @@ void UIContext::Init(Draw::DrawContext *thin3d, Draw::Pipeline *uipipe, Draw::Pi
 	ui_pipeline_notex_ = uipipenotex;
 	uidrawbuffer_ = uidrawbuffer;
 	uidrawbufferTop_ = uidrawbufferTop;
-#if defined(_WIN32) || defined(USING_QT_UI)
-	textDrawer_ = new TextDrawer(thin3d);
-#else
-	textDrawer_ = nullptr;
-#endif
+	textDrawer_ = TextDrawer::Create(thin3d);  // May return nullptr if no implementation is available for this platform.
 }
 
-void UIContext::FrameSetup(Draw::Texture *uiTexture) {
-	uitexture_ = uiTexture;
+void UIContext::BeginFrame() {
+	if (!uitexture_) {
+		uitexture_ = CreateTextureFromFile(draw_, "ui_atlas.zim", ImageFileType::ZIM, false);
+		if (!uitexture_) {
+			PanicAlert("Failed to load ui_atlas.zim.\n\nPlace it in the directory \"assets\" under your PPSSPP directory.");
+			FLOG("Failed to load ui_atlas.zim");
+		}
+	}
 }
 
 void UIContext::Begin() {
 	draw_->BindSamplerStates(0, 1, &sampler_);
-	draw_->BindTexture(0, uitexture_);
+	draw_->BindTexture(0, uitexture_->GetTexture());
 	ActivateTopScissor();
 	UIBegin(ui_pipeline_);
 }
@@ -50,7 +53,7 @@ void UIContext::BeginNoTex() {
 }
 
 void UIContext::RebindTexture() const {
-	draw_->BindTexture(0, uitexture_);
+	draw_->BindTexture(0, uitexture_->GetTexture());
 }
 
 void UIContext::Flush() {
@@ -69,12 +72,14 @@ void UIContext::End() {
 	Flush();
 }
 
-// TODO: Support transformed bounds using stencil
+// TODO: Support transformed bounds using stencil instead.
 void UIContext::PushScissor(const Bounds &bounds) {
 	Flush();
-	Bounds clipped = bounds;
+	Bounds clipped = TransformBounds(bounds);
 	if (scissorStack_.size())
 		clipped.Clip(scissorStack_.back());
+	else
+		clipped.Clip(bounds_);
 	scissorStack_.push_back(clipped);
 	ActivateTopScissor();
 }
@@ -95,17 +100,18 @@ Bounds UIContext::GetScissorBounds() {
 void UIContext::ActivateTopScissor() {
 	Bounds bounds;
 	if (scissorStack_.size()) {
+		float scale_x = pixel_in_dps_x;
+		float scale_y = pixel_in_dps_y;
 		bounds = scissorStack_.back();
+		int x = floorf(scale_x * bounds.x);
+		int y = floorf(scale_y * bounds.y);
+		int w = ceilf(scale_x * bounds.w);
+		int h = ceilf(scale_y * bounds.h);
+		draw_->SetScissorRect(x, y, w, h);
+	} else {
+		// Avoid rounding errors
+		draw_->SetScissorRect(0, 0, pixel_xres, pixel_yres);
 	}
-	else {
-		bounds = bounds_;
-	}
-	float scale = pixel_in_dps;
-	int x = scale * bounds.x;
-	int y = scale * bounds.y;
-	int w = scale * bounds.w;
-	int h = scale * bounds.h;
-	draw_->SetScissorRect(x, y, w, h);
 }
 
 void UIContext::SetFontScale(float scaleX, float scaleY) {
@@ -176,7 +182,10 @@ void UIContext::DrawTextRect(const char *str, const Bounds &bounds, uint32_t col
 		Draw()->DrawTextRect(fontStyle_->atlasFont, str, bounds.x, bounds.y, bounds.w, bounds.h, color, align);
 	} else {
 		textDrawer_->SetFontScale(fontScaleX_, fontScaleY_);
-		textDrawer_->DrawStringRect(*Draw(), str, bounds, color, align);
+		Bounds rounded = bounds;
+		rounded.x = floorf(rounded.x);
+		rounded.y = floorf(rounded.y);
+		textDrawer_->DrawStringRect(*Draw(), str, rounded, color, align);
 		RebindTexture();
 	}
 }
@@ -199,4 +208,45 @@ void UIContext::FillRect(const UI::Drawable &drawable, const Bounds &bounds) {
 	case UI::DRAW_NOTHING:
 		break;
 	} 
+}
+
+void UIContext::PushTransform(const UITransform &transform) {
+	Flush();
+
+	Matrix4x4 m = Draw()->GetDrawMatrix();
+	const Vec3 &t = transform.translate;
+	Vec3 scaledTranslate = Vec3(
+		t.x * m.xx + t.y * m.xy + t.z * m.xz + m.xw,
+		t.x * m.yx + t.y * m.yy + t.z * m.yz + m.yw,
+		t.x * m.zx + t.y * m.zy + t.z * m.zz + m.zw);
+
+	m.translateAndScale(scaledTranslate, transform.scale);
+	Draw()->PushDrawMatrix(m);
+	Draw()->PushAlpha(transform.alpha);
+
+	transformStack_.push_back(transform);
+}
+
+void UIContext::PopTransform() {
+	Flush();
+
+	transformStack_.pop_back();
+
+	Draw()->PopDrawMatrix();
+	Draw()->PopAlpha();
+}
+
+Bounds UIContext::TransformBounds(const Bounds &bounds) {
+	if (!transformStack_.empty()) {
+		const UITransform t = transformStack_.back();
+		Bounds translated = bounds.Offset(t.translate.x, t.translate.y);
+
+		// Scale around the center as the origin.
+		float scaledX = (translated.x - dp_xres * 0.5f) * t.scale.x + dp_xres * 0.5f;
+		float scaledY = (translated.y - dp_yres * 0.5f) * t.scale.y + dp_yres * 0.5f;
+
+		return Bounds(scaledX, scaledY, translated.w * t.scale.x, translated.h * t.scale.y);
+	}
+
+	return bounds;
 }

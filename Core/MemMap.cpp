@@ -15,10 +15,15 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-#include <algorithm>
-
 #include "ppsspp_config.h"
-#include "base/mutex.h"
+
+#if PPSSPP_PLATFORM(UWP)
+#include "Common/CommonWindows.h"
+#endif
+
+#include <algorithm>
+#include <mutex>
+
 #include "Common/Common.h"
 #include "Common/MemoryUtil.h"
 #include "Common/MemArena.h"
@@ -77,7 +82,7 @@ u32 g_MemorySize;
 // Used to store the PSP model on game startup.
 u32 g_PSPModel;
 
-recursive_mutex g_shutdownLock;
+std::recursive_mutex g_shutdownLock;
 
 // We don't declare the IO region in here since its handled by other means.
 static MemoryView views[] =
@@ -98,7 +103,7 @@ static MemoryView views[] =
 	// Starts at memory + 31 MB.
 	{&m_pPhysicalRAM2,        0x09F00000, g_MemorySize, MV_IS_EXTRA1_RAM},
 	{&m_pUncachedRAM2,        0x49F00000, g_MemorySize, MV_MIRROR_PREVIOUS | MV_IS_EXTRA1_RAM},
-	// {&m_pKernelRAM2,          0x89F00000, g_MemorySize, MV_MIRROR_PREVIOUS | MV_IS_EXTRA1_RAM},
+	{&m_pKernelRAM2,          0x89F00000, g_MemorySize, MV_MIRROR_PREVIOUS | MV_IS_EXTRA1_RAM | MV_KERNEL},
 	// Starts at memory + 31 * 2 MB.
 	{&m_pPhysicalRAM3,        0x0BE00000, g_MemorySize, MV_IS_EXTRA2_RAM},
 	{&m_pUncachedRAM3,        0x4BE00000, g_MemorySize, MV_MIRROR_PREVIOUS | MV_IS_EXTRA2_RAM},
@@ -151,12 +156,12 @@ static bool Memory_TryBase(u32 flags) {
 		if (view.flags & MV_MIRROR_PREVIOUS) {
 			position = last_position;
 		}
-#if PPSSPP_ARCH(64BIT)
+#ifndef MASKED_PSP_MEMORY
 		*view.out_ptr = (u8*)g_arena.CreateView(
 			position, view.size, base + view.virtual_address);
 		if (!*view.out_ptr) {
 			goto bail;
-			ERROR_LOG(MEMMAP, "Failed at view %d", i);
+			DEBUG_LOG(MEMMAP, "Failed at view %d", i);
 		}
 #else
 		if (CanIgnoreView(view)) {
@@ -166,7 +171,7 @@ static bool Memory_TryBase(u32 flags) {
 			*view.out_ptr = (u8*)g_arena.CreateView(
 				position, view.size, base + (view.virtual_address & MEMVIEW32_MASK));
 			if (!*view.out_ptr) {
-				ERROR_LOG(MEMMAP, "Failed at view %d", i);
+				DEBUG_LOG(MEMMAP, "Failed at view %d", i);
 				goto bail;
 			}
 		}
@@ -176,7 +181,6 @@ static bool Memory_TryBase(u32 flags) {
 	}
 
 	return true;
-
 bail:
 	// Argh! ERROR! Free what we grabbed so far so we can try again.
 	for (int j = 0; j <= i; j++) {
@@ -194,6 +198,11 @@ bail:
 }
 
 bool MemoryMap_Setup(u32 flags) {
+#if PPSSPP_PLATFORM(UWP)
+	// We reserve the memory, then simply commit in TryBase.
+	base = (u8*)VirtualAllocFromApp(0, 0x10000000, MEM_RESERVE, PAGE_READWRITE);
+#else
+
 	// Figure out how much memory we need to allocate in total.
 	size_t total_mem = 0;
 	for (int i = 0; i < num_views; i++) {
@@ -206,7 +215,9 @@ bool MemoryMap_Setup(u32 flags) {
 
 	// Grab some pagefile backed memory out of the void ...
 	g_arena.GrabLowMemSpace(total_mem);
+#endif
 
+#if !PPSSPP_PLATFORM(ANDROID)
 	if (g_arena.NeedsProbing()) {
 		int base_attempts = 0;
 #if defined(_WIN32) && PPSSPP_ARCH(32BIT)
@@ -216,7 +227,7 @@ bool MemoryMap_Setup(u32 flags) {
 		uintptr_t stride = 0x400000;
 #else
 		// iOS
-		uintptr_t max_base_addr = 0x1FFFF0000ULL - 0x80000000;
+		uintptr_t max_base_addr = 0x1FFFF0000ULL - 0x80000000ULL;
 		uintptr_t min_base_addr = 0x100000000ULL;
 		uintptr_t stride = 0x800000;
 #endif
@@ -231,8 +242,13 @@ bool MemoryMap_Setup(u32 flags) {
 		ERROR_LOG(MEMMAP, "MemoryMap_Setup: Failed finding a memory base.");
 		PanicAlert("MemoryMap_Setup: Failed finding a memory base.");
 		return false;
-	} else {
+	}
+	else
+#endif
+	{
+#if !PPSSPP_PLATFORM(UWP)
 		base = g_arena.Find4GBBase();
+#endif
 	}
 
 	// Should return true...
@@ -249,6 +265,10 @@ void MemoryMap_Shutdown(u32 flags) {
 		*views[i].out_ptr = nullptr;
 	}
 	g_arena.ReleaseSpace();
+
+#if PPSSPP_PLATFORM(UWP)
+	VirtualFree(base, 0, MEM_RELEASE);
+#endif
 }
 
 void Init() {
@@ -315,7 +335,7 @@ void DoState(PointerWrap &p) {
 }
 
 void Shutdown() {
-	lock_guard guard(g_shutdownLock);
+	std::lock_guard<std::recursive_mutex> guard(g_shutdownLock);
 	u32 flags = 0;
 	MemoryMap_Shutdown(flags);
 	base = nullptr;
@@ -362,13 +382,13 @@ __forceinline static Opcode Read_Instruction(u32 address, bool resolveReplacemen
 			u32 op;
 			if (GetReplacedOpAt(address, &op)) {
 				if (MIPS_IS_EMUHACK(op)) {
-					ERROR_LOG(HLE,"WTF 1");
+					ERROR_LOG(MEMMAP, "WTF 1");
 					return Opcode(op);
 				} else {
 					return Opcode(op);
 				}
 			} else {
-				ERROR_LOG(HLE, "Replacement, but no replacement op? %08x", inst.encoding);
+				ERROR_LOG(MEMMAP, "Replacement, but no replacement op? %08x", inst.encoding);
 			}
 		}
 		return inst;
@@ -376,7 +396,7 @@ __forceinline static Opcode Read_Instruction(u32 address, bool resolveReplacemen
 		u32 op;
 		if (GetReplacedOpAt(address, &op)) {
 			if (MIPS_IS_EMUHACK(op)) {
-				ERROR_LOG(HLE,"WTF 2");
+				ERROR_LOG(MEMMAP, "WTF 2");
 				return Opcode(op);
 			} else {
 				return Opcode(op);
@@ -418,14 +438,11 @@ void Write_Opcode_JIT(const u32 _Address, const Opcode& _Value)
 	Memory::WriteUnchecked_U32(_Value.encoding, _Address);
 }
 
-void Memset(const u32 _Address, const u8 _iValue, const u32 _iLength)
-{
-	u8 *ptr = GetPointer(_Address);
-	if (ptr != NULL) {
+void Memset(const u32 _Address, const u8 _iValue, const u32 _iLength) {
+	if (IsValidRange(_Address, _iLength)) {
+		uint8_t *ptr = GetPointerUnchecked(_Address);
 		memset(ptr, _iValue, _iLength);
-	}
-	else
-	{
+	} else {
 		for (size_t i = 0; i < _iLength; i++)
 			Write_U8(_iValue, (u32)(_Address + i));
 	}

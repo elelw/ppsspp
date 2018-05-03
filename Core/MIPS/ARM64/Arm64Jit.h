@@ -39,7 +39,6 @@ public:
 	virtual ~Arm64Jit();
 
 	void DoState(PointerWrap &p) override;
-	void DoDummyState(PointerWrap &p) override;
 
 	const JitOptions &GetJitOptions() { return jo; }
 
@@ -170,12 +169,14 @@ public:
 	int Replace_fabsf() override;
 
 	JitBlockCache *GetBlockCache() override { return &blocks; }
+	JitBlockCacheDebugInterface *GetBlockCacheDebugInterface() override { return &blocks; }
 
 	std::vector<u32> SaveAndClearEmuHackOps() override { return blocks.SaveAndClearEmuHackOps(); }
 	void RestoreSavedEmuHackOps(std::vector<u32> saved) override { blocks.RestoreSavedEmuHackOps(saved); }
 
 	void ClearCache() override;
 	void InvalidateCacheAt(u32 em_address, int length = 4) override;
+	void UpdateFCR31() override;
 
 	void EatPrefix() override { js.EatPrefix(); }
 
@@ -201,7 +202,7 @@ private:
 	void WriteDownCountR(Arm64Gen::ARM64Reg reg, bool updateFlags = true);
 	void RestoreRoundingMode(bool force = false);
 	void ApplyRoundingMode(bool force = false);
-	void UpdateRoundingMode();
+	void UpdateRoundingMode(u32 fcr31 = -1);
 	void MovFromPC(Arm64Gen::ARM64Reg r);
 	void MovToPC(Arm64Gen::ARM64Reg r);
 
@@ -221,8 +222,8 @@ private:
 	void BranchRSRTComp(MIPSOpcode op, CCFlags cc, bool likely);
 
 	// Utilities to reduce duplicated code
-	void CompImmLogic(MIPSGPReg rs, MIPSGPReg rt, u32 uimm, void (ARM64XEmitter::*arith)(Arm64Gen::ARM64Reg dst, Arm64Gen::ARM64Reg src, Arm64Gen::ARM64Reg src2), bool (ARM64XEmitter::*tryArithI2R)(Arm64Gen::ARM64Reg dst, Arm64Gen::ARM64Reg src, u32 val), u32 (*eval)(u32 a, u32 b));
-	void CompType3(MIPSGPReg rd, MIPSGPReg rs, MIPSGPReg rt, void (ARM64XEmitter::*arithOp2)(Arm64Gen::ARM64Reg dst, Arm64Gen::ARM64Reg rm, Arm64Gen::ARM64Reg rn), bool (ARM64XEmitter::*tryArithI2R)(Arm64Gen::ARM64Reg dst, Arm64Gen::ARM64Reg rm, u32 val), u32 (*eval)(u32 a, u32 b), bool symmetric = false);
+	void CompImmLogic(MIPSGPReg rs, MIPSGPReg rt, u32 uimm, void (ARM64XEmitter::*arith)(Arm64Gen::ARM64Reg dst, Arm64Gen::ARM64Reg src, Arm64Gen::ARM64Reg src2), bool (ARM64XEmitter::*tryArithI2R)(Arm64Gen::ARM64Reg dst, Arm64Gen::ARM64Reg src, u64 val), u32 (*eval)(u32 a, u32 b));
+	void CompType3(MIPSGPReg rd, MIPSGPReg rs, MIPSGPReg rt, void (ARM64XEmitter::*arithOp2)(Arm64Gen::ARM64Reg dst, Arm64Gen::ARM64Reg rm, Arm64Gen::ARM64Reg rn), bool (ARM64XEmitter::*tryArithI2R)(Arm64Gen::ARM64Reg dst, Arm64Gen::ARM64Reg rm, u64 val), u32 (*eval)(u32 a, u32 b), bool symmetric = false);
 	void CompShiftImm(MIPSOpcode op, Arm64Gen::ShiftType shiftType, int sa);
 	void CompShiftVar(MIPSOpcode op, Arm64Gen::ShiftType shiftType);
 	void CompVrotShuffle(u8 *dregs, int imm, VectorSize sz, bool negSin);
@@ -279,6 +280,8 @@ public:
 	const u8 *restoreRoundingMode;
 	const u8 *applyRoundingMode;
 	const u8 *updateRoundingMode;
+
+	int jitStartOffset;
 
 	// Indexed by FPCR FZ:RN bits for convenience.  Uses SCRATCH2.
 	const u8 *convertS0ToSCRATCH1[8];

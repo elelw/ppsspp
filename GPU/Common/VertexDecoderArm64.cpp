@@ -32,8 +32,8 @@
 #include "GPU/GPUState.h"
 #include "GPU/Common/VertexDecoderCommon.h"
 
-static float MEMORY_ALIGNED16(bones[16 * 8]);  // First four are kept in registers
-static float MEMORY_ALIGNED16(boneMask[4]) = {1.0f, 1.0f, 1.0f, 0.0f};
+alignas(16) static float bones[16 * 8];  // First four are kept in registers
+alignas(16) static float boneMask[4] = {1.0f, 1.0f, 1.0f, 0.0f};
 
 static const float by128 = 1.0f / 128.0f;
 static const float by32768 = 1.0f / 32768.0f;
@@ -92,18 +92,16 @@ static const JitLookup jitLookup[] = {
 	{&VertexDecoder::Step_WeightsU16Skin, &VertexDecoderJitCache::Jit_WeightsU16Skin},
 	{&VertexDecoder::Step_WeightsFloatSkin, &VertexDecoderJitCache::Jit_WeightsFloatSkin},
 
+	{&VertexDecoder::Step_TcFloat, &VertexDecoderJitCache::Jit_TcFloat},
 	{&VertexDecoder::Step_TcU8ToFloat, &VertexDecoderJitCache::Jit_TcU8ToFloat},
 	{&VertexDecoder::Step_TcU16ToFloat, &VertexDecoderJitCache::Jit_TcU16ToFloat},
-	{&VertexDecoder::Step_TcFloat, &VertexDecoderJitCache::Jit_TcFloat},
-	{&VertexDecoder::Step_TcU16Double, &VertexDecoderJitCache::Jit_TcU16Double},
 
 	{&VertexDecoder::Step_TcU8Prescale, &VertexDecoderJitCache::Jit_TcU8Prescale},
 	{&VertexDecoder::Step_TcU16Prescale, &VertexDecoderJitCache::Jit_TcU16Prescale},
 	{&VertexDecoder::Step_TcFloatPrescale, &VertexDecoderJitCache::Jit_TcFloatPrescale},
 
-	{&VertexDecoder::Step_TcU16Through, &VertexDecoderJitCache::Jit_TcU16Through},
 	{&VertexDecoder::Step_TcFloatThrough, &VertexDecoderJitCache::Jit_TcFloatThrough},
-	{&VertexDecoder::Step_TcU16ThroughDouble, &VertexDecoderJitCache::Jit_TcU16ThroughDouble},
+	{&VertexDecoder::Step_TcU16ThroughToFloat, &VertexDecoderJitCache::Jit_TcU16ThroughToFloat},
 
 	{&VertexDecoder::Step_NormalS8, &VertexDecoderJitCache::Jit_NormalS8},
 	{&VertexDecoder::Step_NormalS16, &VertexDecoderJitCache::Jit_NormalS16},
@@ -117,9 +115,11 @@ static const JitLookup jitLookup[] = {
 	{&VertexDecoder::Step_Color4444, &VertexDecoderJitCache::Jit_Color4444},
 	{&VertexDecoder::Step_Color565, &VertexDecoderJitCache::Jit_Color565},
 	{&VertexDecoder::Step_Color5551, &VertexDecoderJitCache::Jit_Color5551},
+
 	{&VertexDecoder::Step_PosS8Through, &VertexDecoderJitCache::Jit_PosS8Through},
 	{&VertexDecoder::Step_PosS16Through, &VertexDecoderJitCache::Jit_PosS16Through},
 	{&VertexDecoder::Step_PosFloatThrough, &VertexDecoderJitCache::Jit_PosFloat},
+
 	{&VertexDecoder::Step_PosS8, &VertexDecoderJitCache::Jit_PosS8},
 	{&VertexDecoder::Step_PosS16, &VertexDecoderJitCache::Jit_PosS16},
 	{&VertexDecoder::Step_PosFloat, &VertexDecoderJitCache::Jit_PosFloat},
@@ -196,7 +196,7 @@ JittedVertexDecoder VertexDecoderJitCache::Compile(const VertexDecoder &dec, int
 	// Add code to convert matrices to 4x4.
 	// Later we might want to do this when the matrices are loaded instead.
 	int boneCount = 0;
-	if (dec.weighttype && g_Config.bSoftwareSkinning && dec.morphcount == 1) {
+	if (dec.weighttype && g_Config.bSoftwareSkinning) {
 		// Copying from R3 to R4
 		MOVP2R(X3, gstate.boneMatrix);
 		MOVP2R(X4, bones);
@@ -251,8 +251,8 @@ JittedVertexDecoder VertexDecoderJitCache::Compile(const VertexDecoder &dec, int
 			SetCodePtr(const_cast<u8 *>(start));
 			char temp[1024] = {0};
 			dec.ToString(temp);
-			WARN_LOG(HLE, "Could not compile vertex decoder, failed at step %d: %s", i, temp);
-			return 0;
+			ERROR_LOG(G3D, "Could not compile vertex decoder, failed at step %d: %s", i, temp);
+			return nullptr;
 		}
 	}
 
@@ -579,7 +579,7 @@ void VertexDecoderJitCache::Jit_Color5551() {
 	CSEL(fullAlphaReg, fullAlphaReg, WZR, CC_EQ);
 }
 
-void VertexDecoderJitCache::Jit_TcU16Through() {
+void VertexDecoderJitCache::Jit_TcU16ThroughToFloat() {
 	LDRH(INDEX_UNSIGNED, tempReg1, srcReg, dec_->tcoff);
 	LDRH(INDEX_UNSIGNED, tempReg2, srcReg, dec_->tcoff + 2);
 
@@ -593,29 +593,15 @@ void VertexDecoderJitCache::Jit_TcU16Through() {
 	updateSide(tempReg2, CC_LT, boundsMinVReg);
 	updateSide(tempReg2, CC_GT, boundsMaxVReg);
 
-	ORR(tempReg1, tempReg1, tempReg2, ArithOption(tempReg2, ST_LSL, 16));
-	STR(INDEX_UNSIGNED, tempReg1, dstReg, dec_->decFmt.uvoff);
+	fp.LDUR(32, neonScratchRegD, srcReg, dec_->tcoff);
+	fp.UXTL(16, neonScratchRegQ, neonScratchRegD); // Widen to 32-bit
+	fp.UCVTF(32, neonScratchRegD, neonScratchRegD);
+	fp.STUR(64, neonScratchRegD, dstReg, dec_->decFmt.uvoff);
 }
 
 void VertexDecoderJitCache::Jit_TcFloatThrough() {
 	LDP(INDEX_SIGNED, tempReg1, tempReg2, srcReg, dec_->tcoff);
 	STP(INDEX_SIGNED, tempReg1, tempReg2, dstReg, dec_->decFmt.uvoff);
-}
-
-void VertexDecoderJitCache::Jit_TcU16Double() {
-	LDRH(INDEX_UNSIGNED, tempReg1, srcReg, dec_->tcoff);
-	LDRH(INDEX_UNSIGNED, tempReg2, srcReg, dec_->tcoff + 2);
-	LSL(tempReg1, tempReg1, 1);
-	ORR(tempReg1, tempReg1, tempReg2, ArithOption(tempReg2, ST_LSL, 17));
-	STR(INDEX_UNSIGNED, tempReg1, dstReg, dec_->decFmt.uvoff);
-}
-
-void VertexDecoderJitCache::Jit_TcU16ThroughDouble() {
-	LDRH(INDEX_UNSIGNED, tempReg1, srcReg, dec_->tcoff);
-	LDRH(INDEX_UNSIGNED, tempReg2, srcReg, dec_->tcoff + 2);
-	LSL(tempReg1, tempReg1, 1);
-	ORR(tempReg1, tempReg1, tempReg2, ArithOption(tempReg2, ST_LSL, 17));
-	STR(INDEX_UNSIGNED, tempReg1, dstReg, dec_->decFmt.uvoff);
 }
 
 void VertexDecoderJitCache::Jit_TcFloat() {
@@ -712,7 +698,7 @@ void VertexDecoderJitCache::Jit_PosS16Through() {
 }
 
 void VertexDecoderJitCache::Jit_NormalS8() {
-	LDRH(INDEX_UNSIGNED, tempReg1, srcReg, dec_->nrmoff);
+	LDURH(tempReg1, srcReg, dec_->nrmoff);
 	LDRB(INDEX_UNSIGNED, tempReg3, srcReg, dec_->nrmoff + 2);
 	ORR(tempReg1, tempReg1, tempReg3, ArithOption(tempReg3, ST_LSL, 16));
 	STR(INDEX_UNSIGNED, tempReg1, dstReg, dec_->decFmt.nrmoff);

@@ -21,6 +21,8 @@
 #include "ext/udis86/udis86.h"
 
 #include "Common/StringUtils.h"
+#include "Common/ChunkFile.h"
+
 #include "Core/Util/DisArm64.h"
 #include "Core/Config.h"
 
@@ -44,6 +46,20 @@ namespace MIPSComp {
 	JitInterface *jit;
 	void JitAt() {
 		jit->Compile(currentMIPS->pc);
+	}
+
+	void DoDummyJitState(PointerWrap &p) {
+		// This is here so the savestate matches between jit and non-jit.
+		auto s = p.Section("Jit", 1, 2);
+		if (!s)
+			return;
+
+		bool dummy = false;
+		p.Do(dummy);
+		if (s >= 2) {
+			dummy = true;
+			p.Do(dummy);
+		}
 	}
 
 	JitInterface *CreateNativeJit(MIPSState *mips) {
@@ -95,14 +111,14 @@ std::vector<std::string> DisassembleArm2(const u8 *data, int size) {
 			bkpt_count++;
 		} else {
 			if (bkpt_count) {
-				lines.push_back(StringFromFormat("BKPT 1 (x%i)", bkpt_count));
+				lines.push_back(StringFromFormat("BKPT 1 (x%d)", bkpt_count));
 				bkpt_count = 0;
 			}
 			lines.push_back(buf);
 		}
 	}
 	if (bkpt_count) {
-		lines.push_back(StringFromFormat("BKPT 1 (x%i)", bkpt_count));
+		lines.push_back(StringFromFormat("BKPT 1 (x%d)", bkpt_count));
 	}
 	return lines;
 }
@@ -157,7 +173,7 @@ std::vector<std::string> DisassembleArm64(const u8 *data, int size) {
 			bkpt_count++;
 		} else {
 			if (bkpt_count) {
-				lines.push_back(StringFromFormat("BKPT 1 (x%i)", bkpt_count));
+				lines.push_back(StringFromFormat("BKPT 1 (x%d)", bkpt_count));
 				bkpt_count = 0;
 			}
 			if (true) {
@@ -167,7 +183,7 @@ std::vector<std::string> DisassembleArm64(const u8 *data, int size) {
 		}
 	}
 	if (bkpt_count) {
-		lines.push_back(StringFromFormat("BKPT 1 (x%i)", bkpt_count));
+		lines.push_back(StringFromFormat("BKPT 1 (x%d)", bkpt_count));
 	}
 	return lines;
 }
@@ -235,14 +251,14 @@ std::vector<std::string> DisassembleX86(const u8 *data, int size) {
 			int3_count++;
 		} else {
 			if (int3_count) {
-				lines.push_back(StringFromFormat("int3 (x%i)", int3_count));
+				lines.push_back(StringFromFormat("int3 (x%d)", int3_count));
 				int3_count = 0;
 			}
 			lines.push_back(str);
 		}
 	}
 	if (int3_count) {
-		lines.push_back(StringFromFormat("int3 (x%i)", int3_count));
+		lines.push_back(StringFromFormat("int3 (x%d)", int3_count));
 	}
 	return lines;
 }

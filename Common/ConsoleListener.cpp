@@ -26,7 +26,11 @@
 #else
 #include <stdarg.h>
 #endif
+#ifndef _MSC_VER
+#include <unistd.h>
+#endif
 
+#include "ppsspp_config.h"
 #include "thread/threadutil.h"
 #include "util/text/utf8.h"
 #include "Common.h"
@@ -64,6 +68,10 @@ ConsoleListener::ConsoleListener() : bHidden(true)
 	bUseColor = false;
 #elif defined(IOS)
 	bUseColor = false;
+#elif PPSSPP_PLATFORM(UWP)
+	bUseColor = false;
+#elif defined(_MSC_VER)
+	bUseColor = false;
 #else
 	bUseColor = isatty(fileno(stdout));
 #endif
@@ -74,7 +82,7 @@ ConsoleListener::~ConsoleListener()
 	Close();
 }
 
-#ifdef _WIN32
+#if defined(_WIN32)
 // Handle console event
 bool WINAPI ConsoleHandler(DWORD msgType)
 {
@@ -133,6 +141,7 @@ void ConsoleListener::Open()
 		// Set the console window title
 		SetConsoleTitle(title_.c_str());
 		SetConsoleCP(CP_UTF8);
+		SetConsoleOutputCP(CP_UTF8);
 
 		// Set letter space
 		LetterSpace(openWidth_, LOG_MAX_DISPLAY_LINES);
@@ -178,8 +187,6 @@ void ConsoleListener::UpdateHandle()
 void ConsoleListener::Close()
 {
 #if defined(USING_WIN_UI)
-	if (hConsole == NULL)
-		return;
 
 	if (--refCount <= 0)
 	{
@@ -206,8 +213,10 @@ void ConsoleListener::Close()
 		refCount = 0;
 	}
 
-	FreeConsole();
-	hConsole = NULL;
+	if (hConsole != NULL) {
+		FreeConsole();
+		hConsole = NULL;
+	}
 #else
 	fflush(NULL);
 #endif
@@ -500,7 +509,7 @@ void ConsoleListener::WriteToConsole(LogTypes::LOG_LEVELS Level, const char *Tex
 	SetConsoleTextAttribute(hConsole, Color);
 	int wlen = MultiByteToWideChar(CP_UTF8, 0, Text, (int)Len, NULL, NULL);
 	MultiByteToWideChar(CP_UTF8, 0, Text, (int)Len, tempBuf, wlen);
-	WriteConsole(hConsole, tempBuf, (DWORD)Len, &cCharsWritten, NULL);
+	WriteConsole(hConsole, tempBuf, (DWORD)wlen, &cCharsWritten, NULL);
 }
 #endif
 
@@ -582,20 +591,24 @@ void ConsoleListener::PixelSpace(int Left, int Top, int Width, int Height, bool 
 	COORD Coo = GetCoordinates(OldCursor, LBufWidth);
 	SetConsoleCursorPosition(hConsole, Coo);
 
-	if (SLog.length() > 0) Log(LogTypes::LNOTICE, SLog.c_str());
+	// if (SLog.length() > 0) Log(LogTypes::LNOTICE, SLog.c_str());
 
 	// Resize the window too
 	if (Resize) MoveWindow(GetConsoleWindow(), Left,Top, (Width + 100),Height, true);
 #endif
 }
 
-void ConsoleListener::Log(LogTypes::LOG_LEVELS Level, const char *Text)
-{
+void ConsoleListener::Log(const LogMessage &msg) {
+	char Text[2048];
+	snprintf(Text, sizeof(Text), "%s %s", msg.header, msg.msg.c_str());
+	Text[sizeof(Text) - 2] = '\n';
+	Text[sizeof(Text) - 1] = '\0';
+
 #if defined(USING_WIN_UI)
 	if (hThread == NULL && IsOpen())
-		WriteToConsole(Level, Text, strlen(Text));
+		WriteToConsole(msg.level, Text, strlen(Text));
 	else
-		SendToThread(Level, Text);
+		SendToThread(msg.level, Text);
 #else
 	char ColorAttr[16] = "";
 	char ResetAttr[16] = "";
@@ -603,7 +616,7 @@ void ConsoleListener::Log(LogTypes::LOG_LEVELS Level, const char *Text)
 	if (bUseColor)
 	{
 		strcpy(ResetAttr, "\033[0m");
-		switch (Level)
+		switch (msg.level)
 		{
 		case NOTICE_LEVEL: // light green
 			strcpy(ColorAttr, "\033[92m");

@@ -16,14 +16,14 @@
     <Filter Include="DirectX9">
       <UniqueIdentifier>{88629970-4774-4122-b031-2128244b795c}</UniqueIdentifier>
     </Filter>
-    <Filter Include="DirectX9\helper">
-      <UniqueIdentifier>{ba434472-5d5e-4b08-ab16-bfb7ec8e7068}</UniqueIdentifier>
-    </Filter>
     <Filter Include="Debugger">
       <UniqueIdentifier>{0cbddc00-4aa3-41d0-bed2-a454d37f838e}</UniqueIdentifier>
     </Filter>
     <Filter Include="Vulkan">
       <UniqueIdentifier>{3c621896-140c-4c8b-8e4d-a478bfdeca8a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="D3D11">
+      <UniqueIdentifier>{88eb5cea-ec25-4881-89da-02f9f2fa8f3f}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -222,6 +222,57 @@
     <ClInclude Include="GLES\FragmentTestCacheGLES.h">
       <Filter>GLES</Filter>
     </ClInclude>
+    <ClInclude Include="Common\ShaderUniforms.h">
+      <Filter>Common</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11\ShaderManagerD3D11.h">
+      <Filter>D3D11</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11\VertexShaderGeneratorD3D11.h">
+      <Filter>D3D11</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11\FragmentShaderGeneratorD3D11.h">
+      <Filter>D3D11</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11\TextureCacheD3D11.h">
+      <Filter>D3D11</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11\FramebufferManagerD3D11.h">
+      <Filter>D3D11</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11\GPU_D3D11.h">
+      <Filter>D3D11</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11\DrawEngineD3D11.h">
+      <Filter>D3D11</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11\DepalettizeShaderD3D11.h">
+      <Filter>D3D11</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11\TextureScalerD3D11.h">
+      <Filter>D3D11</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11\D3D11Util.h">
+      <Filter>D3D11</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\ShaderTranslation.h">
+      <Filter>Common</Filter>
+    </ClInclude>
+    <ClInclude Include="Software\Sampler.h">
+      <Filter>Software</Filter>
+    </ClInclude>
+    <ClInclude Include="Debugger\Record.h">
+      <Filter>Debugger</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\StencilCommon.h">
+      <Filter>Common</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11\StateMappingD3D11.h">
+      <Filter>D3D11</Filter>
+    </ClInclude>
+    <ClInclude Include="Vulkan\DebugVisVulkan.h">
+      <Filter>Vulkan</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Math3D.cpp">
@@ -371,9 +422,6 @@
     <ClCompile Include="Vulkan\FragmentShaderGeneratorVulkan.cpp">
       <Filter>Vulkan</Filter>
     </ClCompile>
-    <ClCompile Include="Vulkan\FramebufferVulkan.cpp">
-      <Filter>Vulkan</Filter>
-    </ClCompile>
     <ClCompile Include="Vulkan\GPU_Vulkan.cpp">
       <Filter>Vulkan</Filter>
     </ClCompile>
@@ -427,6 +475,72 @@
     </ClCompile>
     <ClCompile Include="GLES\FragmentTestCacheGLES.cpp">
       <Filter>GLES</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11\StateMappingD3D11.cpp">
+      <Filter>D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="Common\ShaderUniforms.cpp">
+      <Filter>Common</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11\ShaderManagerD3D11.cpp">
+      <Filter>D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11\VertexShaderGeneratorD3D11.cpp">
+      <Filter>D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11\FragmentShaderGeneratorD3D11.cpp">
+      <Filter>D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11\TextureCacheD3D11.cpp">
+      <Filter>D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11\FramebufferManagerD3D11.cpp">
+      <Filter>D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11\GPU_D3D11.cpp">
+      <Filter>D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11\DrawEngineD3D11.cpp">
+      <Filter>D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11\DepalettizeShaderD3D11.cpp">
+      <Filter>D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11\TextureScalerD3D11.cpp">
+      <Filter>D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11\D3D11Util.cpp">
+      <Filter>D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11\StencilBufferD3D11.cpp">
+      <Filter>D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="Common\ShaderTranslation.cpp">
+      <Filter>Common</Filter>
+    </ClCompile>
+    <ClCompile Include="Common\ShaderCommon.cpp">
+      <Filter>Common</Filter>
+    </ClCompile>
+    <ClCompile Include="Vulkan\FramebufferVulkan.cpp">
+      <Filter>Vulkan</Filter>
+    </ClCompile>
+    <ClCompile Include="Software\Sampler.cpp">
+      <Filter>Software</Filter>
+    </ClCompile>
+    <ClCompile Include="Software\SamplerX86.cpp">
+      <Filter>Software</Filter>
+    </ClCompile>
+    <ClCompile Include="Debugger\Record.cpp">
+      <Filter>Debugger</Filter>
+    </ClCompile>
+    <ClCompile Include="Vulkan\StencilBufferVulkan.cpp">
+      <Filter>Vulkan</Filter>
+    </ClCompile>
+    <ClCompile Include="Common\StencilCommon.cpp">
+      <Filter>Common</Filter>
+    </ClCompile>
+    <ClCompile Include="Vulkan\DebugVisVulkan.cpp">
+      <Filter>Vulkan</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

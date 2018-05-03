@@ -41,7 +41,7 @@
 #include <algorithm>
 
 #ifdef _M_SSE
-#include <xmmintrin.h>
+#include <emmintrin.h>
 #endif
 
 namespace DX9 {
@@ -81,51 +81,6 @@ static const D3DVERTEXELEMENT9 g_FramebufferVertexElements[] = {
 	D3DDECL_END()
 };
 
-static void DXSetViewport(float x, float y, float w, float h, float minZ, float maxZ) {
-	D3DVIEWPORT9 vp;
-	vp.X = (DWORD)x;
-	vp.Y = (DWORD)y;
-	vp.Width = (DWORD)w;
-	vp.Height = (DWORD)h;
-	vp.MinZ = minZ;
-	vp.MaxZ = maxZ;
-	pD3Ddevice->SetViewport(&vp);
-}
-
-	void FramebufferManagerDX9::ClearBuffer(bool keepState) {
-		if (keepState) {
-			dxstate.scissorTest.force(false);
-			dxstate.depthWrite.force(TRUE);
-			dxstate.colorMask.force(true, true, true, true);
-			dxstate.stencilFunc.force(D3DCMP_ALWAYS, 0, 0);
-			dxstate.stencilMask.force(0xFF);
-		} else {
-			dxstate.scissorTest.disable();
-			dxstate.depthWrite.set(TRUE);
-			dxstate.colorMask.set(true, true, true, true);
-			dxstate.stencilFunc.set(D3DCMP_ALWAYS, 0, 0);
-			dxstate.stencilMask.set(0xFF);
-		}
-		pD3Ddevice->Clear(0, NULL, D3DCLEAR_STENCIL|D3DCLEAR_TARGET |D3DCLEAR_ZBUFFER, D3DCOLOR_ARGB(0, 0, 0, 0), ToScaledDepth(0), 0);
-		if (keepState) {
-			dxstate.scissorTest.restore();
-			dxstate.depthWrite.restore();
-			dxstate.colorMask.restore();
-			dxstate.stencilFunc.restore();
-			dxstate.stencilMask.restore();
-		}
-	}
-
-	void FramebufferManagerDX9::DisableState() {
-		dxstate.blend.disable();
-		dxstate.cullMode.set(false, false);
-		dxstate.depthTest.disable();
-		dxstate.scissorTest.disable();
-		dxstate.stencilTest.disable();
-		dxstate.colorMask.set(true, true, true, true);
-		dxstate.stencilMask.set(0xFF);
-	}
-
 	FramebufferManagerDX9::FramebufferManagerDX9(Draw::DrawContext *draw)
 		: FramebufferManagerCommon(draw),
 			drawPixelsTex_(0),
@@ -135,6 +90,7 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 			stencilUploadFailed_(false) {
 
 		device_ = (LPDIRECT3DDEVICE9)draw->GetNativeObject(Draw::NativeObject::DEVICE);
+		deviceEx_ = (LPDIRECT3DDEVICE9)draw->GetNativeObject(Draw::NativeObject::DEVICE_EX);
 		std::string errorMsg;
 		if (!CompileVertexShader(device_, vscode, &pFramebufferVertexShader, nullptr, errorMsg)) {
 			OutputDebugStringA(errorMsg.c_str());
@@ -147,7 +103,7 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 			}
 		}
 
-		pD3Ddevice->CreateVertexDeclaration(g_FramebufferVertexElements, &pFramebufferVertexDecl);
+		device_->CreateVertexDeclaration(g_FramebufferVertexElements, &pFramebufferVertexDecl);
 	}
 
 	FramebufferManagerDX9::~FramebufferManagerDX9() {
@@ -164,7 +120,7 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 			drawPixelsTex_->Release();
 		}
 		for (auto it = tempFBOs_.begin(), end = tempFBOs_.end(); it != end; ++it) {
-			delete it->second.fbo;
+			it->second.fbo->Release();
 		}
 		for (auto it = offscreenSurfaces_.begin(), end = offscreenSurfaces_.end(); it != end; ++it) {
 			it->second.surface->Release();
@@ -183,7 +139,17 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 		textureCache_ = tc;
 	}
 
-	void FramebufferManagerDX9::MakePixelTexture(const u8 *srcPixels, GEBufferFormat srcPixelFormat, int srcStride, int width, int height) {
+	void FramebufferManagerDX9::SetShaderManager(ShaderManagerDX9 *sm) {
+		shaderManagerDX9_ = sm;
+		shaderManager_ = sm;
+	}
+
+	void FramebufferManagerDX9::SetDrawEngine(DrawEngineDX9 *td) {
+		drawEngineD3D9_ = td;
+		drawEngine_ = td;
+	}
+
+	void FramebufferManagerDX9::MakePixelTexture(const u8 *srcPixels, GEBufferFormat srcPixelFormat, int srcStride, int width, int height, float &u1, float &v1) {
 		u8 *convBuf = NULL;
 		D3DLOCKED_RECT rect;
 
@@ -196,11 +162,11 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 		if (!drawPixelsTex_) {
 			int usage = 0;
 			D3DPOOL pool = D3DPOOL_MANAGED;
-			if (pD3DdeviceEx) {
+			if (deviceEx_) {
 				pool = D3DPOOL_DEFAULT;
 				usage = D3DUSAGE_DYNAMIC;
 			}
-			HRESULT hr = pD3Ddevice->CreateTexture(width, height, 1, usage, D3DFMT_A8R8G8B8, pool, &drawPixelsTex_, NULL);
+			HRESULT hr = device_->CreateTexture(width, height, 1, usage, D3DFMT_A8R8G8B8, pool, &drawPixelsTex_, NULL);
 			if (FAILED(hr)) {
 				drawPixelsTex_ = nullptr;
 				ERROR_LOG(G3D, "Failed to create drawpixels texture");
@@ -213,7 +179,7 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 			return;
 		}
 
-		drawPixelsTex_->LockRect(0, &rect, NULL, 0);
+		drawPixelsTex_->LockRect(0, &rect, NULL, D3DLOCK_DISCARD);
 
 		convBuf = (u8*)rect.pBits;
 
@@ -262,45 +228,17 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 		}
 
 		drawPixelsTex_->UnlockRect(0);
+		device_->SetTexture(0, drawPixelsTex_);
 		// D3DXSaveTextureToFile("game:\\cc.png", D3DXIFF_PNG, drawPixelsTex_, NULL);
 	}
 
-	void FramebufferManagerDX9::DrawPixels(VirtualFramebuffer *vfb, int dstX, int dstY, const u8 *srcPixels, GEBufferFormat srcPixelFormat, int srcStride, int width, int height) {
-		if (useBufferedRendering_ && vfb && vfb->fbo) {
-			draw_->BindFramebufferAsRenderTarget(vfb->fbo);
-			D3DVIEWPORT9 vp{ 0, 0, vfb->renderWidth, vfb->renderHeight, 0.0f, 1.0f };
-			pD3Ddevice->SetViewport(&vp);
-		} else {
-			float x, y, w, h;
-			CenterDisplayOutputRect(&x, &y, &w, &h, 480.0f, 272.0f, (float)pixelWidth_, (float)pixelHeight_, ROTATION_LOCKED_HORIZONTAL);
-			D3DVIEWPORT9 vp{ (DWORD)x, (DWORD)y, (DWORD)w, (DWORD)h, 0.0f, 1.0f };
-			pD3Ddevice->SetViewport(&vp);
-		}
-		MakePixelTexture(srcPixels, srcPixelFormat, srcStride, width, height);
-		DisableState();
-		device_->SetTexture(0, drawPixelsTex_);
-		DrawActiveTexture(dstX, dstY, width, height, vfb->bufferWidth, vfb->bufferHeight, 0.0f, 0.0f, 1.0f, 1.0f, ROTATION_LOCKED_HORIZONTAL);
-		textureCacheDX9_->ForgetLastTexture();
-		dxstate.viewport.restore();
+	void FramebufferManagerDX9::SetViewport2D(int x, int y, int w, int h) {
+		D3DVIEWPORT9 vp{ (DWORD)x, (DWORD)y, (DWORD)w, (DWORD)h, 0.0f, 1.0f };
+		device_->SetViewport(&vp);
 	}
 
-	void FramebufferManagerDX9::DrawFramebufferToOutput(const u8 *srcPixels, GEBufferFormat srcPixelFormat, int srcStride, bool applyPostShader) {
-		MakePixelTexture(srcPixels, srcPixelFormat, srcStride, 512, 272);
-
-		DisableState();
-
-		// This might draw directly at the backbuffer (if so, applyPostShader is set) so if there's a post shader, we need to apply it here.
-		// Should try to unify this path with the regular path somehow, but this simple solution works for most of the post shaders
-		// (it always runs at output resolution so FXAA may look odd).
-		float x, y, w, h;
-		int uvRotation = (g_Config.iRenderingMode != FB_NON_BUFFERED_MODE) ? g_Config.iInternalScreenRotation : ROTATION_LOCKED_HORIZONTAL;
-		CenterDisplayOutputRect(&x, &y, &w, &h, 480.0f, 272.0f, (float)pixelWidth_, (float)pixelHeight_, uvRotation);
-		device_->SetTexture(0, drawPixelsTex_);
-		DrawActiveTexture(x, y, w, h, (float)pixelWidth_, (float)pixelHeight_, 0.0f, 0.0f, 480.0f / 512.0f, 1.0f, uvRotation);
-	}
-
-	void FramebufferManagerDX9::DrawActiveTexture(float x, float y, float w, float h, float destW, float destH, float u0, float v0, float u1, float v1, int uvRotation) {
-		// TODO: StretchRect instead?
+	void FramebufferManagerDX9::DrawActiveTexture(float x, float y, float w, float h, float destW, float destH, float u0, float v0, float u1, float v1, int uvRotation, int flags) {
+		// TODO: StretchRect instead when possible?
 		float coord[20] = {
 			x,y,0, u0,v0,
 			x+w,y,0, u1,v0,
@@ -339,23 +277,36 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 			coord[i * 5 + 1] = -(coord[i * 5 + 1] * invDestH - 1.0f - halfPixelY);
 		}
 
-		pD3Ddevice->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-		pD3Ddevice->SetVertexDeclaration(pFramebufferVertexDecl);
-		pD3Ddevice->SetPixelShader(pFramebufferPixelShader);
-		pD3Ddevice->SetVertexShader(pFramebufferVertexShader);
-		shaderManager_->DirtyLastShader();
-		HRESULT hr = pD3Ddevice->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, 2, coord, 5 * sizeof(float));
+		if (flags & DRAWTEX_LINEAR) {
+			dxstate.texMagFilter.set(D3DTEXF_LINEAR);
+			dxstate.texMinFilter.set(D3DTEXF_LINEAR);
+		} else {
+			dxstate.texMagFilter.set(D3DTEXF_POINT);
+			dxstate.texMinFilter.set(D3DTEXF_POINT);
+		}
+		dxstate.texMipLodBias.set(0.0f);
+		dxstate.texMaxMipLevel.set(0);
+		dxstate.blend.disable();
+		dxstate.cullMode.set(false, false);
+		dxstate.depthTest.disable();
+		dxstate.scissorTest.disable();
+		dxstate.stencilTest.disable();
+		dxstate.colorMask.set(true, true, true, true);
+		dxstate.stencilMask.set(0xFF);
+		HRESULT hr = device_->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, 2, coord, 5 * sizeof(float));
 		if (FAILED(hr)) {
 			ERROR_LOG_REPORT(G3D, "DrawActiveTexture() failed: %08x", hr);
 		}
 	}
 
-	void FramebufferManagerDX9::RebindFramebuffer() {
-		if (currentRenderVfb_ && currentRenderVfb_->fbo) {
-			draw_->BindFramebufferAsRenderTarget(currentRenderVfb_->fbo);
-		} else {
-			draw_->BindBackbufferAsRenderTarget();
-		}
+	void FramebufferManagerDX9::Bind2DShader() {
+		device_->SetVertexDeclaration(pFramebufferVertexDecl);
+		device_->SetPixelShader(pFramebufferPixelShader);
+		device_->SetVertexShader(pFramebufferVertexShader);
+	}
+
+	void FramebufferManagerDX9::BindPostShader(const PostShaderUniforms &uniforms) {
+		Bind2DShader();
 	}
 
 	void FramebufferManagerDX9::ReformatFramebufferFrom(VirtualFramebuffer *vfb, GEBufferFormat old) {
@@ -363,7 +314,7 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 			return;
 		}
 
-		draw_->BindFramebufferAsRenderTarget(vfb->fbo);
+		draw_->BindFramebufferAsRenderTarget(vfb->fbo, { Draw::RPAction::CLEAR, Draw::RPAction::KEEP, Draw::RPAction::KEEP });
 
 		// Technically, we should at this point re-interpret the bytes of the old format to the new.
 		// That might get tricky, and could cause unnecessary slowness in some games.
@@ -380,6 +331,7 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 			dxstate.colorMask.set(false, false, false, true);
 			dxstate.stencilFunc.set(D3DCMP_ALWAYS, 0, 0);
 			dxstate.stencilMask.set(0xFF);
+			gstate_c.Dirty(DIRTY_BLEND_STATE | DIRTY_DEPTHSTENCIL_STATE | DIRTY_VIEWPORTSCISSOR_STATE);
 
 			float coord[20] = {
 				-1.0f,-1.0f,0, 0,0,
@@ -389,16 +341,17 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 			};
 
 			dxstate.cullMode.set(false, false);
-			pD3Ddevice->SetVertexDeclaration(pFramebufferVertexDecl);
-			pD3Ddevice->SetPixelShader(pFramebufferPixelShader);
-			pD3Ddevice->SetVertexShader(pFramebufferVertexShader);
-			shaderManager_->DirtyLastShader();
-			pD3Ddevice->SetTexture(0, nullptr);
+			device_->SetVertexDeclaration(pFramebufferVertexDecl);
+			device_->SetPixelShader(pFramebufferPixelShader);
+			device_->SetVertexShader(pFramebufferVertexShader);
+			shaderManagerDX9_->DirtyLastShader();
+			device_->SetTexture(0, nullptr);
 
-			DXSetViewport(0, 0, vfb->renderWidth, vfb->renderHeight, 0.0f, 1.0f);
+			D3DVIEWPORT9 vp{ 0, 0, (DWORD)vfb->renderWidth, (DWORD)vfb->renderHeight, 0.0f, 1.0f };
+			device_->SetViewport(&vp);
 
 			// This should clear stencil and alpha without changing the other colors.
-			HRESULT hr = pD3Ddevice->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, 2, coord, 5 * sizeof(float));
+			HRESULT hr = device_->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, 2, coord, 5 * sizeof(float));
 			if (FAILED(hr)) {
 				ERROR_LOG_REPORT(G3D, "ReformatFramebufferFrom() failed: %08x", hr);
 			}
@@ -441,48 +394,7 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 		bool matchingDepthBuffer = src->z_address == dst->z_address && src->z_stride != 0 && dst->z_stride != 0;
 		bool matchingSize = src->width == dst->width && src->height == dst->height;
 		if (matchingDepthBuffer && matchingSize) {
-			// Doesn't work.  Use a shader maybe?
-			draw_->BindBackbufferAsRenderTarget();
-
-			LPDIRECT3DTEXTURE9 srcTex = (LPDIRECT3DTEXTURE9)draw_->GetFramebufferAPITexture(src->fbo, Draw::FB_DEPTH_BIT, 0);
-			LPDIRECT3DTEXTURE9 dstTex = (LPDIRECT3DTEXTURE9)draw_->GetFramebufferAPITexture(dst->fbo, Draw::FB_DEPTH_BIT, 0);
-
-			if (srcTex && dstTex) {
-				D3DSURFACE_DESC srcDesc;
-				srcTex->GetLevelDesc(0, &srcDesc);
-				D3DSURFACE_DESC dstDesc;
-				dstTex->GetLevelDesc(0, &dstDesc);
-
-				D3DLOCKED_RECT srcLock;
-				D3DLOCKED_RECT dstLock;
-				HRESULT srcLockRes = srcTex->LockRect(0, &srcLock, nullptr, D3DLOCK_READONLY);
-				HRESULT dstLockRes = dstTex->LockRect(0, &dstLock, nullptr, 0);
-				if (SUCCEEDED(srcLockRes) && SUCCEEDED(dstLockRes)) {
-					u32 pitch = std::min(srcLock.Pitch, dstLock.Pitch);
-					u32 w = std::min(pitch / 4, std::min(srcDesc.Width, dstDesc.Width));
-					u32 h = std::min(srcDesc.Height, dstDesc.Height);
-					const u8 *srcp = (const u8 *)srcLock.pBits;
-					u8 *dstp = (u8 *)dstLock.pBits;
-
-					if (w == pitch / 4 && srcLock.Pitch == dstLock.Pitch) {
-						CopyPixelDepthOnly((u32 *)dstp, (const u32 *)srcp, w * h);
-					} else {
-						for (u32 y = 0; y < h; ++y) {
-							CopyPixelDepthOnly((u32 *)dstp, (const u32 *)srcp, w);
-							dstp += dstLock.Pitch;
-							srcp += srcLock.Pitch;
-						}
-					}
-				}
-				if (SUCCEEDED(srcLockRes)) {
-					srcTex->UnlockRect(0);
-				}
-				if (SUCCEEDED(dstLockRes)) {
-					dstTex->UnlockRect(0);
-				}
-			}
-
-			RebindFramebuffer();
+			// Should use StretchRect here?  Note: should only copy depth and NOT copy stencil.  See #9740.
 		}
 	}
 
@@ -507,7 +419,7 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 
 		textureCacheDX9_->ForgetLastTexture();
 		LPDIRECT3DSURFACE9 offscreen = nullptr;
-		HRESULT hr = pD3Ddevice->CreateOffscreenPlainSurface(w, h, fmt, D3DPOOL_SYSTEMMEM, &offscreen, NULL);
+		HRESULT hr = device_->CreateOffscreenPlainSurface(w, h, fmt, D3DPOOL_SYSTEMMEM, &offscreen, NULL);
 		if (FAILED(hr) || !offscreen) {
 			ERROR_LOG_REPORT(G3D, "Unable to create offscreen surface %dx%d @%d", w, h, fmt);
 			return nullptr;
@@ -517,13 +429,13 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 		return offscreen;
 	}
 
-	void FramebufferManagerDX9::BindFramebufferColor(int stage, VirtualFramebuffer *framebuffer, int flags) {
+	void FramebufferManagerDX9::BindFramebufferAsColorTexture(int stage, VirtualFramebuffer *framebuffer, int flags) {
 		if (framebuffer == NULL) {
 			framebuffer = currentRenderVfb_;
 		}
 
 		if (!framebuffer->fbo || !useBufferedRendering_) {
-			pD3Ddevice->SetTexture(stage, nullptr);
+			device_->SetTexture(stage, nullptr);
 			gstate_c.skipDrawReason |= SKIPDRAW_BAD_FB_TEXTURE;
 			return;
 		}
@@ -541,28 +453,7 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 				VirtualFramebuffer copyInfo = *framebuffer;
 				copyInfo.fbo = renderCopy;
 
-				int x = 0;
-				int y = 0;
-				int w = framebuffer->drawnWidth;
-				int h = framebuffer->drawnHeight;
-
-				// If max is not > min, we probably could not detect it.  Skip.
-				// See the vertex decoder, where this is updated.
-				if ((flags & BINDFBCOLOR_MAY_COPY_WITH_UV) == BINDFBCOLOR_MAY_COPY_WITH_UV && gstate_c.vertBounds.maxU > gstate_c.vertBounds.minU) {
-					x = gstate_c.vertBounds.minU;
-					y = gstate_c.vertBounds.minV;
-					w = gstate_c.vertBounds.maxU - x;
-					h = gstate_c.vertBounds.maxV - y;
-
-					// If we bound a framebuffer, apply the byte offset as pixels to the copy too.
-					if (flags & BINDFBCOLOR_APPLY_TEX_OFFSET) {
-						x += gstate_c.curTextureXOffset;
-						y += gstate_c.curTextureYOffset;
-					}
-				}
-
-				BlitFramebuffer(&copyInfo, x, y, framebuffer, x, y, w, h, 0);
-
+				CopyFramebufferForColorTexture(&copyInfo, framebuffer, flags);
 				RebindFramebuffer();
 				draw_->BindFramebufferAsTexture(renderCopy, stage, Draw::FB_COLOR_BIT, 0);
 			} else {
@@ -573,239 +464,16 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 		}
 	}
 
-	void FramebufferManagerDX9::CopyDisplayToOutput() {
-		DownloadFramebufferOnSwitch(currentRenderVfb_);
-
-		draw_->BindBackbufferAsRenderTarget();
-		currentRenderVfb_ = 0;
-
-		if (displayFramebufPtr_ == 0) {
-			DEBUG_LOG(SCEGE, "Display disabled, displaying only black");
-			// No framebuffer to display! Clear to black.
-			ClearBuffer();
-			return;
-		}
-
-		if (useBufferedRendering_) {
-			// In buffered, we no longer clear the backbuffer before we start rendering.
-			ClearBuffer();
-			DXSetViewport(0, 0, PSP_CoreParameter().pixelWidth, PSP_CoreParameter().pixelHeight, 0.0f, 1.0f);
-		}
-
-		u32 offsetX = 0;
-		u32 offsetY = 0;
-
-		VirtualFramebuffer *vfb = GetVFBAt(displayFramebufPtr_);
-		if (!vfb) {
-			// Let's search for a framebuf within this range.
-			const u32 addr = (displayFramebufPtr_ & 0x03FFFFFF) | 0x04000000;
-			for (size_t i = 0; i < vfbs_.size(); ++i) {
-				VirtualFramebuffer *v = vfbs_[i];
-				const u32 v_addr = (v->fb_address & 0x03FFFFFF) | 0x04000000;
-				const u32 v_size = FramebufferByteSize(v);
-				if (addr >= v_addr && addr < v_addr + v_size) {
-					const u32 dstBpp = v->format == GE_FORMAT_8888 ? 4 : 2;
-					const u32 v_offsetX = ((addr - v_addr) / dstBpp) % v->fb_stride;
-					const u32 v_offsetY = ((addr - v_addr) / dstBpp) / v->fb_stride;
-					// We have enough space there for the display, right?
-					if (v_offsetX + 480 > (u32)v->fb_stride || v->bufferHeight < v_offsetY + 272) {
-						continue;
-					}
-					// Check for the closest one.
-					if (offsetY == 0 || offsetY > v_offsetY) {
-						offsetX = v_offsetX;
-						offsetY = v_offsetY;
-						vfb = v;
-					}
-				}
-			}
-
-			if (vfb) {
-				// Okay, we found one above.
-				INFO_LOG_REPORT_ONCE(displayoffset, HLE, "Rendering from framebuf with offset %08x -> %08x+%dx%d", addr, vfb->fb_address, offsetX, offsetY);
-			}
-		}
-
-		if (vfb && vfb->format != displayFormat_) {
-			if (vfb->last_frame_render + FBO_OLD_AGE < gpuStats.numFlips) {
-				// The game probably switched formats on us.
-				vfb->format = displayFormat_;
-			} else {
-				vfb = 0;
-			}
-		}
-
-		if (!vfb) {
-			if (Memory::IsValidAddress(displayFramebufPtr_)) {
-				// The game is displaying something directly from RAM. In GTA, it's decoded video.
-
-				// First check that it's not a known RAM copy of a VRAM framebuffer though, as in MotoGP
-				for (auto iter = knownFramebufferRAMCopies_.begin(); iter != knownFramebufferRAMCopies_.end(); ++iter) {
-					if (iter->second == displayFramebufPtr_) {
-						vfb = GetVFBAt(iter->first);
-					}
-				}
-
-				if (!vfb) {
-					// Just a pointer to plain memory to draw. Draw it.
-					DrawFramebufferToOutput(Memory::GetPointer(displayFramebufPtr_), displayFormat_, displayStride_, true);
-					return;
-				}
-			} else {
-				DEBUG_LOG(SCEGE, "Found no FBO to display! displayFBPtr = %08x", displayFramebufPtr_);
-				// No framebuffer to display! Clear to black. If buffered, we already did that.
-				if (!useBufferedRendering_)
-					ClearBuffer();
-				return;
-			}
-		}
-
-		vfb->usageFlags |= FB_USAGE_DISPLAYED_FRAMEBUFFER;
-		vfb->last_frame_displayed = gpuStats.numFlips;
-		vfb->dirtyAfterDisplay = false;
-		vfb->reallyDirtyAfterDisplay = false;
-
-		if (prevDisplayFramebuf_ != displayFramebuf_) {
-			prevPrevDisplayFramebuf_ = prevDisplayFramebuf_;
-		}
-		if (displayFramebuf_ != vfb) {
-			prevDisplayFramebuf_ = displayFramebuf_;
-		}
-		displayFramebuf_ = vfb;
-
-		if (vfb->fbo) {
-			DEBUG_LOG(SCEGE, "Displaying FBO %08x", vfb->fb_address);
-			DisableState();
-			draw_->BindFramebufferAsTexture(vfb->fbo, 0, Draw::FB_COLOR_BIT, 0);
-
-			// Output coordinates
-			float x, y, w, h;
-			int uvRotation = (g_Config.iRenderingMode != FB_NON_BUFFERED_MODE) ? g_Config.iInternalScreenRotation : ROTATION_LOCKED_HORIZONTAL;
-			CenterDisplayOutputRect(&x, &y, &w, &h, 480.0f, 272.0f, (float)PSP_CoreParameter().pixelWidth, (float)PSP_CoreParameter().pixelHeight, uvRotation);
-
-			const float u0 = offsetX / (float)vfb->bufferWidth;
-			const float v0 = offsetY / (float)vfb->bufferHeight;
-			const float u1 = (480.0f + offsetX) / (float)vfb->bufferWidth;
-			const float v1 = (272.0f + offsetY) / (float)vfb->bufferHeight;
-
-			if (1) {
-				const u32 rw = PSP_CoreParameter().pixelWidth;
-				const u32 rh = PSP_CoreParameter().pixelHeight;
-				bool result = draw_->BlitFramebuffer(vfb->fbo,
-					(LONG)(u0 * vfb->renderWidth), (LONG)(v0 * vfb->renderHeight), (LONG)(u1 * vfb->renderWidth), (LONG)(v1 * vfb->renderHeight),
-					nullptr,
-					(LONG)(x * rw / w), (LONG)(y * rh / h), (LONG)((x + w) * rw / w), (LONG)((y + h) * rh / h),
-					Draw::FB_COLOR_BIT,
-					g_Config.iBufFilter == SCALE_LINEAR ? Draw::FB_BLIT_LINEAR : Draw::FB_BLIT_NEAREST);
-				if (!result) {
-					ERROR_LOG_REPORT_ONCE(blit_fail, G3D, "fbo_blit_color failed on display");
-					DXSetViewport(0, 0, PSP_CoreParameter().pixelWidth, PSP_CoreParameter().pixelHeight, 0.0f, 1.0f);
-					// These are in the output display coordinates
-					if (g_Config.iBufFilter == SCALE_LINEAR) {
-						dxstate.texMagFilter.set(D3DTEXF_LINEAR);
-						dxstate.texMinFilter.set(D3DTEXF_LINEAR);
-					} else {
-						dxstate.texMagFilter.set(D3DTEXF_POINT);
-						dxstate.texMinFilter.set(D3DTEXF_POINT);
-					}
-					dxstate.texMipFilter.set(D3DTEXF_NONE);
-					dxstate.texMipLodBias.set(0);
-					DrawActiveTexture(x, y, w, h, (float)PSP_CoreParameter().pixelWidth, (float)PSP_CoreParameter().pixelHeight, u0, v0, u1, v1, uvRotation);
-				}
-			}
-			/* 
-			else if (usePostShader_ && extraFBOs_.size() == 1 && !postShaderAtOutputResolution_) {
-			// An additional pass, post-processing shader to the extra FBO.
-			BindFramebufferAsRenderTarget(extraFBOs_[0]);
-			int fbo_w, fbo_h;
-			fbo_get_dimensions(extraFBOs_[0], &fbo_w, &fbo_h);
-			DXSetViewport(0, 0, fbo_w, fbo_h);
-			DrawActiveTexture(colorTexture, 0, 0, fbo_w, fbo_h, fbo_w, fbo_h, true, 1.0f, 1.0f, postShaderProgram_);
-
-			fbo_unbind();
-
-			// Use the extra FBO, with applied post-processing shader, as a texture.
-			// fbo_bind_color_as_texture(extraFBOs_[0], 0);
-			if (extraFBOs_.size() == 0) {
-			ERROR_LOG(G3D, "WTF?");
-			return;
-			}
-			colorTexture = fbo_get_color_texture(extraFBOs_[0]);
-			DXSetViewport(0, 0, PSP_CoreParameter().pixelWidth, PSP_CoreParameter().pixelHeight);
-			// These are in the output display coordinates
-			DrawActiveTexture(colorTexture, x, y, w, h, (float)PSP_CoreParameter().pixelWidth, (float)PSP_CoreParameter().pixelHeight, true, 480.0f / (float)vfb->width, 272.0f / (float)vfb->height);
-			} else {
-			// Use post-shader, but run shader at output resolution.
-			DXSetViewport(0, 0, PSP_CoreParameter().pixelWidth, PSP_CoreParameter().pixelHeight);
-			// These are in the output display coordinates
-			DrawActiveTexture(colorTexture, x, y, w, h, (float)PSP_CoreParameter().pixelWidth, (float)PSP_CoreParameter().pixelHeight, true, 480.0f / (float)vfb->width, 272.0f / (float)vfb->height, postShaderProgram_);
-			}
-			*/
-			pD3Ddevice->SetTexture(0, NULL);
-		}
-		dxstate.viewport.restore();
-	}
-
-	void FramebufferManagerDX9::ReadFramebufferToMemory(VirtualFramebuffer *vfb, bool sync, int x, int y, int w, int h) {
-		if (vfb) {
-			// We'll pseudo-blit framebuffers here to get a resized version of vfb.
-			VirtualFramebuffer *nvfb = FindDownloadTempBuffer(vfb);
-			OptimizeDownloadRange(vfb, x, y, w, h);
-			BlitFramebuffer(nvfb, x, y, vfb, x, y, w, h, 0);
-
-			PackFramebufferDirectx9_(nvfb, x, y, w, h);
-
-			textureCacheDX9_->ForgetLastTexture();
-			RebindFramebuffer();
-		}
-	}
-
-	void FramebufferManagerDX9::DownloadFramebufferForClut(u32 fb_address, u32 loadBytes) {
-		VirtualFramebuffer *vfb = GetVFBAt(fb_address);
-		if (vfb && vfb->fb_stride != 0) {
-			const u32 bpp = vfb->drawnFormat == GE_FORMAT_8888 ? 4 : 2;
-			int x = 0;
-			int y = 0;
-			int pixels = loadBytes / bpp;
-			// The height will be 1 for each stride or part thereof.
-			int w = std::min(pixels % vfb->fb_stride, (int)vfb->width);
-			int h = std::min((pixels + vfb->fb_stride - 1) / vfb->fb_stride, (int)vfb->height);
-
-			// We might still have a pending draw to the fb in question, flush if so.
-			FlushBeforeCopy();
-
-			// No need to download if we already have it.
-			if (!vfb->memoryUpdated && vfb->clutUpdatedBytes < loadBytes) {
-				// We intentionally don't call OptimizeDownloadRange() here - we don't want to over download.
-				// CLUT framebuffers are often incorrectly estimated in size.
-				if (x == 0 && y == 0 && w == vfb->width && h == vfb->height) {
-					vfb->memoryUpdated = true;
-				}
-				vfb->clutUpdatedBytes = loadBytes;
-
-				// We'll pseudo-blit framebuffers here to get a resized version of vfb.
-				VirtualFramebuffer *nvfb = FindDownloadTempBuffer(vfb);
-				BlitFramebuffer(nvfb, x, y, vfb, x, y, w, h, 0);
-
-				PackFramebufferDirectx9_(nvfb, x, y, w, h);
-
-				textureCacheDX9_->ForgetLastTexture();
-				RebindFramebuffer();
-			}
-		}
-	}
-
 	bool FramebufferManagerDX9::CreateDownloadTempBuffer(VirtualFramebuffer *nvfb) {
 		nvfb->colorDepth = Draw::FBO_8888;
 
 		nvfb->fbo = draw_->CreateFramebuffer({ nvfb->width, nvfb->height, 1, 1, true, (Draw::FBColorDepth)nvfb->colorDepth });
 		if (!(nvfb->fbo)) {
-			ERROR_LOG(SCEGE, "Error creating FBO! %i x %i", nvfb->renderWidth, nvfb->renderHeight);
+			ERROR_LOG(FRAMEBUF, "Error creating FBO! %i x %i", nvfb->renderWidth, nvfb->renderHeight);
 			return false;
 		}
 
-		draw_->BindFramebufferAsRenderTarget(nvfb->fbo);
-		ClearBuffer();
+		draw_->BindFramebufferAsRenderTarget(nvfb->fbo, { Draw::RPAction::CLEAR, Draw::RPAction::CLEAR, Draw::RPAction::CLEAR });
 		return true;
 	}
 
@@ -815,8 +483,9 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 
 	void FramebufferManagerDX9::BlitFramebuffer(VirtualFramebuffer *dst, int dstX, int dstY, VirtualFramebuffer *src, int srcX, int srcY, int w, int h, int bpp) {
 		if (!dst->fbo || !src->fbo || !useBufferedRendering_) {
-			// This can happen if they recently switched from non-buffered.
-			draw_->BindBackbufferAsRenderTarget();
+			// This can happen if we recently switched from non-buffered.
+			if (useBufferedRendering_)
+				draw_->BindFramebufferAsRenderTarget(nullptr, { Draw::RPAction::KEEP, Draw::RPAction::KEEP, Draw::RPAction::KEEP });
 			return;
 		}
 
@@ -859,13 +528,11 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 			dst->fbo, dstX1, dstY1, dstX2, dstY2,
 			Draw::FB_COLOR_BIT, Draw::FB_BLIT_NEAREST);
 		if (!result) {
-			ERROR_LOG_REPORT(G3D, "fbo_blit_color failed in blit: %08x (%08x -> %08x)", src->fb_address, dst->fb_address);
+			ERROR_LOG_REPORT(G3D, "fbo_blit_color failed in blit (%08x -> %08x)", src->fb_address, dst->fb_address);
 		}
 	}
 
-	// TODO: SSE/NEON
-	// Could also make C fake-simd for 64-bit, two 8888 pixels fit in a register :)
-	void ConvertFromRGBA8888(u8 *dst, u8 *src, u32 dstStride, u32 srcStride, u32 width, u32 height, GEBufferFormat format) {
+	void ConvertFromBGRA8888(u8 *dst, u8 *src, u32 dstStride, u32 srcStride, u32 width, u32 height, GEBufferFormat format) {
 		// Must skip stride in the cases below.  Some games pack data into the cracks, like MotoGP.
 		const u32 *src32 = (const u32 *)src;
 
@@ -913,10 +580,9 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 		}
 	}
 
-	void FramebufferManagerDX9::PackFramebufferDirectx9_(VirtualFramebuffer *vfb, int x, int y, int w, int h) {
+	void FramebufferManagerDX9::PackFramebufferSync_(VirtualFramebuffer *vfb, int x, int y, int w, int h) {
 		if (!vfb->fbo) {
 			ERROR_LOG_REPORT_ONCE(vfbfbozero, SCEGE, "PackFramebufferDirectx9_: vfb->fbo == 0");
-			draw_->BindBackbufferAsRenderTarget();
 			return;
 		}
 
@@ -925,7 +591,7 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 
 		// We always need to convert from the framebuffer native format.
 		// Right now that's always 8888.
-		DEBUG_LOG(HLE, "Reading framebuffer to mem, fb_address = %08x", fb_address);
+		DEBUG_LOG(G3D, "Reading framebuffer to mem, fb_address = %08x", fb_address);
 
 		LPDIRECT3DSURFACE9 renderTarget = (LPDIRECT3DSURFACE9)draw_->GetFramebufferAPITexture(vfb->fbo, Draw::FB_COLOR_BIT | Draw::FB_SURFACE_BIT, 0);
 		D3DSURFACE_DESC desc;
@@ -933,7 +599,7 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 
 		LPDIRECT3DSURFACE9 offscreen = GetOffscreenSurface(renderTarget, vfb);
 		if (offscreen) {
-			HRESULT hr = pD3Ddevice->GetRenderTargetData(renderTarget, offscreen);
+			HRESULT hr = device_->GetRenderTargetData(renderTarget, offscreen);
 			if (SUCCEEDED(hr)) {
 				D3DLOCKED_RECT locked;
 				u32 widthFactor = vfb->renderWidth / vfb->bufferWidth;
@@ -944,7 +610,7 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 					// TODO: Handle the other formats?  We don't currently create them, I think.
 					const int dstByteOffset = (y * vfb->fb_stride + x) * dstBpp;
 					// Pixel size always 4 here because we always request BGRA8888.
-					ConvertFromRGBA8888(Memory::GetPointer(fb_address + dstByteOffset), (u8 *)locked.pBits, vfb->fb_stride, locked.Pitch / 4, w, h, vfb->format);
+					ConvertFromBGRA8888(Memory::GetPointer(fb_address + dstByteOffset), (u8 *)locked.pBits, vfb->fb_stride, locked.Pitch / 4, w, h, vfb->format);
 					offscreen->UnlockRect();
 				} else {
 					ERROR_LOG_REPORT(G3D, "Unable to lock rect from %08x: %d,%d %dx%d of %dx%d", fb_address, rect.left, rect.top, rect.right, rect.bottom, vfb->renderWidth, vfb->renderHeight);
@@ -964,7 +630,7 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 		// We always read the depth buffer in 24_8 format.
 		const u32 z_address = (0x04000000) | vfb->z_address;
 
-		DEBUG_LOG(SCEGE, "Reading depthbuffer to mem at %08x for vfb=%08x", z_address, vfb->fb_address);
+		DEBUG_LOG(FRAMEBUF, "Reading depthbuffer to mem at %08x for vfb=%08x", z_address, vfb->fb_address);
 
 		LPDIRECT3DTEXTURE9 tex = (LPDIRECT3DTEXTURE9)draw_->GetFramebufferAPITexture(vfb->fbo, Draw::FB_DEPTH_BIT, 0);
 		if (tex) {
@@ -982,7 +648,7 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 				// TODO: Optimize.
 				for (int yp = 0; yp < h; ++yp) {
 					for (int xp = 0; xp < w; ++xp) {
-						const int offset = (yp + y) & vfb->z_stride + x + xp;
+						const int offset = (yp + y) * vfb->z_stride + x + xp;
 
 						float scaled = FromScaledDepth((packed[offset] & 0x00FFFFFF) * (1.0f / 16777215.0f));
 						if (scaled <= 0.0f) {
@@ -1005,61 +671,10 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 	}
 
 	void FramebufferManagerDX9::EndFrame() {
-		if (resized_) {
-			DestroyAllFBOs(false);
-			// Actually, auto mode should be more granular...
-			// Round up to a zoom factor for the render size.
-			int zoom = g_Config.iInternalResolution;
-			if (zoom == 0) { // auto mode
-											 // Use the longest dimension
-				if (!g_Config.IsPortrait()) {
-					zoom = (PSP_CoreParameter().pixelWidth + 479) / 480;
-				} else {
-					zoom = (PSP_CoreParameter().pixelHeight + 479) / 480;
-				}
-			}
-			if (zoom <= 1)
-				zoom = 1;
-
-			if (g_Config.IsPortrait()) {
-				PSP_CoreParameter().renderWidth = 272 * zoom;
-				PSP_CoreParameter().renderHeight = 480 * zoom;
-			} else {
-				PSP_CoreParameter().renderWidth = 480 * zoom;
-				PSP_CoreParameter().renderHeight = 272 * zoom;
-			}
-
-			UpdateSize();
-			// Seems related - if you're ok with numbers all the time, show some more :)
-			if (g_Config.iShowFPSCounter != 0) {
-				ShowScreenResolution();
-			}
-			resized_ = false;
-		}
 	}
 
 	void FramebufferManagerDX9::DeviceLost() {
-		DestroyAllFBOs(false);
-		resized_ = false;
-	}
-
-	std::vector<FramebufferInfo> FramebufferManagerDX9::GetFramebufferList() {
-		std::vector<FramebufferInfo> list;
-
-		for (size_t i = 0; i < vfbs_.size(); ++i) {
-			VirtualFramebuffer *vfb = vfbs_[i];
-
-			FramebufferInfo info;
-			info.fb_address = vfb->fb_address;
-			info.z_address = vfb->z_address;
-			info.format = vfb->format;
-			info.width = vfb->width;
-			info.height = vfb->height;
-			info.fbo = vfb->fbo;
-			list.push_back(info);
-		}
-
-		return list;
+		DestroyAllFBOs();
 	}
 
 	void FramebufferManagerDX9::DecimateFBOs() {
@@ -1075,8 +690,7 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 		}
 	}
 
-	void FramebufferManagerDX9::DestroyAllFBOs(bool forceDelete) {
-		draw_->BindBackbufferAsRenderTarget();
+	void FramebufferManagerDX9::DestroyAllFBOs() {
 		currentRenderVfb_ = 0;
 		displayFramebuf_ = 0;
 		prevDisplayFramebuf_ = 0;
@@ -1084,7 +698,7 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 
 		for (size_t i = 0; i < vfbs_.size(); ++i) {
 			VirtualFramebuffer *vfb = vfbs_[i];
-			INFO_LOG(SCEGE, "Destroying FBO for %08x : %i x %i x %i", vfb->fb_address, vfb->width, vfb->height, vfb->format);
+			INFO_LOG(FRAMEBUF, "Destroying FBO for %08x : %i x %i x %i", vfb->fb_address, vfb->width, vfb->height, vfb->format);
 			DestroyFramebuf(vfb);
 		}
 		vfbs_.clear();
@@ -1096,7 +710,7 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 		bvfbs_.clear();
 
 		for (auto it = tempFBOs_.begin(), end = tempFBOs_.end(); it != end; ++it) {
-			delete it->second.fbo;
+			it->second.fbo->Release();
 		}
 		tempFBOs_.clear();
 
@@ -1104,29 +718,19 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 			it->second.surface->Release();
 		}
 		offscreenSurfaces_.clear();
-		DisableState();
-	}
 
-	void FramebufferManagerDX9::FlushBeforeCopy() {
-		// Flush anything not yet drawn before blitting, downloading, or uploading.
-		// This might be a stalled list, or unflushed before a block transfer, etc.
-
-		// TODO: It's really bad that we are calling SetRenderFramebuffer here with
-		// all the irrelevant state checking it'll use to decide what to do. Should
-		// do something more focused here.
-		SetRenderFrameBuffer(gstate_c.IsDirty(DIRTY_FRAMEBUF), gstate_c.skipDrawReason);
-		drawEngine_->Flush();
+		SetNumExtraFBOs(0);
 	}
 
 	void FramebufferManagerDX9::Resized() {
-		resized_ = true;
+		FramebufferManagerCommon::Resized();
+
+		if (UpdateSize()) {
+			DestroyAllFBOs();
+		}
 	}
 
-	bool FramebufferManagerDX9::GetCurrentFramebuffer(GPUDebugBuffer &buffer, GPUDebugFramebufferType type, int maxRes) {
-		u32 fb_address = type == GPU_DBG_FRAMEBUF_RENDER ? gstate.getFrameBufRawAddress() : displayFramebufPtr_;
-		int fb_stride = type == GPU_DBG_FRAMEBUF_RENDER ? gstate.FrameBufStride() : displayStride_;
-		GEBufferFormat fb_format = type == GPU_DBG_FRAMEBUF_RENDER ? gstate.FrameBufFormat() : displayFormat_;
-
+	bool FramebufferManagerDX9::GetFramebuffer(u32 fb_address, int fb_stride, GEBufferFormat fb_format, GPUDebugBuffer &buffer, int maxRes) {
 		VirtualFramebuffer *vfb = currentRenderVfb_;
 		if (!vfb) {
 			vfb = GetVFBAt(fb_address);
@@ -1158,7 +762,7 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 				success = GetRenderTargetFramebuffer(renderTarget, offscreen, w, h, buffer);
 			}
 			if (tempFBO) {
-				delete tempFBO;
+				tempFBO->Release();
 			}
 		}
 
@@ -1166,24 +770,21 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 	}
 
 	bool FramebufferManagerDX9::GetOutputFramebuffer(GPUDebugBuffer &buffer) {
-		draw_->BindBackbufferAsRenderTarget();
-
 		LPDIRECT3DSURFACE9 renderTarget = nullptr;
-		HRESULT hr = pD3Ddevice->GetRenderTarget(0, &renderTarget);
+		HRESULT hr = device_->GetRenderTarget(0, &renderTarget);
 		bool success = false;
 		if (renderTarget && SUCCEEDED(hr)) {
 			D3DSURFACE_DESC desc;
 			renderTarget->GetDesc(&desc);
 
 			LPDIRECT3DSURFACE9 offscreen = nullptr;
-			HRESULT hr = pD3Ddevice->CreateOffscreenPlainSurface(desc.Width, desc.Height, desc.Format, D3DPOOL_SYSTEMMEM, &offscreen, NULL);
+			HRESULT hr = device_->CreateOffscreenPlainSurface(desc.Width, desc.Height, desc.Format, D3DPOOL_SYSTEMMEM, &offscreen, NULL);
 			if (offscreen && SUCCEEDED(hr)) {
 				success = GetRenderTargetFramebuffer(renderTarget, offscreen, PSP_CoreParameter().pixelWidth, PSP_CoreParameter().pixelHeight, buffer);
 				offscreen->Release();
 			}
 			renderTarget->Release();
 		}
-
 		return success;
 	}
 
@@ -1192,7 +793,7 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 		renderTarget->GetDesc(&desc);
 
 		bool success = false;
-		HRESULT hr = pD3Ddevice->GetRenderTargetData(renderTarget, offscreen);
+		HRESULT hr = device_->GetRenderTargetData(renderTarget, offscreen);
 		if (SUCCEEDED(hr)) {
 			D3DLOCKED_RECT locked;
 			RECT rect = {0, 0, w, h};
@@ -1209,13 +810,7 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 		return success;
 	}
 
-	bool FramebufferManagerDX9::GetCurrentDepthbuffer(GPUDebugBuffer &buffer) {
-		u32 fb_address = gstate.getFrameBufRawAddress();
-		int fb_stride = gstate.FrameBufStride();
-
-		u32 z_address = gstate.getDepthBufRawAddress();
-		int z_stride = gstate.DepthBufStride();
-
+	bool FramebufferManagerDX9::GetDepthbuffer(u32 fb_address, int fb_stride, u32 z_address, int z_stride, GPUDebugBuffer &buffer) {
 		VirtualFramebuffer *vfb = currentRenderVfb_;
 		if (!vfb) {
 			vfb = GetVFBAt(fb_address);
@@ -1253,13 +848,7 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 		return success;
 	}
 
-	bool FramebufferManagerDX9::GetCurrentStencilbuffer(GPUDebugBuffer &buffer) {
-		u32 fb_address = gstate.getFrameBufRawAddress();
-		int fb_stride = gstate.FrameBufStride();
-
-		u32 z_address = gstate.getDepthBufRawAddress();
-		int z_stride = gstate.DepthBufStride();
-
+	bool FramebufferManagerDX9::GetStencilbuffer(u32 fb_address, int fb_stride, GPUDebugBuffer &buffer) {
 		VirtualFramebuffer *vfb = currentRenderVfb_;
 		if (!vfb) {
 			vfb = GetVFBAt(fb_address);
@@ -1267,7 +856,7 @@ static void DXSetViewport(float x, float y, float w, float h, float minZ, float 
 
 		if (!vfb) {
 			// If there's no vfb and we're drawing there, must be memory?
-			buffer = GPUDebugBuffer(Memory::GetPointer(z_address | 0x04000000), z_stride, 512, GPU_DBG_FORMAT_16BIT);
+			buffer = GPUDebugBuffer(Memory::GetPointer(vfb->z_address | 0x04000000), vfb->z_stride, 512, GPU_DBG_FORMAT_16BIT);
 			return true;
 		}
 

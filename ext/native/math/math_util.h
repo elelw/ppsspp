@@ -1,5 +1,8 @@
 #pragma once
 
+// Some of the stuff in this file are snippets from all over the web, esp. dspmusic.org. I think it's all public domain.
+// In any case, very little of it is used anywhere at the moment.
+
 #include <cmath>
 #include <cstring>
 
@@ -25,6 +28,10 @@ inline float Float16ToFloat(float16 ix) {
 	return x;
 }
 
+inline bool isPowerOf2(int n) {
+	return n == 1 || (n & (n - 1)) == 0;
+}
+
 inline uint32_t RoundUpToPowerOf2(uint32_t v) {
 	v--;
 	v |= v >> 1;
@@ -36,13 +43,18 @@ inline uint32_t RoundUpToPowerOf2(uint32_t v) {
 	return v;
 }
 
+inline uint32_t log2i(uint32_t val) {
+	unsigned int ret = -1;
+	while (val != 0) {
+		val >>= 1; ret++;
+	}
+	return ret;
+}
+
 #define PI 3.141592653589793f
 #ifndef M_PI
 #define M_PI 3.141592653589793f
 #endif
-
-// The stuff in this file is from all over the web, esp. dspmusic.org. I think it's all public domain.
-// In any case, very little of it is used anywhere at the moment.
 
 // Calculate pseudo-random 32 bit number based on linear congruential method. 
 void SetSeed(unsigned int seed);

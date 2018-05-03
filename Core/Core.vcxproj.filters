@@ -680,6 +680,15 @@
     <ClCompile Include="HLE\KUBridge.cpp">
       <Filter>HLE\Libraries</Filter>
     </ClCompile>
+    <ClCompile Include="FileSystems\BlobFileSystem.cpp">
+      <Filter>FileSystems</Filter>
+    </ClCompile>
+    <ClCompile Include="HLE\sceUsbCam.cpp">
+      <Filter>HLE\Libraries</Filter>
+    </ClCompile>
+    <ClCompile Include="Replay.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ELF\ElfReader.h">
@@ -1249,6 +1258,15 @@
     <ClInclude Include="WaveFile.h" />
     <ClInclude Include="HLE\KUBridge.h">
       <Filter>HLE\Libraries</Filter>
+    </ClInclude>
+    <ClInclude Include="FileSystems\BlobFileSystem.h">
+      <Filter>FileSystems</Filter>
+    </ClInclude>
+    <ClInclude Include="HLE\sceUsbCam.h">
+      <Filter>HLE\Libraries</Filter>
+    </ClInclude>
+    <ClInclude Include="Replay.h">
+      <Filter>Core</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

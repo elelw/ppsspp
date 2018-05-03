@@ -22,7 +22,11 @@ std::string VertexShaderDesc(const ShaderID &id) {
 	if (id.Bit(VS_BIT_ENABLE_FOG)) desc << "Fog ";
 	if (id.Bit(VS_BIT_NORM_REVERSE)) desc << "RevN ";
 	if (id.Bit(VS_BIT_DO_TEXTURE)) desc << "Tex ";
-	if (id.Bit(VS_BIT_DO_TEXTURE_TRANSFORM)) desc << "TexProj ";
+	if (id.Bit(VS_BIT_DO_TEXTURE_TRANSFORM)) {
+		int uvprojMode = id.Bits(VS_BIT_UVPROJ_MODE, 2);
+		const char *uvprojModes[4] = { "TexProjPos ", "TexProjUV ", "TexProjNNrm ", "TexProjNrm " };
+		desc << uvprojModes[uvprojMode];
+	}
 	int uvgMode = id.Bits(VS_BIT_UVGEN_MODE, 2);
 	const char *uvgModes[4] = { "UV ", "UVMtx ", "UVEnv ", "UVUnk " };
 	int ls0 = id.Bits(VS_BIT_LS0, 2);
@@ -51,12 +55,11 @@ std::string VertexShaderDesc(const ShaderID &id) {
 	if (id.Bit(VS_BIT_HAS_TEXCOORD_TESS)) desc << "TessT ";
 	if (id.Bit(VS_BIT_NORM_REVERSE_TESS)) desc << "TessRevN ";
 
-	// TODO: More...
-
 	return desc.str();
 }
 
 void ComputeVertexShaderID(ShaderID *id_out, u32 vertType, bool useHWTransform) {
+	bool isModeThrough = gstate.isModeThrough();
 	bool doTexture = gstate.isTextureMapEnabled() && !gstate.isModeClear();
 	bool doTextureTransform = gstate.getUVGenMode() == GE_TEXMAP_TEXTURE_MATRIX;
 	bool doShadeMapping = doTexture && (gstate.getUVGenMode() == GE_TEXMAP_ENVIRONMENT_MAP);
@@ -71,13 +74,12 @@ void ComputeVertexShaderID(ShaderID *id_out, u32 vertType, bool useHWTransform) 
 	bool hasColorTess = (gstate.vertType & GE_VTYPE_COL_MASK) != 0 && (doBezier || doSpline);
 	bool hasTexcoordTess = (gstate.vertType & GE_VTYPE_TC_MASK) != 0 && (doBezier || doSpline);
 
-	bool enableFog = gstate.isFogEnabled() && !gstate.isModeThrough() && !gstate.isModeClear();
-	bool lmode = gstate.isUsingSecondaryColor() && gstate.isLightingEnabled();
-	// lmode: && !isModeThrough!?
+	bool enableFog = gstate.isFogEnabled() && !isModeThrough && !gstate.isModeClear();
+	bool lmode = gstate.isUsingSecondaryColor() && gstate.isLightingEnabled() && !isModeThrough;
 
 	ShaderID id;
 	id.SetBit(VS_BIT_LMODE, lmode);
-	id.SetBit(VS_BIT_IS_THROUGH, gstate.isModeThrough());
+	id.SetBit(VS_BIT_IS_THROUGH, isModeThrough);
 	id.SetBit(VS_BIT_ENABLE_FOG, enableFog);
 	id.SetBit(VS_BIT_HAS_COLOR, hasColor);
 
@@ -143,6 +145,9 @@ void ComputeVertexShaderID(ShaderID *id_out, u32 vertType, bool useHWTransform) 
 
 	id.SetBit(VS_BIT_FLATSHADE, doFlatShading);
 
+	// These two bits cannot be combined, otherwise havoc occurs. We get reports that indicate this happened somehow... "ERROR: 0:14: 'u_proj' : undeclared identifier"
+	_dbg_assert_msg_(G3D, !id.Bit(VS_BIT_USE_HW_TRANSFORM) || !id.Bit(VS_BIT_IS_THROUGH), "Can't have both THROUGH and USE_HW_TRANSFORM together!");
+
 	*id_out = id;
 }
 
@@ -166,6 +171,7 @@ std::string FragmentShaderDesc(const ShaderID &id) {
 	if (id.Bit(FS_BIT_COLOR_DOUBLE)) desc << "2x ";
 	if (id.Bit(FS_BIT_FLATSHADE)) desc << "Flat ";
 	if (id.Bit(FS_BIT_BGRA_TEXTURE)) desc << "BGRA ";
+	if (id.Bit(FS_BIT_SHADER_DEPAL)) desc << "Depal ";
 	if (id.Bit(FS_BIT_SHADER_TEX_CLAMP)) {
 		desc << "TClamp";
 		if (id.Bit(FS_BIT_CLAMP_S)) desc << "S";
@@ -225,17 +231,19 @@ void ComputeFragmentShaderID(ShaderID *id_out) {
 		bool isModeThrough = gstate.isModeThrough();
 		bool lmode = gstate.isUsingSecondaryColor() && gstate.isLightingEnabled() && !isModeThrough;
 		bool enableFog = gstate.isFogEnabled() && !isModeThrough;
-		bool enableAlphaTest = gstate.isAlphaTestEnabled() && !IsAlphaTestTriviallyTrue() && !g_Config.bDisableAlphaTest;
+		bool enableAlphaTest = gstate.isAlphaTestEnabled() && !IsAlphaTestTriviallyTrue();
 		bool enableColorTest = gstate.isColorTestEnabled() && !IsColorTestTriviallyTrue();
 		bool enableColorDoubling = gstate.isColorDoublingEnabled() && gstate.isTextureMapEnabled();
 		bool doTextureProjection = (gstate.getUVGenMode() == GE_TEXMAP_TEXTURE_MATRIX && MatrixNeedsProjection(gstate.tgenMatrix));
 		bool doTextureAlpha = gstate.isTextureAlphaUsed();
 		bool doFlatShading = gstate.getShadeMode() == GE_SHADE_FLAT;
+		bool useShaderDepal = gstate_c.useShaderDepal;
 
 		ReplaceBlendType replaceBlend = ReplaceBlendWithShader(gstate_c.allowShaderBlend, gstate.FrameBufFormat());
 		ReplaceAlphaType stencilToAlpha = ReplaceAlphaWithStencil(replaceBlend);
 
 		// All texfuncs except replace are the same for RGB as for RGBA with full alpha.
+		// Note that checking this means that we must dirty the fragment shader ID whenever textureFullAlpha changes.
 		if (gstate_c.textureFullAlpha && gstate.getTextureFunction() != GE_TEXFUNC_REPLACE)
 			doTextureAlpha = false;
 
@@ -293,6 +301,8 @@ void ComputeFragmentShaderID(ShaderID *id_out) {
 			id.SetBits(FS_BIT_BLENDFUNC_B, 4, gstate.getBlendFuncB());
 		}
 		id.SetBit(FS_BIT_FLATSHADE, doFlatShading);
+
+		id.SetBit(FS_BIT_SHADER_DEPAL, useShaderDepal);
 	}
 
 	*id_out = id;

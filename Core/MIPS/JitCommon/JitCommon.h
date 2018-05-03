@@ -31,6 +31,7 @@ std::vector<std::string> DisassembleX86(const u8 *data, int size);
 
 struct JitBlock;
 class JitBlockCache;
+class JitBlockCacheDebugInterface;
 class PointerWrap;
 
 #ifdef USING_QT_UI
@@ -123,12 +124,14 @@ namespace MIPSComp {
 		virtual bool DescribeCodePtr(const u8 *ptr, std::string &name) = 0;
 		virtual const u8 *GetDispatcher() const = 0;
 		virtual JitBlockCache *GetBlockCache() = 0;
+		virtual JitBlockCacheDebugInterface *GetBlockCacheDebugInterface() = 0;
 		virtual void InvalidateCacheAt(u32 em_address, int length = 4) = 0;
 		virtual void DoState(PointerWrap &p) = 0;
-		virtual void DoDummyState(PointerWrap &p) = 0;
 		virtual void RunLoopUntil(u64 globalticks) = 0;
 		virtual void Compile(u32 em_address) = 0;
+		virtual void CompileFunction(u32 start_address, u32 length) { }
 		virtual void ClearCache() = 0;
+		virtual void UpdateFCR31() = 0;
 		virtual MIPSOpcode GetOriginalOp(MIPSOpcode op) = 0;
 
 		// No jit operations may be run between these calls.
@@ -146,6 +149,8 @@ namespace MIPSComp {
 	typedef int (MIPSFrontendInterface::*MIPSReplaceFunc)();
 
 	extern JitInterface *jit;
+
+	void DoDummyJitState(PointerWrap &p);
 
 	JitInterface *CreateNativeJit(MIPSState *mips);
 }

@@ -156,7 +156,7 @@ namespace MIPSComp
 			} else {
 				fpr.MapRegV(vregs[i], MAP_DIRTY | MAP_NOINIT);
 				fpr.SpillLockV(vregs[i]);
-				MOVI2F(fpr.V(vregs[i]), constantArray[regnum + (abs<<2)], SCRATCHREG1, (bool)negate);
+				MOVI2F(fpr.V(vregs[i]), constantArray[regnum + (abs<<2)], SCRATCHREG1, negate != 0);
 			}
 		}
 	}
@@ -638,7 +638,7 @@ namespace MIPSComp
 		fpr.ReleaseSpillLocksAndDiscardTemps();
 	}
 
-	static const float MEMORY_ALIGNED16(vavg_table[4]) = { 1.0f, 1.0f / 2.0f, 1.0f / 3.0f, 1.0f / 4.0f };
+	alignas(16) static const float vavg_table[4] = { 1.0f, 1.0f / 2.0f, 1.0f / 3.0f, 1.0f / 4.0f };
 
 	void ArmJit::Comp_Vhoriz(MIPSOpcode op) {
 		NEON_IF_AVAILABLE(CompNEON_Vhoriz);
@@ -653,7 +653,7 @@ namespace MIPSComp
 		VectorSize sz = GetVecSize(op);
 
 		// TODO: Force read one of them into regs? probably not.
-		u8 sregs[4], tregs[4], dregs[1];
+		u8 sregs[4], dregs[1];
 		GetVectorRegsPrefixS(sregs, sz, vs);
 		GetVectorRegsPrefixD(dregs, V_Single, vd);
 
@@ -1582,8 +1582,10 @@ namespace MIPSComp
 
 	void ArmJit::Comp_Vi2x(MIPSOpcode op) {
 		NEON_IF_AVAILABLE(CompNEON_Vi2x);
-		if (js.HasUnknownPrefix())
+		CONDITIONAL_DISABLE;
+		if (js.HasUnknownPrefix()) {
 			DISABLE;
+		}
 
 		if (!cpu_info.bNEON) {
 			DISABLE;
@@ -1658,6 +1660,11 @@ namespace MIPSComp
 
 	void ArmJit::Comp_Vx2i(MIPSOpcode op) {
 		NEON_IF_AVAILABLE(CompNEON_Vx2i);
+		CONDITIONAL_DISABLE;
+		if (js.HasUnknownPrefix()) {
+			DISABLE;
+		}
+
 		int bits = ((op >> 16) & 2) == 0 ? 8 : 16; // vuc2i/vc2i (0/1), vus2i/vs2i (2/3)
 		bool unsignedOp = ((op >> 16) & 1) == 0; // vuc2i (0), vus2i (2)
 
@@ -2062,6 +2069,9 @@ namespace MIPSComp
 	void ArmJit::Comp_Viim(MIPSOpcode op) {
 		NEON_IF_AVAILABLE(CompNEON_Viim);
 		CONDITIONAL_DISABLE;
+		if (js.HasUnknownPrefix()) {
+			DISABLE;
+		}
 
 		u8 dreg;
 		GetVectorRegs(&dreg, V_Single, _VT);
@@ -2170,6 +2180,10 @@ namespace MIPSComp
 		if (js.HasUnknownPrefix()) {
 			DISABLE;
 		}
+
+#if PPSSPP_ARCH(ARM_HARDFP)
+		DISABLE;
+#endif
 
 		int vd = _VD;
 		int vs = _VS;

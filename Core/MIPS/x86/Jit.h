@@ -52,7 +52,6 @@ public:
 	const JitOptions &GetJitOptions() { return jo; }
 
 	void DoState(PointerWrap &p) override;
-	void DoDummyState(PointerWrap &p) override;
 
 	// Compiled ops should ignore delay slots
 	// the compiler will take care of them by itself
@@ -156,9 +155,11 @@ public:
 
 	void RestoreRoundingMode(bool force = false);
 	void ApplyRoundingMode(bool force = false);
-	void UpdateRoundingMode();
+	void UpdateRoundingMode(u32 fcr31 = -1);
 
 	JitBlockCache *GetBlockCache() override { return &blocks; }
+	JitBlockCacheDebugInterface *GetBlockCacheDebugInterface() override { return &blocks; }
+
 	MIPSOpcode GetOriginalOp(MIPSOpcode op) override;
 
 	std::vector<u32> SaveAndClearEmuHackOps() override { return blocks.SaveAndClearEmuHackOps(); }
@@ -170,6 +171,7 @@ public:
 			blocks.InvalidateICache(em_address, length);
 		}
 	}
+	void UpdateFCR31() override;
 
 	const u8 *GetDispatcher() const override {
 		return dispatcher;
@@ -322,7 +324,6 @@ private:
 
 	const u8 *restoreRoundingMode;
 	const u8 *applyRoundingMode;
-	const u8 *updateRoundingMode;
 
 	const u8 *endOfPregeneratedCode;
 

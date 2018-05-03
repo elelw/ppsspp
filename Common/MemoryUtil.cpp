@@ -15,6 +15,10 @@
 // Official SVN repository and contact information can be found at
 // http://code.google.com/p/dolphin-emu/
 
+#include "ppsspp_config.h"
+
+#include "base/logging.h"
+
 #include "Common.h"
 #include "MemoryUtil.h"
 #include "StringUtils.h"
@@ -116,16 +120,16 @@ static void *SearchForFreeMem(size_t size) {
 
 void *AllocateExecutableMemory(size_t size) {
 #if defined(_WIN32)
-	void *ptr;
+	void *ptr = nullptr;
 	DWORD prot = PAGE_EXECUTE_READWRITE;
 	if (PlatformIsWXExclusive())
 		prot = PAGE_READWRITE;
+	if (sys_info.dwPageSize == 0)
+		GetSystemInfo(&sys_info);
 #if defined(_M_X64)
 	if ((uintptr_t)&hint_location > 0xFFFFFFFFULL) {
-		if (sys_info.dwPageSize == 0)
-			GetSystemInfo(&sys_info);
-
 		size_t aligned_size = round_page(size);
+#if 1   // Turn off to hunt for RIP bugs on x86-64.
 		ptr = SearchForFreeMem(aligned_size);
 		if (!ptr) {
 			// Let's try again, from the top.
@@ -133,20 +137,27 @@ void *AllocateExecutableMemory(size_t size) {
 			last_executable_addr = 0;
 			ptr = SearchForFreeMem(aligned_size);
 		}
+#endif
 		if (ptr) {
 			ptr = VirtualAlloc(ptr, aligned_size, MEM_RESERVE | MEM_COMMIT, prot);
 		} else {
-			ERROR_LOG(COMMON, "Unable to find nearby executable memory for jit");
+			WARN_LOG(COMMON, "Unable to find nearby executable memory for jit. Proceeding with far memory.");
+			// Can still run, thanks to "RipAccessible".
+			ptr = VirtualAlloc(nullptr, aligned_size, MEM_RESERVE | MEM_COMMIT, prot);
 		}
 	}
 	else
 #endif
 	{
+#if PPSSPP_PLATFORM(UWP)
+		ptr = VirtualAllocFromApp(0, size, MEM_RESERVE | MEM_COMMIT, prot);
+#else
 		ptr = VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, prot);
+#endif
 	}
 #else
 	static char *map_hint = 0;
-#if defined(_M_X64)
+#if defined(_M_X64) && !defined(MAP_32BIT)
 	// Try to request one that is close to our memory location if we're in high memory.
 	// We use a dummy global variable to give us a good location to start from.
 	if (!map_hint) {
@@ -168,7 +179,7 @@ void *AllocateExecutableMemory(size_t size) {
 	void* ptr = mmap(map_hint, size, prot,
 		MAP_ANON | MAP_PRIVATE
 #if defined(_M_X64) && defined(MAP_32BIT)
-		| ((uintptr_t) map_hint == 0 ? MAP_32BIT : 0)
+		| MAP_32BIT
 #endif
 		, -1, 0);
 
@@ -185,7 +196,7 @@ void *AllocateExecutableMemory(size_t size) {
 		ERROR_LOG(MEMMAP, "Failed to allocate executable memory (%d)", (int)size);
 		PanicAlert("Failed to allocate executable memory\n%s", GetLastErrorMsg());
 	}
-#if defined(_M_X64) && !defined(_WIN32)
+#if defined(_M_X64) && !defined(_WIN32) && !defined(MAP_32BIT)
 	else if ((uintptr_t)map_hint <= 0xFFFFFFFF) {
 		// Round up if we're below 32-bit mark, probably allocating sequentially.
 		map_hint += round_page(size);
@@ -203,8 +214,14 @@ void *AllocateExecutableMemory(size_t size) {
 void *AllocateMemoryPages(size_t size, uint32_t memProtFlags) {
 	size = round_page(size);
 #ifdef _WIN32
+	if (sys_info.dwPageSize == 0)
+		GetSystemInfo(&sys_info);
 	uint32_t protect = ConvertProtFlagsWin32(memProtFlags);
+#if PPSSPP_PLATFORM(UWP)
+	void* ptr = VirtualAllocFromApp(0, size, MEM_COMMIT, protect);
+#else
 	void* ptr = VirtualAlloc(0, size, MEM_COMMIT, protect);
+#endif
 	if (!ptr)
 		PanicAlert("Failed to allocate raw memory");
 #else
@@ -267,9 +284,9 @@ void FreeAlignedMemory(void* ptr) {
 }
 
 bool PlatformIsWXExclusive() {
-	// Only iOS really needs this mode currently. Even without block linking, still should be much faster than IR JIT.
+	// Needed on platforms that disable W^X pages for security. Even without block linking, still should be much faster than IR JIT.
 	// This might also come in useful for UWP (Universal Windows Platform) if I'm understanding things correctly.
-#ifdef IOS
+#if defined(IOS) || PPSSPP_PLATFORM(UWP) || defined(__OpenBSD__)
 	return true;
 #else
 	// Returning true here lets you test the W^X path on Windows and other non-W^X platforms.
@@ -291,11 +308,20 @@ bool ProtectMemoryPages(const void* ptr, size_t size, uint32_t memProtFlags) {
 	// mprotect does not seem to, at least not on Android unless I made a mistake somewhere, so we manually round.
 #ifdef _WIN32
 	uint32_t protect = ConvertProtFlagsWin32(memProtFlags);
+
+#if PPSSPP_PLATFORM(UWP)
+	DWORD oldValue;
+	if (!VirtualProtectFromApp((void *)ptr, size, protect, &oldValue)) {
+		PanicAlert("WriteProtectMemory failed!\n%s", GetLastErrorMsg());
+		return false;
+	}
+#else
 	DWORD oldValue;
 	if (!VirtualProtect((void *)ptr, size, protect, &oldValue)) {
 		PanicAlert("WriteProtectMemory failed!\n%s", GetLastErrorMsg());
 		return false;
 	}
+#endif
 	return true;
 #else
 	uint32_t protect = ConvertProtFlagsUnix(memProtFlags);

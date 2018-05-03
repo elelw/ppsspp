@@ -8,6 +8,7 @@
 #include <QMessageBox>
 
 #include "base/display.h"
+#include "base/NativeApp.h"
 #include "Core/MIPS/MIPSDebugInterface.h"
 #include "Core/Debugger/SymbolMap.h"
 #include "Core/SaveState.h"
@@ -71,6 +72,21 @@ void MainWindow::newFrame()
 
 		updateMenus();
 	}
+
+	std::unique_lock<std::mutex> lock(msgMutex_);
+	while (!msgQueue_.empty()) {
+		MainWindowMsg msg = msgQueue_.front();
+		msgQueue_.pop();
+		switch (msg) {
+		case MainWindowMsg::BOOT_DONE:
+			bootDone();
+			break;
+		case MainWindowMsg::WINDOW_TITLE_CHANGED:
+			std::unique_lock<std::mutex> lock(titleMutex_);
+			setWindowTitle(QString::fromUtf8(newWindowTitle_.c_str()));
+			break;
+		}
+	}
 }
 
 void MainWindow::updateMenus()
@@ -94,8 +110,7 @@ void MainWindow::updateMenus()
 	foreach(QAction * action, displayLayoutGroup->actions()) {
 		if (g_Config.iSmallDisplayZoomType == action->data().toInt()) {
 
-			if (gpu)
-				gpu->Resized();
+			NativeMessageReceived("gpu_resized", "");
 
 			action->setChecked(true);
 			break;
@@ -128,8 +143,7 @@ void MainWindow::updateMenus()
 	emit updateMenu();
 }
 
-/* SLOTS */
-void MainWindow::Boot()
+void MainWindow::bootDone()
 {
 	dialogDisasm = new Debugger_Disasm(currentDebugMIPS, this, this);
 	if(g_Config.bShowDebuggerOnLoad)
@@ -149,6 +163,7 @@ void MainWindow::Boot()
 	updateMenus();
 }
 
+/* SIGNALS */
 void MainWindow::openAct()
 {
 	QString filename = QFileDialog::getOpenFileName(NULL, "Load File", g_Config.currentDirectory.c_str(), "PSP ROMs (*.pbp *.elf *.iso *.cso *.prx)");
@@ -379,8 +394,7 @@ void MainWindow::fullscrAct()
 
 		showFullScreen();
 
-		if (gpu)
-			gpu->Resized();
+		NativeMessageReceived("gpu_resized", "");
 		InitPadLayout(dp_xres, dp_yres);
 		if (GetUIState() == UISTATE_INGAME && !g_Config.bShowTouchControls)
 			QApplication::setOverrideCursor(QCursor(Qt::BlankCursor));
@@ -392,12 +406,12 @@ void MainWindow::fullscrAct()
 
 void MainWindow::websiteAct()
 {
-	QDesktopServices::openUrl(QUrl("http://www.ppsspp.org/"));
+	QDesktopServices::openUrl(QUrl("https://www.ppsspp.org/"));
 }
 
 void MainWindow::forumAct()
 {
-	QDesktopServices::openUrl(QUrl("http://forums.ppsspp.org/"));
+	QDesktopServices::openUrl(QUrl("https://forums.ppsspp.org/"));
 }
 
 void MainWindow::gitAct() 
@@ -552,7 +566,6 @@ void MainWindow::createMenus()
 	anisotropicGroup = new MenuActionGroup(this, anisotropicMenu, SLOT(anisotropicGroup_triggered(QAction *)),
 		QStringList() << "Off" << "2x" << "4x" << "8x" << "16x",
 		QList<int>()  << 0     << 1    << 2    << 3    << 4);
-	// TODO: Check for newer buffer render options
 	videoMenu->add(new MenuAction(this, SLOT(bufferRenderAct()),  QT_TR_NOOP("&Buffered Rendering"), Qt::Key_F5))
 		->addEventChecked(&g_Config.iRenderingMode);
 	videoMenu->add(new MenuAction(this, SLOT(linearAct()),        QT_TR_NOOP("&Linear Filtering")))

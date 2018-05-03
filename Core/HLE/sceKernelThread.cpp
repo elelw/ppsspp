@@ -26,11 +26,12 @@
 #include "Common/CommonTypes.h"
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/HLETables.h"
-#include "Core/MIPS/MIPSInt.h"
+#include "Core/MIPS/MIPSAnalyst.h"
 #include "Core/MIPS/MIPSCodeUtils.h"
 #include "Core/MIPS/MIPS.h"
 #include "Core/CoreTiming.h"
 #include "Core/MemMapHelpers.h"
+#include "Core/MIPS/JitCommon/JitCommon.h"
 #include "Core/Reporting.h"
 #include "Common/ChunkFile.h"
 
@@ -887,6 +888,7 @@ static void __KernelWriteFakeSysCall(u32 nid, u32 *ptr, u32 &pos)
 	*ptr = pos;
 	pos += 8;
 	WriteSyscall("FakeSysCalls", nid, *ptr);
+	MIPSAnalyst::PrecompileFunction(*ptr, 8);
 }
 
 void __KernelThreadingInit()
@@ -1459,6 +1461,10 @@ void __KernelLoadContext(ThreadContext *ctx, bool vfpuEnabled)
 	}
 
 	memcpy(currentMIPS->other, ctx->other, sizeof(ctx->other));
+	if (MIPSComp::jit) {
+		// When thread switching, we must update the rounding mode if cached in the jit.
+		MIPSComp::jit->UpdateFCR31();
+	}
 
 	// Reset the llBit, the other thread may have touched memory.
 	currentMIPS->llBit = 0;
@@ -1648,18 +1654,21 @@ u32 __KernelDeleteThread(SceUID threadID, int exitStatus, const char *reason)
 		}
 
 		t->Cleanup();
-	}
 
-	// Before triggering, set v0.  It'll be restored if one is called.
-	RETURN(error);
-	t->nt.status = THREADSTATUS_DEAD;
+		// Before triggering, set v0.  It'll be restored if one is called.
+		RETURN(error);
+		t->nt.status = THREADSTATUS_DEAD;
 
-	if (__KernelThreadTriggerEvent((t->nt.attr & PSP_THREAD_ATTR_KERNEL) != 0, threadID, THREADEVENT_DELETE)) {
-		// Don't delete it yet.  We'll delete later.
-		pendingDeleteThreads.push_back(threadID);
-		return 0;
+		if (__KernelThreadTriggerEvent((t->nt.attr & PSP_THREAD_ATTR_KERNEL) != 0, threadID, THREADEVENT_DELETE)) {
+			// Don't delete it yet.  We'll delete later.
+			pendingDeleteThreads.push_back(threadID);
+			return 0;
+		} else {
+			return kernelObjects.Destroy<Thread>(threadID);
+		}
 	} else {
-		return kernelObjects.Destroy<Thread>(threadID);
+		RETURN(error);
+		return error;
 	}
 }
 
@@ -2149,6 +2158,8 @@ void sceKernelExitDeleteThread(int exitStatus)
 	if (thread)
 	{
 		INFO_LOG(SCEKERNEL,"sceKernelExitDeleteThread(%d)", exitStatus);
+		uint32_t thread_attr = thread->nt.attr;
+		uint32_t uid = thread->GetUID();
 		__KernelDeleteThread(currentThread, exitStatus, "thread exited with delete");
 		// Temporary hack since we don't reschedule within callbacks.
 		g_inCbCount = 0;
@@ -2156,7 +2167,7 @@ void sceKernelExitDeleteThread(int exitStatus)
 		hleReSchedule("thread exited with delete");
 
 		// TODO: This should trigger ON the thread when it exits.
-		__KernelThreadTriggerEvent((thread->nt.attr & PSP_THREAD_ATTR_KERNEL) != 0, thread->GetUID(), THREADEVENT_EXIT);
+		__KernelThreadTriggerEvent((thread_attr & PSP_THREAD_ATTR_KERNEL) != 0, uid, THREADEVENT_EXIT);
 	}
 	else
 		ERROR_LOG_REPORT(SCEKERNEL, "sceKernelExitDeleteThread(%d) ERROR - could not find myself!", exitStatus);
@@ -2271,6 +2282,8 @@ int sceKernelTerminateDeleteThread(int threadID)
 	if (t)
 	{
 		bool wasStopped = t->isStopped();
+		uint32_t attr = t->nt.attr;
+		uint32_t uid = t->GetUID();
 
 		INFO_LOG(SCEKERNEL, "sceKernelTerminateDeleteThread(%i)", threadID);
 		error = __KernelDeleteThread(threadID, SCE_KERNEL_ERROR_THREAD_TERMINATED, "thread terminated with delete");
@@ -2278,7 +2291,7 @@ int sceKernelTerminateDeleteThread(int threadID)
 		if (!wasStopped) {
 			// Set v0 before calling the handler, or it'll get lost.
 			RETURN(error);
-			__KernelThreadTriggerEvent((t->nt.attr & PSP_THREAD_ATTR_KERNEL) != 0, t->GetUID(), THREADEVENT_EXIT);
+			__KernelThreadTriggerEvent((attr & PSP_THREAD_ATTR_KERNEL) != 0, uid, THREADEVENT_EXIT);
 		}
 
 		return error;

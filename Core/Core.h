@@ -21,15 +21,18 @@
 #include "Core/CoreParameter.h"
 
 class GraphicsContext;
-struct InputState;
 
 // called from emu thread
-void UpdateRunLoop(InputState *input_state);
-void Core_Run(GraphicsContext *ctx, InputState *input_state);
+void UpdateRunLoop();
+
+void Core_Run(GraphicsContext *ctx);
 void Core_Stop();
 void Core_ErrorPause();
 // For platforms that don't call Core_Run
 void Core_SetGraphicsContext(GraphicsContext *ctx);
+
+void Core_RunRenderThreadFrame();
+
 // called from gui
 void Core_EnableStepping(bool step);
 void Core_DoSingleStep();

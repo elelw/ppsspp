@@ -4,7 +4,9 @@
 
 #include "base/basictypes.h"
 #include "math/geom2d.h"
+#include "math/lin/vec3.h"
 #include "gfx/texture_atlas.h"
+#include "UI/TextureUtil.h"
 
 // Everything you need to draw a UI collected into a single unit that can be passed around.
 // Everything forward declared so this header is safe everywhere.
@@ -31,6 +33,13 @@ namespace UI {
 
 class DrawBuffer;
 
+struct UITransform {
+	// TODO: Or just use a matrix?
+	Vec3 translate;
+	Vec3 scale;
+	float alpha;
+};
+
 class UIContext {
 public:
 	UIContext();
@@ -38,7 +47,7 @@ public:
 
 	void Init(Draw::DrawContext *thin3d, Draw::Pipeline *uipipe, Draw::Pipeline *uipipenotex, DrawBuffer *uidrawbuffer, DrawBuffer *uidrawbufferTop);
 
-	void FrameSetup(Draw::Texture *uiTexture);
+	void BeginFrame();
 
 	void Begin();
 	void BeginNoTex();
@@ -78,22 +87,27 @@ public:
 	const Bounds &GetBounds() const { return bounds_; }
 	Draw::DrawContext *GetDrawContext() { return draw_; }
 
+	void PushTransform(const UITransform &transform);
+	void PopTransform();
+	Bounds TransformBounds(const Bounds &bounds);
+
 private:
 	Draw::DrawContext *draw_;
 	Bounds bounds_;
 
-	float fontScaleX_;
-	float fontScaleY_;
-	UI::FontStyle *fontStyle_;
-	TextDrawer *textDrawer_;
+	float fontScaleX_ = 1.0f;
+	float fontScaleY_ = 1.0f;
+	UI::FontStyle *fontStyle_ = nullptr;
+	TextDrawer *textDrawer_ = nullptr;
 
 	Draw::SamplerState *sampler_;
-	Draw::Pipeline *ui_pipeline_;
-	Draw::Pipeline *ui_pipeline_notex_;
-	Draw::Texture *uitexture_;
+	Draw::Pipeline *ui_pipeline_ = nullptr;
+	Draw::Pipeline *ui_pipeline_notex_ = nullptr;
+	std::unique_ptr<ManagedTexture> uitexture_;
 
-	DrawBuffer *uidrawbuffer_;
-	DrawBuffer *uidrawbufferTop_;
+	DrawBuffer *uidrawbuffer_ = nullptr;
+	DrawBuffer *uidrawbufferTop_ = nullptr;
 
 	std::vector<Bounds> scissorStack_;
+	std::vector<UITransform> transformStack_;
 };

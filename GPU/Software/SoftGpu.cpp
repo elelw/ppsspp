@@ -28,13 +28,17 @@
 #include "Core/HLE/sceGe.h"
 #include "Core/MIPS/MIPS.h"
 #include "Core/Reporting.h"
+#include "Core/Core.h"
 #include "profiler/profiler.h"
 #include "thin3d/thin3d.h"
 
+#include "GPU/Software/Rasterizer.h"
+#include "GPU/Software/Sampler.h"
 #include "GPU/Software/SoftGpu.h"
 #include "GPU/Software/TransformUnit.h"
-#include "GPU/Software/Rasterizer.h"
+#include "GPU/Common/DrawEngineCommon.h"
 #include "GPU/Common/FramebufferCommon.h"
+#include "GPU/Debugger/Record.h"
 
 const int FB_WIDTH = 480;
 const int FB_HEIGHT = 272;
@@ -45,28 +49,15 @@ struct Vertex {
 	uint32_t rgba;
 };
 
+u32 clut[4096];
 FormatBuffer fb;
 FormatBuffer depthbuf;
-u32 clut[4096];
-
-static Draw::SamplerState *samplerNearest = nullptr;
-static Draw::SamplerState *samplerLinear = nullptr;
-static Draw::Buffer *vdata = nullptr;
-static Draw::Buffer *idata = nullptr;
 
 SoftGPU::SoftGPU(GraphicsContext *gfxCtx, Draw::DrawContext *draw)
 	: GPUCommon(gfxCtx, draw)
 {
 	using namespace Draw;
-	TextureDesc desc{};
-	desc.type = TextureType::LINEAR2D;
-	desc.format = DataFormat::R8G8B8A8_UNORM;
-	desc.width = 480;
-	desc.height = 272;
-	desc.depth = 1;
-	desc.mipLevels = 1;
-	fbTex = draw_->CreateTexture(desc);
-
+	fbTex = nullptr;
 	InputLayoutDesc inputDesc = {
 		{
 			{ sizeof(Vertex), false },
@@ -94,9 +85,13 @@ SoftGPU::SoftGPU(GraphicsContext *gfxCtx, Draw::DrawContext *draw)
 	PipelineDesc pipelineDesc{
 		Primitive::TRIANGLE_LIST,
 		{ draw_->GetVshaderPreset(VS_TEXTURE_COLOR_2D), draw_->GetFshaderPreset(FS_TEXTURE_COLOR_2D) },
-		inputLayout, depth, blendstateOff, rasterNoCull
+		inputLayout, depth, blendstateOff, rasterNoCull, &vsTexColBufDesc
 	};
 	texColor = draw_->CreateGraphicsPipeline(pipelineDesc);
+	inputLayout->Release();
+	depth->Release();
+	blendstateOff->Release();
+	rasterNoCull->Release();
 
 	fb.data = Memory::GetPointer(0x44000000); // TODO: correct default address?
 	depthbuf.data = Memory::GetPointer(0x44000000); // TODO: correct default address?
@@ -106,6 +101,10 @@ SoftGPU::SoftGPU(GraphicsContext *gfxCtx, Draw::DrawContext *draw)
 	displayFramebuf_ = 0;
 	displayStride_ = 512;
 	displayFormat_ = GE_FORMAT_8888;
+
+	Sampler::Init();
+	drawEngine_ = new SoftwareDrawEngine();
+	drawEngineCommon_ = drawEngine_;
 }
 
 void SoftGPU::DeviceLost() {
@@ -120,9 +119,10 @@ SoftGPU::~SoftGPU() {
 	texColor->Release();
 	texColor = nullptr;
 
-	fbTex->Release();
-	fbTex = nullptr;
-
+	if (fbTex) {
+		fbTex->Release();
+		fbTex = nullptr;
+	}
 	vdata->Release();
 	vdata = nullptr;
 	idata->Release();
@@ -131,6 +131,8 @@ SoftGPU::~SoftGPU() {
 	samplerNearest = nullptr;
 	samplerLinear->Release();
 	samplerLinear = nullptr;
+
+	Sampler::Shutdown();
 }
 
 void SoftGPU::SetDisplayFramebuffer(u32 framebuf, u32 stride, GEBufferFormat format) {
@@ -143,33 +145,42 @@ void SoftGPU::SetDisplayFramebuffer(u32 framebuf, u32 stride, GEBufferFormat for
 
 // Copies RGBA8 data from RAM to the currently bound render target.
 void SoftGPU::CopyToCurrentFboFromDisplayRam(int srcwidth, int srcheight) {
-	using namespace Draw;
-
 	if (!draw_)
 		return;
-	float dstwidth = (float)PSP_CoreParameter().pixelWidth;
-	float dstheight = (float)PSP_CoreParameter().pixelHeight;
-
-	Viewport viewport = {0.0f, 0.0f, dstwidth, dstheight, 0.0f, 1.0f};
-	draw_->SetViewports(1, &viewport);
-	SamplerState *sampler;
-	if (g_Config.iBufFilter == SCALE_NEAREST) {
-		sampler = samplerNearest;
-	} else {
-		sampler = samplerLinear;
-	}
-	draw_->SetScissorRect(0, 0, dstwidth, dstheight);
-
 	float u0 = 0.0f;
 	float u1;
+
+	if (fbTex) {
+		fbTex->Release();
+		fbTex = nullptr;
+	}
+
+	// For accuracy, try to handle 0 stride - sometimes used.
+	if (displayStride_ == 0) {
+		srcheight = 1;
+	}
+
+	Draw::TextureDesc desc{};
+	desc.type = Draw::TextureType::LINEAR2D;
+	desc.format = Draw::DataFormat::R8G8B8A8_UNORM;
+	desc.depth = 1;
+	desc.mipLevels = 1;
+	desc.tag = "SoftGPU";
 	bool hasImage = true;
-	if (!Memory::IsValidAddress(displayFramebuf_)) {
+	if (!Memory::IsValidAddress(displayFramebuf_) || srcwidth == 0 || srcheight == 0) {
 		hasImage = false;
 		u1 = 1.0f;
 	} else if (displayFormat_ == GE_FORMAT_8888) {
 		u8 *data = Memory::GetPointer(displayFramebuf_);
-		fbTex->SetImageData(0, 0, 0, displayStride_, srcheight, 1, 0, displayStride_ * 4, data);
-		u1 = (float)srcwidth / displayStride_;
+		desc.width = displayStride_ == 0 ? srcwidth : displayStride_;
+		desc.height = srcheight;
+		desc.initData.push_back(data);
+		desc.format = Draw::DataFormat::R8G8B8A8_UNORM;
+		if (displayStride_ != 0) {
+			u1 = (float)srcwidth / displayStride_;
+		} else {
+			u1 = 1.0f;
+		}
 	} else {
 		// TODO: This should probably be converted in a shader instead..
 		fbTexBuffer.resize(srcwidth * srcheight);
@@ -197,9 +208,20 @@ void SoftGPU::CopyToCurrentFboFromDisplayRam(int srcwidth, int srcheight) {
 			}
 		}
 
-		fbTex->SetImageData(0, 0, 0, srcwidth, srcheight, 1, 0, srcwidth * 4, (const uint8_t *)&fbTexBuffer[0]);
+		desc.width = srcwidth;
+		desc.height = srcheight;
+		desc.initData.push_back((uint8_t *)fbTexBuffer.data());
 		u1 = 1.0f;
 	}
+	if (!hasImage) {
+		draw_->BindFramebufferAsRenderTarget(nullptr, { Draw::RPAction::CLEAR, Draw::RPAction::DONT_CARE, Draw::RPAction::DONT_CARE });
+		return;
+	}
+
+	fbTex = draw_->CreateTexture(desc);
+
+	float dstwidth = (float)PSP_CoreParameter().pixelWidth;
+	float dstheight = (float)PSP_CoreParameter().pixelHeight;
 
 	float x, y, w, h;
 	CenterDisplayOutputRect(&x, &y, &w, &h, 480.0f, 272.0f, dstwidth, dstheight, ROTATION_LOCKED_HORIZONTAL);
@@ -220,66 +242,67 @@ void SoftGPU::CopyToCurrentFboFromDisplayRam(int srcwidth, int srcheight) {
 	x2 -= 1.0f;
 	y2 -= 1.0f;
 
-	if (hasImage) {
-		float v0 = 1.0f;
-		float v1 = 0.0f;
+	float v0 = 1.0f;
+	float v1 = 0.0f;
 
-		if (GetGPUBackend() == GPUBackend::VULKAN) {
-			std::swap(v0, v1);
-		}
-
-		draw_->BindSamplerStates(0, 1, &sampler);
-
-		const Vertex verts[4] = {
-			{ x, y, 0,    u0, v0,  0xFFFFFFFF }, // TL
-			{ x, y2, 0,   u0, v1,  0xFFFFFFFF }, // BL
-			{ x2, y2, 0,  u1, v1,  0xFFFFFFFF }, // BR
-			{ x2, y, 0,   u1, v0,  0xFFFFFFFF }, // TR
-		};
-		draw_->UpdateBuffer(vdata, (const uint8_t *)verts, 0, sizeof(verts), Draw::UPDATE_DISCARD);
-
-		int indexes[] = { 0, 1, 2, 0, 2, 3 };
-		draw_->UpdateBuffer(idata, (const uint8_t *)indexes, 0, sizeof(indexes), Draw::UPDATE_DISCARD);
-
-		draw_->BindTexture(0, fbTex);
-
-		static const float identity4x4[16] = {
-			1.0f, 0.0f, 0.0f, 0.0f,
-			0.0f, 1.0f, 0.0f, 0.0f,
-			0.0f, 0.0f, 1.0f, 0.0f,
-			0.0f, 0.0f, 0.0f, 1.0f,
-		};
-
-		texColor->SetMatrix4x4("WorldViewProj", identity4x4);
-		draw_->BindPipeline(texColor);
-		draw_->BindVertexBuffers(0, 1, &vdata, nullptr);
-		draw_->BindIndexBuffer(idata, 0);
-		draw_->DrawIndexed(6, 0);
-	} else {
-		draw_->Clear(Draw::COLOR, 0, 0, 0);
+	if (GetGPUBackend() == GPUBackend::VULKAN) {
+		std::swap(v0, v1);
 	}
+	draw_->BindFramebufferAsRenderTarget(nullptr, { Draw::RPAction::CLEAR, Draw::RPAction::DONT_CARE, Draw::RPAction::DONT_CARE });
+	Draw::Viewport viewport = { 0.0f, 0.0f, dstwidth, dstheight, 0.0f, 1.0f };
+	draw_->SetViewports(1, &viewport);
+	draw_->SetScissorRect(0, 0, dstwidth, dstheight);
+
+	Draw::SamplerState *sampler;
+	if (g_Config.iBufFilter == SCALE_NEAREST) {
+		sampler = samplerNearest;
+	} else {
+		sampler = samplerLinear;
+	}
+	draw_->BindSamplerStates(0, 1, &sampler);
+
+	const Vertex verts[4] = {
+		{ x, y, 0,    u0, v0,  0xFFFFFFFF }, // TL
+		{ x, y2, 0,   u0, v1,  0xFFFFFFFF }, // BL
+		{ x2, y2, 0,  u1, v1,  0xFFFFFFFF }, // BR
+		{ x2, y, 0,   u1, v0,  0xFFFFFFFF }, // TR
+	};
+	draw_->UpdateBuffer(vdata, (const uint8_t *)verts, 0, sizeof(verts), Draw::UPDATE_DISCARD);
+
+	int indexes[] = { 0, 1, 2, 0, 2, 3 };
+	draw_->UpdateBuffer(idata, (const uint8_t *)indexes, 0, sizeof(indexes), Draw::UPDATE_DISCARD);
+
+	draw_->BindTexture(0, fbTex);
+
+	static const float identity4x4[16] = {
+		1.0f, 0.0f, 0.0f, 0.0f,
+		0.0f, 1.0f, 0.0f, 0.0f,
+		0.0f, 0.0f, 1.0f, 0.0f,
+		0.0f, 0.0f, 0.0f, 1.0f,
+	};
+
+	Draw::VsTexColUB ub{};
+	memcpy(ub.WorldViewProj, identity4x4, sizeof(float) * 16);
+	draw_->BindPipeline(texColor);
+	draw_->UpdateDynamicUniformBuffer(&ub, sizeof(ub));
+	draw_->BindVertexBuffers(0, 1, &vdata, nullptr);
+	draw_->BindIndexBuffer(idata, 0);
+	draw_->DrawIndexed(6, 0);
+	draw_->BindIndexBuffer(nullptr, 0);
 }
 
-void SoftGPU::CopyDisplayToOutput()
-{
-	ScheduleEvent(GPU_EVENT_COPY_DISPLAY_TO_OUTPUT);
-}
-
-void SoftGPU::CopyDisplayToOutputInternal()
-{
+void SoftGPU::CopyDisplayToOutput() {
 	// The display always shows 480x272.
 	CopyToCurrentFboFromDisplayRam(FB_WIDTH, FB_HEIGHT);
 	framebufferDirty_ = false;
-}
 
-void SoftGPU::ProcessEvent(GPUEvent ev) {
-	switch (ev.type) {
-	case GPU_EVENT_COPY_DISPLAY_TO_OUTPUT:
-		CopyDisplayToOutputInternal();
-		break;
-
-	default:
-		GPUCommon::ProcessEvent(ev);
+	// Force the render params to 480x272 so other things work.
+	if (g_Config.IsPortrait()) {
+		PSP_CoreParameter().renderWidth = 272;
+		PSP_CoreParameter().renderHeight = 480;
+	} else {
+		PSP_CoreParameter().renderWidth = 480;
+		PSP_CoreParameter().renderHeight = 272;
 	}
 }
 
@@ -317,7 +340,8 @@ void SoftGPU::ExecuteOp(u32 op, u32 diff) {
 	case GE_CMD_PRIM:
 		{
 			u32 count = data & 0xFFFF;
-			u32 type = data >> 16;
+			// Upper bits are ignored.
+			GEPrimitiveType prim = static_cast<GEPrimitiveType>((data >> 16) & 7);
 
 			if (!Memory::IsValidAddress(gstate_c.vertexAddr)) {
 				ERROR_LOG_REPORT(G3D, "Software: Bad vertex address %08x!", gstate_c.vertexAddr);
@@ -336,7 +360,7 @@ void SoftGPU::ExecuteOp(u32 op, u32 diff) {
 
 			cyclesExecuted += EstimatePerVertexCost() * count;
 			int bytesRead;
-			TransformUnit::SubmitPrimitive(verts, indices, type, count, gstate.vertType, &bytesRead);
+			drawEngine_->transformUnit.SubmitPrimitive(verts, indices, prim, count, gstate.vertType, &bytesRead, drawEngine_);
 			framebufferDirty_ = true;
 
 			// After drawing, we advance the vertexAddr (when non indexed) or indexAddr (when indexed).
@@ -348,52 +372,130 @@ void SoftGPU::ExecuteOp(u32 op, u32 diff) {
 
 	case GE_CMD_BEZIER:
 		{
-			int bz_ucount = data & 0xFF;
-			int bz_vcount = (data >> 8) & 0xFF;
-			DEBUG_LOG(G3D,"DL DRAW BEZIER: %i x %i", bz_ucount, bz_vcount);
+			// We don't dirty on normal changes anymore as we prescale, but it's needed for splines/bezier.
+			gstate_c.Dirty(DIRTY_UVSCALEOFFSET);
+
+			// This also make skipping drawing very effective.
+			if (gstate_c.skipDrawReason & (SKIPDRAW_SKIPFRAME | SKIPDRAW_NON_DISPLAYED_FB))	{
+				// TODO: Should this eat some cycles?  Probably yes.  Not sure if important.
+				return;
+			}
+
+			if (!Memory::IsValidAddress(gstate_c.vertexAddr)) {
+				ERROR_LOG_REPORT(G3D, "Bad vertex address %08x!", gstate_c.vertexAddr);
+				return;
+			}
+
+			void *control_points = Memory::GetPointerUnchecked(gstate_c.vertexAddr);
+			void *indices = NULL;
+			if ((gstate.vertType & GE_VTYPE_IDX_MASK) != GE_VTYPE_IDX_NONE) {
+				if (!Memory::IsValidAddress(gstate_c.indexAddr)) {
+					ERROR_LOG_REPORT(G3D, "Bad index address %08x!", gstate_c.indexAddr);
+					return;
+				}
+				indices = Memory::GetPointerUnchecked(gstate_c.indexAddr);
+			}
+
+			if ((gstate.vertType & GE_VTYPE_MORPHCOUNT_MASK) || vertTypeIsSkinningEnabled(gstate.vertType)) {
+				DEBUG_LOG_REPORT(G3D, "Unusual bezier/spline vtype: %08x, morph: %d, bones: %d", gstate.vertType, (gstate.vertType & GE_VTYPE_MORPHCOUNT_MASK) >> GE_VTYPE_MORPHCOUNT_SHIFT, vertTypeGetNumBoneWeights(gstate.vertType));
+			}
+
+			GEPatchPrimType patchPrim = gstate.getPatchPrimitiveType();
+			SetDrawType(DRAW_BEZIER, PatchPrimToPrim(patchPrim));
+
+			int bz_ucount = op & 0xFF;
+			int bz_vcount = (op >> 8) & 0xFF;
+			bool computeNormals = gstate.isLightingEnabled();
+			bool patchFacing = gstate.patchfacing & 1;
+
+			int bytesRead = 0;
+			drawEngineCommon_->SubmitBezier(control_points, indices, gstate.getPatchDivisionU(), gstate.getPatchDivisionV(), bz_ucount, bz_vcount, patchPrim, computeNormals, patchFacing, gstate.vertType, &bytesRead);
+			framebufferDirty_ = true;
+
+			// After drawing, we advance pointers - see SubmitPrim which does the same.
+			int count = bz_ucount * bz_vcount;
+			AdvanceVerts(gstate.vertType, count, bytesRead);
 		}
 		break;
 
 	case GE_CMD_SPLINE:
 		{
-			int sp_ucount = data & 0xFF;
-			int sp_vcount = (data >> 8) & 0xFF;
-			int sp_utype = (data >> 16) & 0x3;
-			int sp_vtype = (data >> 18) & 0x3;
+			// We don't dirty on normal changes anymore as we prescale, but it's needed for splines/bezier.
+			gstate_c.Dirty(DIRTY_UVSCALEOFFSET);
+
+			// This also make skipping drawing very effective.
+			if (gstate_c.skipDrawReason & (SKIPDRAW_SKIPFRAME | SKIPDRAW_NON_DISPLAYED_FB))	{
+				// TODO: Should this eat some cycles?  Probably yes.  Not sure if important.
+				return;
+			}
 
 			if (!Memory::IsValidAddress(gstate_c.vertexAddr)) {
-				ERROR_LOG_REPORT(G3D, "Software: Bad vertex address %08x!", gstate_c.vertexAddr);
-				break;
+				ERROR_LOG_REPORT(G3D, "Bad vertex address %08x!", gstate_c.vertexAddr);
+				return;
 			}
 
-			void *control_points = Memory::GetPointer(gstate_c.vertexAddr);
-			// void *indices = NULL;
+			void *control_points = Memory::GetPointerUnchecked(gstate_c.vertexAddr);
+			void *indices = NULL;
 			if ((gstate.vertType & GE_VTYPE_IDX_MASK) != GE_VTYPE_IDX_NONE) {
 				if (!Memory::IsValidAddress(gstate_c.indexAddr)) {
-					ERROR_LOG_REPORT(G3D, "Software: Bad index address %08x!", gstate_c.indexAddr);
-					break;
+					ERROR_LOG_REPORT(G3D, "Bad index address %08x!", gstate_c.indexAddr);
+					return;
 				}
-				// indices = Memory::GetPointer(gstate_c.indexAddr);
+				indices = Memory::GetPointerUnchecked(gstate_c.indexAddr);
 			}
 
-			if (gstate.getPatchPrimitiveType() != GE_PATCHPRIM_TRIANGLES) {
-				ERROR_LOG_REPORT(G3D, "Software: Unsupported patch primitive %x", gstate.patchprimitive&3);
-				break;
+			if ((gstate.vertType & GE_VTYPE_MORPHCOUNT_MASK) || vertTypeIsSkinningEnabled(gstate.vertType)) {
+				DEBUG_LOG_REPORT(G3D, "Unusual bezier/spline vtype: %08x, morph: %d, bones: %d", gstate.vertType, (gstate.vertType & GE_VTYPE_MORPHCOUNT_MASK) >> GE_VTYPE_MORPHCOUNT_SHIFT, vertTypeGetNumBoneWeights(gstate.vertType));
 			}
 
-			if (!(gstate_c.skipDrawReason & SKIPDRAW_SKIPFRAME)) {
-				//TransformUnit::SubmitSpline(control_points, indices, sp_ucount, sp_vcount, sp_utype, sp_vtype, gstate.getPatchPrimitiveType(), gstate.vertType);
-			}
+			int sp_ucount = op & 0xFF;
+			int sp_vcount = (op >> 8) & 0xFF;
+			int sp_utype = (op >> 16) & 0x3;
+			int sp_vtype = (op >> 18) & 0x3;
+			GEPatchPrimType patchPrim = gstate.getPatchPrimitiveType();
+			SetDrawType(DRAW_SPLINE, PatchPrimToPrim(patchPrim));
+			bool computeNormals = gstate.isLightingEnabled();
+			bool patchFacing = gstate.patchfacing & 1;
+			u32 vertType = gstate.vertType;
+
+			int bytesRead = 0;
+			drawEngineCommon_->SubmitSpline(control_points, indices, gstate.getPatchDivisionU(), gstate.getPatchDivisionV(), sp_ucount, sp_vcount, sp_utype, sp_vtype, patchPrim, computeNormals, patchFacing, vertType, &bytesRead);
 			framebufferDirty_ = true;
-			DEBUG_LOG(G3D,"DL DRAW SPLINE: %i x %i, %i x %i", sp_ucount, sp_vcount, sp_utype, sp_vtype);
+
+			// After drawing, we advance pointers - see SubmitPrim which does the same.
+			int count = sp_ucount * sp_vcount;
+			AdvanceVerts(gstate.vertType, count, bytesRead);
 		}
 		break;
 
 	case GE_CMD_BOUNDINGBOX:
-		if (data != 0)
+		if (data == 0) {
+			currentList->bboxResult = false;
+		} else if (((data & 7) == 0) && data <= 64) {  // Sanity check
 			DEBUG_LOG(G3D, "Unsupported bounding box: %06x", data);
-		// bounding box test. Let's assume the box was within the drawing region.
-		currentList->bboxResult = true;
+			void *control_points = Memory::GetPointer(gstate_c.vertexAddr);
+			if (!control_points) {
+				ERROR_LOG_REPORT_ONCE(boundingbox, G3D, "Invalid verts in bounding box check");
+				currentList->bboxResult = true;
+				return;
+			}
+
+			if (gstate.vertType & GE_VTYPE_IDX_MASK) {
+				ERROR_LOG_REPORT_ONCE(boundingbox, G3D, "Indexed bounding box data not supported.");
+				// Data seems invalid. Let's assume the box test passed.
+				currentList->bboxResult = true;
+				return;
+			}
+
+			// Test if the bounding box is within the drawing region.
+			int bytesRead;
+			currentList->bboxResult = drawEngineCommon_->TestBoundingBox(control_points, data, gstate.vertType, &bytesRead);
+			AdvanceVerts(gstate.vertType, data, bytesRead);
+		} else {
+			ERROR_LOG_REPORT_ONCE(boundingbox, G3D, "Bad bounding box data: %06x", data);
+			// Data seems invalid. Let's assume the box test passed.
+			currentList->bboxResult = true;
+		}
 		break;
 
 	case GE_CMD_VERTEXTYPE:
@@ -785,6 +887,7 @@ bool SoftGPU::PerformMemoryCopy(u32 dest, u32 src, int size)
 {
 	// Nothing to update.
 	InvalidateCache(dest, size, GPU_INVALIDATE_HINT);
+	GPURecord::NotifyMemcpy(dest, src, size);
 	// Let's just be safe.
 	framebufferDirty_ = true;
 	return false;
@@ -794,6 +897,7 @@ bool SoftGPU::PerformMemorySet(u32 dest, u8 v, int size)
 {
 	// Nothing to update.
 	InvalidateCache(dest, size, GPU_INVALIDATE_HINT);
+	GPURecord::NotifyMemset(dest, v, size);
 	// Let's just be safe.
 	framebufferDirty_ = true;
 	return false;
@@ -810,6 +914,7 @@ bool SoftGPU::PerformMemoryUpload(u32 dest, int size)
 {
 	// Nothing to update.
 	InvalidateCache(dest, size, GPU_INVALIDATE_HINT);
+	GPURecord::NotifyUpload(dest, size);
 	return false;
 }
 
@@ -819,11 +924,6 @@ bool SoftGPU::PerformStencilUpload(u32 dest, int size)
 }
 
 bool SoftGPU::FramebufferDirty() {
-	if (g_Config.bSeparateCPUThread) {
-		// Allow it to process fully before deciding if it's dirty.
-		SyncThread();
-	}
-
 	if (g_Config.iFrameSkip != 0) {
 		bool dirty = framebufferDirty_;
 		framebufferDirty_ = false;
@@ -832,8 +932,7 @@ bool SoftGPU::FramebufferDirty() {
 	return true;
 }
 
-bool SoftGPU::GetCurrentFramebuffer(GPUDebugBuffer &buffer, GPUDebugFramebufferType type, int maxRes)
-{
+bool SoftGPU::GetCurrentFramebuffer(GPUDebugBuffer &buffer, GPUDebugFramebufferType type, int maxRes) {
 	int x1 = gstate.getRegionX1();
 	int y1 = gstate.getRegionY1();
 	int x2 = gstate.getRegionX2() + 1;
@@ -862,6 +961,10 @@ bool SoftGPU::GetCurrentFramebuffer(GPUDebugBuffer &buffer, GPUDebugFramebufferT
 		src += stride * depth;
 	}
 	return true;
+}
+
+bool SoftGPU::GetOutputFramebuffer(GPUDebugBuffer &buffer) {
+	return GetCurrentFramebuffer(buffer, GPU_DBG_FRAMEBUF_DISPLAY, 1);
 }
 
 bool SoftGPU::GetCurrentDepthbuffer(GPUDebugBuffer &buffer)
@@ -903,5 +1006,14 @@ bool SoftGPU::GetCurrentClut(GPUDebugBuffer &buffer)
 
 bool SoftGPU::GetCurrentSimpleVertices(int count, std::vector<GPUDebugVertex> &vertices, std::vector<u16> &indices)
 {
-	return TransformUnit::GetCurrentSimpleVertices(count, vertices, indices);
+	return drawEngine_->transformUnit.GetCurrentSimpleVertices(count, vertices, indices);
+}
+
+bool SoftGPU::DescribeCodePtr(const u8 *ptr, std::string &name) {
+	std::string subname;
+	if (Sampler::DescribeCodePtr(ptr, subname)) {
+		name = "SamplerJit:" + subname;
+		return true;
+	}
+	return false;
 }

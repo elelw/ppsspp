@@ -27,7 +27,6 @@
 #include "base/NativeApp.h"
 #include "base/timeutil.h"
 #include "math/math_util.h"
-#include "ui/virtual_input.h"
 #include "ui/ui_context.h"
 
 static u32 GetButtonColor() {
@@ -42,7 +41,7 @@ void GamepadView::Touch(const TouchInput &input) {
 	secondsWithoutTouch_ = 0.0f;
 }
 
-void GamepadView::Update(const InputState &input) {
+void GamepadView::Update() {
 	const float now = time_now();
 	float delta = now - lastFrameTime_;
 	if (delta > 0) {
@@ -621,11 +620,6 @@ UI::ViewGroup *CreatePadLayout(float xres, float yres, bool *pause) {
 
 	const int roundImage = g_Config.iTouchButtonStyle ? I_ROUND_LINE : I_ROUND;
 
-	// These platforms always need the pause menu button to be shown.
-#if defined(IOS)
-	root->Add(new BoolButton(pause, roundImage, I_ARROW, 1.0f, new AnchorLayoutParams(halfW, 20, NONE, NONE, true)))->SetAngle(90);
-#endif
-
 	if (g_Config.bShowTouchControls) {
 		const int rectImage = g_Config.iTouchButtonStyle ? I_RECT_LINE : I_RECT;
 		const int shoulderImage = g_Config.iTouchButtonStyle ? I_SHOULDER_LINE : I_SHOULDER;
@@ -634,10 +628,10 @@ UI::ViewGroup *CreatePadLayout(float xres, float yres, bool *pause) {
 		const int stickBg = g_Config.iTouchButtonStyle ? I_STICK_BG_LINE : I_STICK_BG;
 		static const int comboKeyImages[5] = { I_1, I_2, I_3, I_4, I_5 };
 
-#if !defined(IOS)
-		if (g_Config.bShowTouchPause)
+		if (!System_GetPropertyBool(SYSPROP_HAS_BACK_BUTTON) || g_Config.bShowTouchPause) {
 			root->Add(new BoolButton(pause, roundImage, I_ARROW, 1.0f, new AnchorLayoutParams(halfW, 20, NONE, NONE, true)))->SetAngle(90);
-#endif
+		}
+
 		if (g_Config.bShowTouchCircle)
 			root->Add(new PSPButton(CTRL_CIRCLE, roundImage, I_CIRCLE, Action_button_scale, new AnchorLayoutParams(Action_circle_button_X, Action_circle_button_Y, NONE, NONE, true)));
 

@@ -83,6 +83,8 @@ ArmJit::ArmJit(MIPSState *mips) : blocks(mips, this), gpr(mips, &js, &jo), fpr(m
 	AllocCodeSpace(1024 * 1024 * 16);  // 32MB is the absolute max because that's what an ARM branch instruction can reach, backwards and forwards.
 	GenerateFixedCode();
 
+	INFO_LOG(JIT, "ARM JIT initialized: %d MB of code space", GetSpaceLeft() / (1024 * 1024));
+
 	js.startDefaultPrefix = mips_->HasDefaultPrefix();
 }
 
@@ -104,19 +106,7 @@ void ArmJit::DoState(PointerWrap &p)
 	}
 }
 
-// This is here so the savestate matches between jit and non-jit.
-void ArmJit::DoDummyState(PointerWrap &p)
-{
-	auto s = p.Section("Jit", 1, 2);
-	if (!s)
-		return;
-
-	bool dummy = false;
-	p.Do(dummy);
-	if (s >= 2) {
-		dummy = true;
-		p.Do(dummy);
-	}
+void ArmJit::UpdateFCR31() {
 }
 
 void ArmJit::FlushAll()
@@ -150,7 +140,7 @@ void ArmJit::FlushPrefixV()
 void ArmJit::ClearCache()
 {
 	blocks.Clear();
-	ClearCodeSpace();
+	ClearCodeSpace(0);
 	GenerateFixedCode();
 }
 
@@ -192,9 +182,11 @@ void ArmJit::CompileDelaySlot(int flags)
 		_MSR(true, false, R8);  // Restore flags register
 }
 
-
 void ArmJit::Compile(u32 em_address) {
 	PROFILE_THIS_SCOPE("jitc");
+
+	// INFO_LOG(JIT, "Compiling at %08x", em_address);
+
 	if (GetSpaceLeft() < 0x10000 || blocks.IsFull()) {
 		ClearCache();
 	}
@@ -219,7 +211,7 @@ void ArmJit::Compile(u32 em_address) {
 
 	// Drat.  The VFPU hit an uneaten prefix at the end of a block.
 	if (js.startDefaultPrefix && js.MayHavePrefix()) {
-		WARN_LOG(JIT, "An uneaten prefix at end of block: %08x", GetCompilerPC() - 4);
+		WARN_LOG_REPORT(JIT, "An uneaten prefix at end of block: %08x", GetCompilerPC() - 4);
 		js.LogPrefix();
 
 		// Let's try that one more time.  We won't get back here because we toggled the value.
@@ -648,8 +640,12 @@ void ArmJit::ApplyRoundingMode(bool force) {
 }
 
 // Does (must!) not destroy R0 (SCRATCHREG1). Destroys R14 (SCRATCHREG2).
-void ArmJit::UpdateRoundingMode() {
-	QuickCallFunction(R1, updateRoundingMode);
+void ArmJit::UpdateRoundingMode(u32 fcr31) {
+	// We must set js.hasSetRounding at compile time, or this block will use the wrong rounding mode.
+	// The fcr31 parameter is -1 when not known at compile time, so we just assume it was changed.
+	if (fcr31 & 0x01000003) {
+		js.hasSetRounding = true;
+	}
 }
 
 // IDEA - could have a WriteDualExit that takes two destinations and two condition flags,

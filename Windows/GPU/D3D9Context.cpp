@@ -9,9 +9,12 @@
 
 #include "Core/Config.h"
 #include "Core/Reporting.h"
+#include "Core/System.h"
+#include "Common/OSVersion.h"
 #include "Windows/GPU/D3D9Context.h"
 #include "Windows/W32Util/Misc.h"
 #include "thin3d/thin3d.h"
+#include "thin3d/thin3d_create.h"
 #include "thin3d/d3dx9_loader.h"
 
 void D3D9Context::SwapBuffers() {
@@ -85,17 +88,17 @@ bool D3D9Context::Init(HINSTANCE hInst, HWND wnd, std::string *error_message) {
 			return false;
 		}
 	}
+	adapterId_ = D3DADAPTER_DEFAULT;
 
 	D3DCAPS9 d3dCaps;
 
 	D3DDISPLAYMODE d3ddm;
-	if (FAILED(d3d_->GetAdapterDisplayMode(D3DADAPTER_DEFAULT, &d3ddm))) {
+	if (FAILED(d3d_->GetAdapterDisplayMode(adapterId_, &d3ddm))) {
 		*error_message = "GetAdapterDisplayMode failed";
 		d3d_->Release();
 		return false;
 	}
 
-	adapterId_ = D3DADAPTER_DEFAULT;
 	if (FAILED(d3d_->GetDeviceCaps(adapterId_, D3DDEVTYPE_HAL, &d3dCaps))) {
 		*error_message = "GetDeviceCaps failed (???)";
 		d3d_->Release();
@@ -103,7 +106,7 @@ bool D3D9Context::Init(HINSTANCE hInst, HWND wnd, std::string *error_message) {
 	}
 
 	HRESULT hr;
-	if (FAILED(hr = d3d_->CheckDeviceFormat(D3DADAPTER_DEFAULT,
+	if (FAILED(hr = d3d_->CheckDeviceFormat(adapterId_,
 		D3DDEVTYPE_HAL,
 		d3ddm.Format,
 		D3DUSAGE_DEPTHSTENCIL,
@@ -163,9 +166,17 @@ bool D3D9Context::Init(HINSTANCE hInst, HWND wnd, std::string *error_message) {
 		// TODO: This makes it slower?
 		//deviceEx->SetMaximumFrameLatency(1);
 	}
-	draw_ = Draw::T3DCreateDX9Context(d3d_, d3dEx_, -1, device_, deviceEx_);
+	draw_ = Draw::T3DCreateDX9Context(d3d_, d3dEx_, adapterId_, device_, deviceEx_);
+	SetGPUBackend(GPUBackend::DIRECT3D9);
+	if (!draw_->CreatePresets()) {
+		// Shader compiler not installed? Return an error so we can fall back to GL.
+		device_->Release();
+		d3d_->Release();
+		*error_message = "DirectX9 runtime not correctly installed. Please install.";
+		return false;
+	}
 	if (draw_)
-		draw_->HandleEvent(Draw::Event::GOT_BACKBUFFER);
+		draw_->HandleEvent(Draw::Event::GOT_BACKBUFFER, 0, 0, nullptr);
 	return true;
 }
 
@@ -177,21 +188,20 @@ void D3D9Context::Resize() {
 	bool h_changed = presentParams_.BackBufferHeight != yres;
 
 	if (device_ && (w_changed || h_changed)) {
-		draw_->HandleEvent(Draw::Event::LOST_BACKBUFFER);
+		draw_->HandleEvent(Draw::Event::LOST_BACKBUFFER, 0, 0, nullptr);
 		presentParams_.BackBufferWidth = xres;
 		presentParams_.BackBufferHeight = yres;
 		HRESULT hr = device_->Reset(&presentParams_);
 		if (FAILED(hr)) {
       // Had to remove DXGetErrorStringA calls here because dxerr.lib is deprecated and will not link with VS 2015.
-			ERROR_LOG_REPORT(G3D, "Unable to reset D3D device");
 			PanicAlert("Unable to reset D3D9 device");
 		}
-		draw_->HandleEvent(Draw::Event::GOT_BACKBUFFER);
+		draw_->HandleEvent(Draw::Event::GOT_BACKBUFFER, 0, 0, nullptr);
 	}
 }
 
 void D3D9Context::Shutdown() {
-	draw_->HandleEvent(Draw::Event::LOST_BACKBUFFER);
+	draw_->HandleEvent(Draw::Event::LOST_BACKBUFFER, 0, 0, nullptr);
 	delete draw_;
 	draw_ = nullptr;
 	device_->EndScene();

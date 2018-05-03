@@ -15,6 +15,8 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include "ppsspp_config.h"
+
 #include <algorithm>
 
 // For shell links
@@ -47,6 +49,7 @@
 #include "Windows/DSoundStream.h"
 #include "Windows/WindowsHost.h"
 #include "Windows/MainWindow.h"
+
 #include "Windows/GPU/WindowsGLContext.h"
 #include "Windows/GPU/WindowsVulkanContext.h"
 #include "Windows/GPU/D3D9Context.h"
@@ -111,16 +114,16 @@ void WindowsHost::UpdateConsolePosition() {
 bool WindowsHost::InitGraphics(std::string *error_message, GraphicsContext **ctx) {
 	WindowsGraphicsContext *graphicsContext = nullptr;
 	switch (g_Config.iGPUBackend) {
-	case GPU_BACKEND_OPENGL:
+	case (int)GPUBackend::OPENGL:
 		graphicsContext = new WindowsGLContext();
 		break;
-	case GPU_BACKEND_DIRECT3D9:
+	case (int)GPUBackend::DIRECT3D9:
 		graphicsContext = new D3D9Context();
 		break;
-	case GPU_BACKEND_DIRECT3D11:
+	case (int)GPUBackend::DIRECT3D11:
 		graphicsContext = new D3D11Context();
 		break;
-	case GPU_BACKEND_VULKAN:
+	case (int)GPUBackend::VULKAN:
 		graphicsContext = new WindowsVulkanContext();
 		break;
 	default:
@@ -143,15 +146,22 @@ void WindowsHost::ShutdownGraphics() {
 	gfx_->Shutdown();
 	delete gfx_;
 	gfx_ = nullptr;
-	PostMessage(mainWindow_, WM_CLOSE, 0, 0);
 }
 
 void WindowsHost::SetWindowTitle(const char *message) {
-	std::wstring winTitle = ConvertUTF8ToWString(std::string("PPSSPP ") + PPSSPP_GIT_VERSION);
+#ifdef GOLD
+	const char *name = "PPSSPP Gold ";
+#else
+	const char *name = "PPSSPP ";
+#endif
+	std::wstring winTitle = ConvertUTF8ToWString(std::string(name) + PPSSPP_GIT_VERSION);
 	if (message != nullptr) {
 		winTitle.append(ConvertUTF8ToWString(" - "));
 		winTitle.append(ConvertUTF8ToWString(message));
 	}
+#ifdef _DEBUG
+	winTitle.append(L" (debug)");
+#endif
 
 	MainWindow::SetWindowTitle(winTitle.c_str());
 	PostMessage(mainWindow_, MainWindow::WM_USER_WINDOW_TITLE_CHANGED, 0, 0);
@@ -193,25 +203,22 @@ void WindowsHost::SetDebugMode(bool mode) {
 			PostDialogMessage(disasmWindow[i], WM_DEB_SETDEBUGLPARAM, 0, (LPARAM)mode);
 }
 
-void WindowsHost::PollControllers(InputState &input_state) {
+void WindowsHost::PollControllers() {
 	bool doPad = true;
 	for (auto iter = this->input.begin(); iter != this->input.end(); iter++)
 	{
 		auto device = *iter;
 		if (!doPad && device->IsPad())
 			continue;
-		if (device->UpdateState(input_state) == InputDevice::UPDATESTATE_SKIP_PAD)
+		if (device->UpdateState() == InputDevice::UPDATESTATE_SKIP_PAD)
 			doPad = false;
 	}
 
-	g_mouseDeltaX *= 0.9f;
-	g_mouseDeltaY *= 0.9f;
+	float scaleFactor_x = g_dpi_scale_x * 0.1 * g_Config.fMouseSensitivity;
+	float scaleFactor_y = g_dpi_scale_y * 0.1 * g_Config.fMouseSensitivity;
 
-	// TODO: Tweak!
-	float scaleFactor = g_dpi_scale * 0.01f;
-
-	float mx = std::max(-1.0f, std::min(1.0f, g_mouseDeltaX * scaleFactor));
-	float my = std::max(-1.0f, std::min(1.0f, g_mouseDeltaY * scaleFactor));
+	float mx = std::max(-1.0f, std::min(1.0f, g_mouseDeltaX * scaleFactor_x));
+	float my = std::max(-1.0f, std::min(1.0f, g_mouseDeltaY * scaleFactor_y));
 	AxisInput axisX, axisY;
 	axisX.axisId = JOYSTICK_AXIS_MOUSE_REL_X;
 	axisX.deviceId = DEVICE_ID_MOUSE;
@@ -220,20 +227,27 @@ void WindowsHost::PollControllers(InputState &input_state) {
 	axisY.deviceId = DEVICE_ID_MOUSE;
 	axisY.value = my;
 
-	// Disabled for now as it makes the mapping dialog unusable!
-	//if (fabsf(mx) > 0.1f) NativeAxis(axisX);
-	//if (fabsf(my) > 0.1f) NativeAxis(axisY);
+	// Disabled by default, needs a workaround to map to psp keys.
+	if (g_Config.bMouseControl){
+		if (GetUIState() == UISTATE_INGAME || g_Config.bMapMouse) {
+			if (fabsf(mx) > 0.01f) NativeAxis(axisX);
+			if (fabsf(my) > 0.01f) NativeAxis(axisY);
+		}
+	}
+
+	g_mouseDeltaX *= g_Config.fMouseSmoothing;
+	g_mouseDeltaY *= g_Config.fMouseSmoothing;
 }
 
 void WindowsHost::BootDone() {
 	g_symbolMap->SortSymbols();
-	SendMessage(mainWindow_, WM_USER + 1, 0, 0);
+	PostMessage(mainWindow_, WM_USER + 1, 0, 0);
 
 	SetDebugMode(!g_Config.bAutoRun);
 	Core_EnableStepping(!g_Config.bAutoRun);
 }
 
-static std::string SymbolMapFilename(const char *currentFilename, char* ext) {
+static std::string SymbolMapFilename(const char *currentFilename, const char* ext) {
 	FileInfo info;
 
 	std::string result = currentFilename;
@@ -242,9 +256,9 @@ static std::string SymbolMapFilename(const char *currentFilename, char* ext) {
 	getFileInfo(currentFilename, &info);
 	if (info.isDirectory) {
 #ifdef _WIN32
-		char* slash = "\\";
+		const char* slash = "\\";
 #else
-		char* slash = "/";
+		const char* slash = "/";
 #endif
 		if (!endsWith(result,slash))
 			result += slash;
@@ -350,14 +364,14 @@ bool WindowsHost::CreateDesktopShortcut(std::string argumentPath, std::string ga
 	return false;
 }
 
-void WindowsHost::GoFullscreen(bool viewFullscreen) {
-	MainWindow::SendToggleFullscreen(viewFullscreen);
-}
-
 void WindowsHost::ToggleDebugConsoleVisibility() {
 	MainWindow::ToggleDebugConsoleVisibility();
 }
 
 void WindowsHost::NotifyUserMessage(const std::string &message, float duration, u32 color, const char *id) {
 	osm.Show(message, duration, color, -1, true, id);
+}
+
+void WindowsHost::SendUIMessage(const std::string &message, const std::string &value) {
+	NativeMessageReceived(message.c_str(), value.c_str());
 }

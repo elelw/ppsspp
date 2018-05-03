@@ -10,12 +10,12 @@
 #include "Core/MIPS/MIPSAsm.h"
 #include "Core/MIPS/MIPSAnalyst.h"
 #include "Core/Config.h"
+#include "Common/StringUtils.h"
 #include "Windows/Debugger/CtrlDisAsmView.h"
 #include "Windows/Debugger/Debugger_MemoryDlg.h"
 #include "Windows/Debugger/DebuggerShared.h"
 #include "Windows/Debugger/BreakpointWindow.h"
 #include "Core/Debugger/SymbolMap.h"
-#include "Globals.h"
 #include "Windows/main.h"
 
 #include "Common/CommonWindows.h"
@@ -228,7 +228,8 @@ bool CtrlDisAsmView::getDisasmAddressText(u32 address, char* dest, bool abbrevia
 		}
 	} else {
 		if (showData) {
-			sprintf(dest, "%08X %08X", address, Memory::Read_Instruction(address, true).encoding);
+			u32 encoding = Memory::IsValidAddress(address) ? Memory::Read_Instruction(address, true).encoding : 0;
+			sprintf(dest, "%08X %08X", address, encoding);
 		} else {
 			sprintf(dest, "%08X", address);
 		}
@@ -970,7 +971,7 @@ void CtrlDisAsmView::onMouseUp(WPARAM wParam, LPARAM lParam, int button)
 				{
 					char name[256];
 					std::string newname;
-					strncpy_s(name, g_symbolMap->GetLabelString(funcBegin).c_str(),_TRUNCATE);
+					truncate_cpy(name, g_symbolMap->GetLabelString(funcBegin).c_str());
 					if (InputBox_GetString(MainWindow::GetHInstance(), MainWindow::GetHWND(), L"New function name", name, newname)) {
 						g_symbolMap->SetLabelName(newname.c_str(),funcBegin);
 						u32 funcSize = g_symbolMap->GetFunctionSize(curAddress);

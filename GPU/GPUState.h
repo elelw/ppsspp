@@ -19,10 +19,10 @@
 
 #include <cmath>
 
-#include "Globals.h"
+#include "Common/Common.h"
+#include "Common/Swap.h"
 #include "GPU/GPU.h"
 #include "GPU/ge_constants.h"
-#include "Common/Common.h"
 #include "GPU/Common/ShaderCommon.h"
 
 class PointerWrap;
@@ -60,7 +60,7 @@ struct GPUgstate {
 				lightEnable[4],
 				clipEnable,
 				cullfaceEnable,
-				textureMapEnable,
+				textureMapEnable,  // 0x1E GE_CMD_TEXTUREMAPENABLE
 				fogEnable,
 				ditherEnable,
 				alphaBlendEnable,
@@ -116,8 +116,8 @@ struct GPUgstate {
 				materialspecularcoef, // 0x5B
 				ambientcolor,         // 0x5C
 				ambientalpha,         // 0x5D
-				lmode,                // 0x5E
-				ltype[4],             // 0x5F-0x62
+				lmode,                // 0x5E      GE_CMD_LIGHTMODE
+				ltype[4],             // 0x5F-0x62 GE_CMD_LIGHTTYPEx
 				lpos[12],             // 0x63-0x6E
 				ldir[12],             // 0x6F-0x7A
 				latt[12],             // 0x7B-0x86
@@ -141,7 +141,7 @@ struct GPUgstate {
 				texsize[8],           // 0xB8-BF
 				texmapmode,           // 0xC0
 				texshade,             // 0xC1
-				texmode,              // 0xC2
+				texmode,              // 0xC2 GE_CMD_TEXMODE
 				texformat,            // 0xC3
 				loadclut,             // 0xC4
 				clutformat,           // 0xC5
@@ -158,7 +158,7 @@ struct GPUgstate {
 				texlodslope,          // 0xD0
 				padxxxxxx,            // 0xD1
 				framebufpixformat,    // 0xD2
-				clearmode,            // 0xD3
+				clearmode,            // 0xD3 GE_CMD_CLEARMODE
 				scissor1,
 				scissor2,
 				minz,
@@ -185,9 +185,20 @@ struct GPUgstate {
 				transfersrcpos,
 				transferdstpos,
 				pad99,
-				transfersize;  // 0xEE
-
-			u32 pad05[0xFF- 0xEE];
+				transfersize,  // 0xEE
+				pad100,         // 0xEF
+				imm_vscx,        // 0xF0
+				imm_vscy,
+				imm_vscz,
+				imm_vtcs,
+				imm_vtct,
+				imm_vtcq,
+				imm_cv,
+				imm_ap,
+				imm_fc,
+				imm_scv;   // 0xF9
+				// In the unlikely case we ever add anything else here, don't forget to update the padding on the next line!
+			u32 pad05[0xFF- 0xF9];
 		};
 	};
 
@@ -279,6 +290,7 @@ struct GPUgstate {
 	int getTextureHeight(int level) const { return 1 << ((texsize[level] >> 8) & 0xf);}
 	u16 getTextureDimension(int level) const { return  texsize[level] & 0xf0f;}
 	GETexLevelMode getTexLevelMode() const { return static_cast<GETexLevelMode>(texlevel & 0x3); }
+	int getTexLevelOffset16() const { return (int)(s8)((texlevel >> 16) & 0xFF); }
 	bool isTextureMapEnabled() const { return textureMapEnable & 1; }
 	GETexFunc getTextureFunction() const { return static_cast<GETexFunc>(texfunc & 0x7); }
 	bool isColorDoublingEnabled() const { return (texfunc & 0x10000) != 0; }
@@ -303,7 +315,12 @@ struct GPUgstate {
 	bool isClutIndexSimple() const { return (clutformat & ~3) == 0xC500FF00; } // Meaning, no special mask, shift, or start pos.
 	bool isTextureSwizzled() const { return texmode & 1; }
 	bool isClutSharedForMipmaps() const { return (texmode & 0x100) == 0; }
+	bool isMipmapEnabled() const { return (texfilter & 4) != 0; }
+	bool isMipmapFilteringEnabled() const { return (texfilter & 2) != 0; }
+	bool isMinifyFilteringEnabled() const { return (texfilter & 1) != 0; }
+	bool isMagnifyFilteringEnabled() const { return (texfilter >> 8) & 1; }
 	int getTextureMaxLevel() const { return (texmode >> 16) & 0x7; }
+	float getTextureLodSlope() const { return getFloat24(texlodslope); }
 
 	// Lighting
 	bool isLightingEnabled() const { return lightingEnable & 1; }
@@ -315,7 +332,7 @@ struct GPUgstate {
 	GELightType getLightType(int chan) const { return static_cast<GELightType>((ltype[chan] >> 8) & 3); }
 	bool isDirectionalLight(int chan) const { return getLightType(chan) == GE_LIGHTTYPE_DIRECTIONAL; }
 	bool isPointLight(int chan) const { return getLightType(chan) == GE_LIGHTTYPE_POINT; }
-	bool isSpotLight(int chan) const { return getLightType(chan) == GE_LIGHTTYPE_SPOT; }
+	bool isSpotLight(int chan) const { return getLightType(chan) >= GE_LIGHTTYPE_SPOT; }
 	GEShadeMode getShadeMode() const { return static_cast<GEShadeMode>(shademodel & 1); }
 	unsigned int getAmbientR() const { return ambientcolor&0xFF; }
 	unsigned int getAmbientG() const { return (ambientcolor>>8)&0xFF; }
@@ -428,7 +445,6 @@ bool vertTypeIsSkinningEnabled(u32 vertType);
 
 inline int vertTypeGetNumBoneWeights(u32 vertType) { return 1 + ((vertType & GE_VTYPE_WEIGHTCOUNT_MASK) >> GE_VTYPE_WEIGHTCOUNT_SHIFT); }
 inline int vertTypeGetWeightMask(u32 vertType) { return vertType & GE_VTYPE_WEIGHT_MASK; }
-inline int vertTypeGetTexCoordMask(u32 vertType) { return vertType & GE_VTYPE_TC_MASK; }
 
 // The rest is cached simplified/converted data for fast access.
 // Does not need to be saved when saving/restoring context.
@@ -459,6 +475,8 @@ enum {
 	GPU_SUPPORTS_INSTANCE_RENDERING = FLAG_BIT(10),
 	GPU_SUPPORTS_VERTEX_TEXTURE_FETCH = FLAG_BIT(11),
 	GPU_SUPPORTS_TEXTURE_FLOAT = FLAG_BIT(12),
+	GPU_SUPPORTS_16BIT_FORMATS = FLAG_BIT(13),
+	GPU_SUPPORTS_DEPTH_CLAMP = FLAG_BIT(14),
 	GPU_SUPPORTS_LARGE_VIEWPORTS = FLAG_BIT(16),
 	GPU_SUPPORTS_ACCURATE_DEPTH = FLAG_BIT(17),
 	GPU_SUPPORTS_VAO = FLAG_BIT(18),
@@ -472,7 +490,6 @@ enum {
 	GPU_SUPPORTS_ARB_FRAMEBUFFER_BLIT = FLAG_BIT(26),
 	GPU_SUPPORTS_NV_FRAMEBUFFER_BLIT = FLAG_BIT(27),
 	GPU_SUPPORTS_OES_TEXTURE_NPOT = FLAG_BIT(28),
-	GPU_IS_MOBILE = FLAG_BIT(29),
 	GPU_PREFER_CPU_DOWNLOAD = FLAG_BIT(30),
 	GPU_PREFER_REVERSE_COLOR_ORDER = FLAG_BIT(31),
 };
@@ -500,6 +517,26 @@ struct GPUStateCache {
 	bool IsDirty(u64 what) const {
 		return (dirty & what) != 0ULL;
 	}
+	void SetTextureFullAlpha(bool fullAlpha) {
+		if (fullAlpha != textureFullAlpha) {
+			textureFullAlpha = fullAlpha;
+			Dirty(DIRTY_FRAGMENTSHADER_STATE);
+		}
+	}
+	void SetNeedShaderTexclamp(bool need) {
+		if (need != needShaderTexClamp) {
+			needShaderTexClamp = need;
+			Dirty(DIRTY_FRAGMENTSHADER_STATE);
+			if (need)
+				Dirty(DIRTY_TEXCLAMP);
+		}
+	}
+	void SetAllowShaderBlend(bool allow) {
+		if (allowShaderBlend != allow) {
+			allowShaderBlend = allow;
+			Dirty(DIRTY_FRAGMENTSHADER_STATE);
+		}
+	}
 
 	u32 featureFlags;
 
@@ -510,7 +547,6 @@ struct GPUStateCache {
 	uint64_t dirty;
 
 	bool textureFullAlpha;
-	bool textureSimpleAlpha;
 	bool vertexFullAlpha;
 
 	int skipDrawReason;
@@ -548,15 +584,24 @@ struct GPUStateCache {
 	u32 curRTHeight;
 	u32 curRTRenderWidth;
 	u32 curRTRenderHeight;
+
+	void SetCurRTOffsetX(int off) {
+		if (off != curRTOffsetX) {
+			curRTOffsetX = off;
+			Dirty(DIRTY_VIEWPORTSCISSOR_STATE);
+		}
+	}
 	u32 curRTOffsetX;
 
 	bool bezier;
 	bool spline;
-	int bezier_count_u;
 	int spline_count_u;
 	int spline_count_v;
 	int spline_type_u;
 	int spline_type_v;
+
+	bool useShaderDepal;
+	GEBufferFormat depalFramebufferFormat;
 
 	u32 getRelativeAddress(u32 data) const;
 	void Reset();

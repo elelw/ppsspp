@@ -51,6 +51,14 @@ void Compatibility::CheckSettings(IniFile &iniFile, const std::string &gameID) {
 	CheckSetting(iniFile, gameID, "ClearToRAM", &flags_.ClearToRAM);
 	CheckSetting(iniFile, gameID, "Force04154000Download", &flags_.Force04154000Download);
 	CheckSetting(iniFile, gameID, "DrawSyncEatCycles", &flags_.DrawSyncEatCycles);
+	CheckSetting(iniFile, gameID, "FakeMipmapChange", &flags_.FakeMipmapChange);
+	CheckSetting(iniFile, gameID, "RequireBufferedRendering", &flags_.RequireBufferedRendering);
+	CheckSetting(iniFile, gameID, "RequireBlockTransfer", &flags_.RequireBlockTransfer);
+	CheckSetting(iniFile, gameID, "RequireDefaultCPUClock", &flags_.RequireDefaultCPUClock);
+	CheckSetting(iniFile, gameID, "DisableReadbacks", &flags_.DisableReadbacks);
+	CheckSetting(iniFile, gameID, "DisableAccurateDepth", &flags_.DisableAccurateDepth);
+	CheckSetting(iniFile, gameID, "MGS2AcidHack", &flags_.MGS2AcidHack);
+	CheckSetting(iniFile, gameID, "SonicRivalsHack", &flags_.SonicRivalsHack);
 }
 
 void Compatibility::CheckSetting(IniFile &iniFile, const std::string &gameID, const char *option, bool *flag) {

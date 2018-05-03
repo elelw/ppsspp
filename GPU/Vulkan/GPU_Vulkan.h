@@ -36,7 +36,9 @@ public:
 	~GPU_Vulkan();
 
 	// This gets called on startup and when we get back from settings.
-	void CheckGPUFeatures();
+	void CheckGPUFeatures() override;
+
+	bool IsReady() override;
 
 	// These are where we can reset command buffers etc.
 	void BeginHostFrame() override;
@@ -46,67 +48,42 @@ public:
 	void ExecuteOp(u32 op, u32 diff) override;
 
 	void SetDisplayFramebuffer(u32 framebuf, u32 stride, GEBufferFormat format) override;
-	void BeginFrame() override;
 	void GetStats(char *buffer, size_t bufsize) override;
 	void ClearCacheNextFrame() override;
 	void DeviceLost() override;  // Only happens on Android. Drop all textures and shaders.
 	void DeviceRestore() override;
 
-	void DumpNextFrame() override;
 	void DoState(PointerWrap &p) override;
 
 	void ClearShaderCache() override;
-	bool DecodeTexture(u8 *dest, const GPUgstate &state) override {
-		return false;
-	}
-	bool FramebufferDirty() override;
-	bool FramebufferReallyDirty() override;
-
-	void GetReportingInfo(std::string &primaryInfo, std::string &fullInfo) override {
-		primaryInfo = reportingPrimaryInfo_;
-		fullInfo = reportingFullInfo_;
-	}
-
-	typedef void (GPU_Vulkan::*CmdFunc)(u32 op, u32 diff);
-	struct CommandInfo {
-		uint64_t flags;
-		GPU_Vulkan::CmdFunc func;
-	};
-	
-	void Execute_Prim(u32 op, u32 diff);
-	void Execute_Bezier(u32 op, u32 diff);
-	void Execute_Spline(u32 op, u32 diff);
-	void Execute_VertexType(u32 op, u32 diff);
-	void Execute_TexSize0(u32 op, u32 diff);
-	void Execute_LoadClut(u32 op, u32 diff);
-	void Execute_BoneMtxNum(u32 op, u32 diff);
-	void Execute_BoneMtxData(u32 op, u32 diff);
 
 	// Using string because it's generic - makes no assumptions on the size of the shader IDs of this backend.
 	std::vector<std::string> DebugGetShaderIDs(DebugShaderType shader) override;
 	std::string DebugGetShaderString(std::string id, DebugShaderType shader, DebugShaderStringType stringType) override;
-	std::vector<FramebufferInfo> GetFramebufferList() override;
-	bool GetCurrentSimpleVertices(int count, std::vector<GPUDebugVertex> &vertices, std::vector<u16> &indices) override;
-	bool DescribeCodePtr(const u8 *ptr, std::string &name) override;
+
+	TextureCacheVulkan *GetTextureCache() {
+		return textureCacheVulkan_;
+	}
 
 protected:
-	void FastRunLoop(DisplayList &list) override;
-	void FastLoadBoneMatrix(u32 target) override;
 	void FinishDeferred() override;
 
 private:
 	void Flush() {
-		drawEngine_.Flush(nullptr);
+		drawEngine_.Flush();
 	}
 	void CheckFlushOp(int cmd, u32 diff);
 	void BuildReportingInfo();
-	void InitClearInternal() override;
-	void BeginFrameInternal() override;
-	void CopyDisplayToOutputInternal() override;
-	void ReinitializeInternal() override;
+	void InitClear() override;
+	void CopyDisplayToOutput() override;
+	void Reinitialize() override;
 	inline void UpdateVsyncInterval(bool force);
-	void UpdateCmdInfo();
-	static CommandInfo cmdInfo_[256];
+
+	void InitDeviceObjects();
+	void DestroyDeviceObjects();
+
+	void LoadCache(std::string filename);
+	void SaveCache(std::string filename);
 
 	VulkanContext *vulkan_;
 	FramebufferManagerVulkan *framebufferManagerVulkan_;
@@ -120,9 +97,15 @@ private:
 	// Manages state and pipeline objects
 	PipelineManagerVulkan *pipelineManager_;
 
-	int lastVsync_;
-	VkCommandBuffer curCmd_;
+	// Simple 2D drawing engine.
+	Vulkan2D vulkan2D_;
 
-	std::string reportingPrimaryInfo_;
-	std::string reportingFullInfo_;
+	struct FrameData {
+		VulkanPushBuffer *push_;
+	};
+
+	FrameData frameData_[VulkanContext::MAX_INFLIGHT_FRAMES]{};
+
+	std::string shaderCachePath_;
+	bool shaderCacheLoaded_ = false;
 };

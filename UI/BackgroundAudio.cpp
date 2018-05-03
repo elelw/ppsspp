@@ -1,7 +1,8 @@
 #include <string>
+#include <mutex>
+
 #include "base/logging.h"
 #include "base/timeutil.h"
-#include "base/mutex.h"
 #include "file/chunk_file.h"
 
 #include "Common/CommonTypes.h"
@@ -30,10 +31,10 @@ public:
 		u8 at3_extradata[16];
 
 		int num_channels, sample_rate, numFrames, samplesPerSec, avgBytesPerSec, Nothing;
-		if (file_.descend('RIFF')) {
-			file_.readInt(); //get past 'WAVE'
-			if (file_.descend('fmt ')) { //enter the format chunk
-				int temp = file_.readInt();
+		if (file_.Descend('RIFF')) {
+			file_.ReadInt(); //get past 'WAVE'
+			if (file_.Descend('fmt ')) { //enter the format chunk
+				int temp = file_.ReadInt();
 				int format = temp & 0xFFFF;
 				switch (format) {
 				case 0xFFFE:
@@ -43,16 +44,16 @@ public:
 					codec = PSP_CODEC_AT3;
 					break;
 				default:
-					ERROR_LOG(HLE, "Unexpected SND0.AT3 format %04x", format);
+					ERROR_LOG(SCEAUDIO, "Unexpected SND0.AT3 format %04x", format);
 					return;
 				}
 
 				num_channels = temp >> 16;
 
-				samplesPerSec = file_.readInt();
-				avgBytesPerSec = file_.readInt();
+				samplesPerSec = file_.ReadInt();
+				avgBytesPerSec = file_.ReadInt();
 
-				temp = file_.readInt();
+				temp = file_.ReadInt();
 				raw_bytes_per_frame_ = temp & 0xFFFF;
 				Nothing = temp >> 16;
 
@@ -63,41 +64,41 @@ public:
 				if (codec == PSP_CODEC_AT3) {
 					// The first two bytes are actually not a useful part of the extradata.
 					// We already read 16 bytes, so make sure there's enough left.
-					if (file_.getCurrentChunkSize() >= 32) {
-						file_.readData(at3_extradata, 16);
+					if (file_.GetCurrentChunkSize() >= 32) {
+						file_.ReadData(at3_extradata, 16);
 					} else {
 						memset(at3_extradata, 0, sizeof(at3_extradata));
 					}
 				}
-				file_.ascend();
+				file_.Ascend();
 				// ILOG("got fmt data: %i", samplesPerSec);
 			} else {
 				ELOG("Error - no format chunk in wav");
-				file_.ascend();
+				file_.Ascend();
 				return;
 			}
 
-			if (file_.descend('data')) {			//enter the data chunk
-				int numBytes = file_.getCurrentChunkSize();
+			if (file_.Descend('data')) {			//enter the data chunk
+				int numBytes = file_.GetCurrentChunkSize();
 				numFrames = numBytes / raw_bytes_per_frame_;  // numFrames
 
 				raw_data_ = (uint8_t *)malloc(numBytes);
 				raw_data_size_ = numBytes;
 				if (/*raw_bytes_per_frame_ == 280 && */ num_channels == 1 || num_channels == 2) {
-					file_.readData(raw_data_, numBytes);
+					file_.ReadData(raw_data_, numBytes);
 				} else {
 					ELOG("Error - bad blockalign or channels");
 					free(raw_data_);
 					raw_data_ = 0;
 					return;
 				}
-				file_.ascend();
+				file_.Ascend();
 			} else {
 				ELOG("Error - no data chunk in wav");
-				file_.ascend();
+				file_.Ascend();
 				return;
 			}
-			file_.ascend();
+			file_.Ascend();
 		} else {
 			ELOG("Could not descend into RIFF file. Data size=%d", (int32_t)data.size());
 			return;
@@ -152,7 +153,7 @@ public:
 	}
 
 private:
-	ChunkFile file_;
+	RIFFReader file_;
 	uint8_t *raw_data_;
 	int raw_data_size_;
 	int raw_offset_;
@@ -162,7 +163,7 @@ private:
 	SimpleAudio *decoder_;
 };
 
-static recursive_mutex bgMutex;
+static std::mutex bgMutex;
 static std::string bgGamePath;
 static int playbackOffset;
 static AT3PlusReader *at3Reader;
@@ -190,7 +191,7 @@ static void ClearBackgroundAudio(bool hard) {
 void SetBackgroundAudioGame(const std::string &path) {
 	time_update();
 
-	lock_guard lock(bgMutex);
+	std::lock_guard<std::mutex> lock(bgMutex);
 	if (path == bgGamePath) {
 		// Do nothing
 		return;
@@ -211,7 +212,7 @@ void SetBackgroundAudioGame(const std::string &path) {
 int PlayBackgroundAudio() {
 	time_update();
 
-	lock_guard lock(bgMutex);
+	std::lock_guard<std::mutex> lock(bgMutex);
 
 	// Immediately stop the sound if it is turned off while playing.
 	if (!g_Config.bEnableSound) {
@@ -227,7 +228,7 @@ int PlayBackgroundAudio() {
 		if (!g_gameInfoCache)
 			return 0;  // race condition?
 
-		GameInfo *gameInfo = g_gameInfoCache->GetInfo(NULL, bgGamePath, GAMEINFO_WANTSND);
+		std::shared_ptr<GameInfo> gameInfo = g_gameInfoCache->GetInfo(NULL, bgGamePath, GAMEINFO_WANTSND);
 		if (!gameInfo)
 			return 0;
 

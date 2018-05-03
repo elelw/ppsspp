@@ -36,67 +36,34 @@ public:
 	~GPU_GLES();
 
 	// This gets called on startup and when we get back from settings.
-	void CheckGPUFeatures();
+	void CheckGPUFeatures() override;
+
+	bool IsReady() override;
 
 	void PreExecuteOp(u32 op, u32 diff) override;
 	void ExecuteOp(u32 op, u32 diff) override;
 
-	void ReapplyGfxStateInternal() override;
+	void ReapplyGfxState() override;
 	void SetDisplayFramebuffer(u32 framebuf, u32 stride, GEBufferFormat format) override;
-	void BeginFrame() override;
 	void GetStats(char *buffer, size_t bufsize) override;
 
 	void ClearCacheNextFrame() override;
 	void DeviceLost() override;  // Only happens on Android. Drop all textures and shaders.
 	void DeviceRestore() override;
 
-	void DumpNextFrame() override;
 	void DoState(PointerWrap &p) override;
 
 	void ClearShaderCache() override;
 	void CleanupBeforeUI() override;
-	bool DecodeTexture(u8 *dest, const GPUgstate &state) override {
-		return textureCacheGL_->DecodeTexture(dest, state);
-	}
-	bool FramebufferDirty() override;
-	bool FramebufferReallyDirty() override;
-
-	void GetReportingInfo(std::string &primaryInfo, std::string &fullInfo) override {
-		primaryInfo = reportingPrimaryInfo_;
-		fullInfo = reportingFullInfo_;
-	}
-	std::vector<FramebufferInfo> GetFramebufferList() override;
-
-	bool GetCurrentFramebuffer(GPUDebugBuffer &buffer, GPUDebugFramebufferType type, int maxRes) override;
-	bool GetCurrentDepthbuffer(GPUDebugBuffer &buffer) override;
-	bool GetCurrentStencilbuffer(GPUDebugBuffer &buffer) override;
-	bool GetCurrentTexture(GPUDebugBuffer &buffer, int level) override;
-	bool GetCurrentClut(GPUDebugBuffer &buffer) override;
-	bool GetOutputFramebuffer(GPUDebugBuffer &buffer) override;
-	bool GetCurrentSimpleVertices(int count, std::vector<GPUDebugVertex> &vertices, std::vector<u16> &indices) override;
-
-	bool DescribeCodePtr(const u8 *ptr, std::string &name) override;
-
-	typedef void (GPU_GLES::*CmdFunc)(u32 op, u32 diff);
-	struct CommandInfo {
-		uint64_t flags;
-		GPU_GLES::CmdFunc func;
-	};
-
-	void Execute_Prim(u32 op, u32 diff);
-	void Execute_Bezier(u32 op, u32 diff);
-	void Execute_Spline(u32 op, u32 diff);
-	void Execute_LoadClut(u32 op, u32 diff);
-	void Execute_VertexType(u32 op, u32 diff);
-	void Execute_VertexTypeSkinning(u32 op, u32 diff);
-	void Execute_TexSize0(u32 op, u32 diff);
 
 	// Using string because it's generic - makes no assumptions on the size of the shader IDs of this backend.
 	std::vector<std::string> DebugGetShaderIDs(DebugShaderType shader) override;
 	std::string DebugGetShaderString(std::string id, DebugShaderType shader, DebugShaderStringType stringType) override;
 
+	void BeginHostFrame() override;
+	void EndHostFrame() override;
+
 protected:
-	void FastRunLoop(DisplayList &list) override;
 	void FinishDeferred() override;
 
 private:
@@ -106,15 +73,12 @@ private:
 	void CheckFlushOp(int cmd, u32 diff);
 	void BuildReportingInfo();
 
-	void InitClearInternal() override;
-	void BeginFrameInternal() override;
-	void CopyDisplayToOutputInternal() override;
-	void ReinitializeInternal() override;
+	void InitClear() override;
+	void BeginFrame() override;
+	void CopyDisplayToOutput() override;
+	void Reinitialize() override;
 
 	inline void UpdateVsyncInterval(bool force);
-	void UpdateCmdInfo();
-
-	static CommandInfo cmdInfo_[256];
 
 	FramebufferManagerGLES *framebufferManagerGL_;
 	TextureCacheGLES *textureCacheGL_;
@@ -123,9 +87,10 @@ private:
 	FragmentTestCacheGLES fragmentTestCache_;
 	ShaderManagerGLES *shaderManagerGL_;
 
-	int lastVsync_;
-
-	std::string reportingPrimaryInfo_;
-	std::string reportingFullInfo_;
 	std::string shaderCachePath_;
+
+#ifdef _WIN32
+	int lastVsync_;
+#endif
+	int vertexCost_ = 0;
 };

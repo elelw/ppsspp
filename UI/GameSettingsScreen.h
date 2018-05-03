@@ -28,14 +28,14 @@ class GameSettingsScreen : public UIDialogScreenWithGameBackground {
 public:
 	GameSettingsScreen(std::string gamePath, std::string gameID = "", bool editThenRestore = false);
 
-	virtual void update(InputState &input);
-	virtual void onFinish(DialogResult result);
+	void update() override;
+	void onFinish(DialogResult result) override;
+	std::string tag() const override { return "settings"; }
 
 	UI::Event OnRecentChanged;
 
 protected:
-	virtual void CreateViews();
-	virtual void sendMessage(const char *message, const char *value);
+	void CreateViews() override;
 	void CallbackRestoreDefaults(bool yes);
 	void CallbackRenderingBackend(bool yes);
 	bool UseVerticalLayout() const;
@@ -47,6 +47,7 @@ private:
 	UI::Choice *layoutEditorChoice_;
 	UI::Choice *postProcChoice_;
 	UI::Choice *displayEditor_;
+	UI::Choice *backgroundChoice_ = nullptr;
 	UI::PopupMultiChoice *resolutionChoice_;
 	UI::CheckBox *frameSkipAuto_;
 	SettingInfoMessage *settingInfo_;
@@ -62,10 +63,9 @@ private:
 	UI::EventReturn OnControlMapping(UI::EventParams &e);
 	UI::EventReturn OnTouchControlLayout(UI::EventParams &e);
 	UI::EventReturn OnDumpNextFrameToLog(UI::EventParams &e);
-	UI::EventReturn OnReloadCheats(UI::EventParams &e);
 	UI::EventReturn OnTiltTypeChange(UI::EventParams &e);
 	UI::EventReturn OnTiltCustomize(UI::EventParams &e);
-	UI::EventReturn OnCombo_key(UI::EventParams &e);
+	UI::EventReturn OnComboKey(UI::EventParams &e);
 
 	// Global settings handlers
 	UI::EventReturn OnLanguage(UI::EventParams &e);
@@ -79,11 +79,11 @@ private:
 	UI::EventReturn OnChangeproAdhocServerAddress(UI::EventParams &e);
 	UI::EventReturn OnChangeMacAddress(UI::EventParams &e);
 	UI::EventReturn OnClearRecents(UI::EventParams &e);
+	UI::EventReturn OnChangeBackground(UI::EventParams &e);
 	UI::EventReturn OnFullscreenChange(UI::EventParams &e);
 	UI::EventReturn OnDisplayLayoutEditor(UI::EventParams &e);
 	UI::EventReturn OnResolutionChange(UI::EventParams &e);
 	UI::EventReturn OnHwScaleChange(UI::EventParams &e);
-	UI::EventReturn OnShaderChange(UI::EventParams &e);
 	UI::EventReturn OnRestoreDefaultSettings(UI::EventParams &e);
 	UI::EventReturn OnRenderingMode(UI::EventParams &e);
 	UI::EventReturn OnRenderingBackend(UI::EventParams &e);
@@ -97,6 +97,7 @@ private:
 
 	UI::EventReturn OnScreenRotation(UI::EventParams &e);
 	UI::EventReturn OnImmersiveModeChange(UI::EventParams &e);
+	UI::EventReturn OnSustainedPerformanceModeChange(UI::EventParams &e);
 
 	UI::EventReturn OnAdhocGuides(UI::EventParams &e);
 
@@ -116,36 +117,33 @@ private:
 	bool postProcEnable_;
 	bool resolutionEnable_;
 	bool bloomHackEnable_;
-	bool bezierChoiceDisable_;
 	bool tessHWEnable_;
 };
 
-class SettingInfoMessage : public UI::TextView {
+class SettingInfoMessage : public UI::LinearLayout {
 public:
-	SettingInfoMessage(int align, UI::AnchorLayoutParams *lp)
-		: UI::TextView("", align, false, lp), timeShown_(0.0) {
-	}
+	SettingInfoMessage(int align, UI::AnchorLayoutParams *lp);
 
 	void SetBottomCutoff(float y) {
 		cutOffY_ = y;
 	}
 	void Show(const std::string &text, UI::View *refView = nullptr);
 
-	void GetContentDimensionsBySpec(const UIContext &dc, UI::MeasureSpec horiz, UI::MeasureSpec vert, float &w, float &h) const;
 	void Draw(UIContext &dc);
 
 private:
-	double timeShown_;
+	UI::TextView *text_ = nullptr;
+	double timeShown_ = 0.0;
 	float cutOffY_;
 };
 
 class DeveloperToolsScreen : public UIDialogScreenWithBackground {
 public:
 	DeveloperToolsScreen() {}
-	virtual void onFinish(DialogResult result);
+	void onFinish(DialogResult result) override;
 
 protected:
-	virtual void CreateViews();
+	void CreateViews() override;
 
 private:
 	UI::EventReturn OnBack(UI::EventParams &e);
@@ -163,7 +161,7 @@ public:
 	ProAdhocServerScreen() {}	
 
 protected:
-	virtual void CreateViews();
+	void CreateViews() override;
 
 private:	
 	std::string tempProAdhocServer;

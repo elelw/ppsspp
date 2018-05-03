@@ -102,8 +102,8 @@ void Arm64Jit::Comp_FPULS(MIPSOpcode op)
 		fpr.SpillLock(ft);
 		fpr.MapReg(ft, MAP_NOINIT | MAP_DIRTY);
 		if (gpr.IsImm(rs)) {
-			u32 addr = (offset + gpr.GetImm(rs)) & 0x3FFFFFFF;
-			gpr.SetRegImm(SCRATCH1_64, (uintptr_t)(Memory::base + addr));
+			u32 addr = offset + gpr.GetImm(rs);
+			gpr.SetRegImm(SCRATCH1, addr);
 		} else {
 			gpr.MapReg(rs);
 			if (g_Config.bFastMemory) {
@@ -111,9 +111,8 @@ void Arm64Jit::Comp_FPULS(MIPSOpcode op)
 			} else {
 				skips = SetScratch1ForSafeAddress(rs, offset, SCRATCH2);
 			}
-			MOVK(SCRATCH1_64, ((uint64_t)Memory::base) >> 32, SHIFT_32);
 		}
-		fp.LDR(32, INDEX_UNSIGNED, fpr.R(ft), SCRATCH1_64, 0);
+		fp.LDR(32, fpr.R(ft), SCRATCH1_64, ArithOption(MEMBASEREG));
 		for (auto skip : skips) {
 			SetJumpTarget(skip);
 		}
@@ -130,8 +129,8 @@ void Arm64Jit::Comp_FPULS(MIPSOpcode op)
 
 		fpr.MapReg(ft);
 		if (gpr.IsImm(rs)) {
-			u32 addr = (offset + gpr.GetImm(rs)) & 0x3FFFFFFF;
-			gpr.SetRegImm(SCRATCH1_64, addr + (uintptr_t)(Memory::base));
+			u32 addr = offset + gpr.GetImm(rs);
+			gpr.SetRegImm(SCRATCH1, addr);
 		} else {
 			gpr.MapReg(rs);
 			if (g_Config.bFastMemory) {
@@ -139,9 +138,8 @@ void Arm64Jit::Comp_FPULS(MIPSOpcode op)
 			} else {
 				skips = SetScratch1ForSafeAddress(rs, offset, SCRATCH2);
 			}
-			MOVK(SCRATCH1_64, ((uint64_t)Memory::base) >> 32, SHIFT_32);
 		}
-		fp.STR(32, INDEX_UNSIGNED, fpr.R(ft), SCRATCH1_64, 0);
+		fp.STR(32, fpr.R(ft), SCRATCH1_64, ArithOption(MEMBASEREG));
 		for (auto skip : skips) {
 			SetJumpTarget(skip);
 		}
@@ -349,7 +347,8 @@ void Arm64Jit::Comp_mxc1(MIPSOpcode op)
 
 	case 4: //FI(fs) = R(rt);	break; //mtc1
 		if (gpr.IsImm(rt)) {
-			uint32_t ival = gpr.GetImm(rt);
+			// This can't be run on LO/HI.
+			uint32_t ival = (uint32_t)gpr.GetImm(rt);
 			float floatval;
 			memcpy(&floatval, &ival, sizeof(floatval));
 			uint8_t imm8;
@@ -376,8 +375,10 @@ void Arm64Jit::Comp_mxc1(MIPSOpcode op)
 			// Must clear before setting, since ApplyRoundingMode() assumes it was cleared.
 			RestoreRoundingMode();
 			bool wasImm = gpr.IsImm(rt);
+			u32 immVal = -1;
 			if (wasImm) {
-				gpr.SetImm(MIPS_REG_FPCOND, (gpr.GetImm(rt) >> 23) & 1);
+				immVal = gpr.GetImm(rt);
+				gpr.SetImm(MIPS_REG_FPCOND, (immVal >> 23) & 1);
 				gpr.MapReg(rt);
 			} else {
 				gpr.MapDirtyIn(MIPS_REG_FPCOND, rt);
@@ -388,9 +389,11 @@ void Arm64Jit::Comp_mxc1(MIPSOpcode op)
 			STR(INDEX_UNSIGNED, gpr.R(rt), CTXREG, offsetof(MIPSState, fcr31));
 			if (!wasImm) {
 				UBFX(gpr.R(MIPS_REG_FPCOND), gpr.R(rt), 23, 1);
+				// TODO: We do have the fcr31 value in a register here, could use that in UpdateRoundingMode to avoid reloading it.
+				UpdateRoundingMode();
+			} else {
+				UpdateRoundingMode(immVal);
 			}
-			// TODO: We do have the fcr31 value in a register here, could use that in UpdateRoundingMode to avoid reloading it.
-			UpdateRoundingMode();
 			ApplyRoundingMode();
 		} else {
 			Comp_Generic(op);

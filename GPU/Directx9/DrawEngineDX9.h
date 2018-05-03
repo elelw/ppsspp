@@ -17,10 +17,9 @@
 
 #pragma once
 
-#include <unordered_map>
-
 #include <d3d9.h>
 
+#include "Common/Hashmaps.h"
 #include "GPU/GPUState.h"
 #include "GPU/Common/GPUDebugInterface.h"
 #include "GPU/Common/IndexGenerator.h"
@@ -54,13 +53,6 @@ enum {
 	VAI_FLAG_VERTEXFULLALPHA = 1,
 };
 
-// Avoiding the full include of TextureDecoder.h.
-#if (defined(_M_SSE) && defined(_M_X64)) || defined(ARM64)
-typedef u64 ReliableHashType;
-#else
-typedef u32 ReliableHashType;
-#endif
-
 // Try to keep this POD.
 class VertexArrayInfoDX9 {
 public:
@@ -78,7 +70,7 @@ public:
 	}
 	~VertexArrayInfoDX9();
 
-	enum Status {
+	enum Status : uint8_t {
 		VAI_NEW,
 		VAI_HASHING,
 		VAI_RELIABLE,  // cache, don't hash
@@ -88,8 +80,6 @@ public:
 	ReliableHashType hash;
 	u32 minihash;
 
-	Status status;
-
 	LPDIRECT3DVERTEXBUFFER9 vbo;
 	LPDIRECT3DINDEXBUFFER9 ebo;
 
@@ -97,6 +87,7 @@ public:
 	u16 numVerts;
 	u16 maxIndex;
 	s8 prim;
+	Status status;
 
 	// ID information
 	int numDraws;
@@ -109,10 +100,8 @@ public:
 // Handles transform, lighting and drawing.
 class DrawEngineDX9 : public DrawEngineCommon {
 public:
-	DrawEngineDX9(LPDIRECT3DDEVICE9 device);
+	DrawEngineDX9(Draw::DrawContext *draw);
 	virtual ~DrawEngineDX9();
-
-	void SubmitPrim(void *verts, void *inds, GEPrimitiveType prim, int vertexCount, u32 vertType, int *bytesRead);
 
 	void SetShaderManager(ShaderManagerDX9 *shaderManager) {
 		shaderManager_ = shaderManager;
@@ -125,15 +114,9 @@ public:
 	}
 	void InitDeviceObjects();
 	void DestroyDeviceObjects();
-	void GLLost() {};
 
-	void Resized();  // TODO: Call
-
+	void ClearTrackedVertexArrays() override;
 	void DecimateTrackedVertexArrays();
-	void ClearTrackedVertexArrays();
-
-	void SetupVertexDecoder(u32 vertType);
-	void SetupVertexDecoderInternal(u32 vertType);
 
 	// So that this can be inlined
 	void Flush() {
@@ -145,82 +128,34 @@ public:
 	void FinishDeferred() {
 		if (!numDrawCalls)
 			return;
-		DecodeVerts();
+		DecodeVerts(decoded);
 	}
-
-	bool IsCodePtrVertexDecoder(const u8 *ptr) const;
 
 	void DispatchFlush() override { Flush(); }
-	void DispatchSubmitPrim(void *verts, void *inds, GEPrimitiveType prim, int vertexCount, u32 vertType, int *bytesRead) override {
-		SubmitPrim(verts, inds, prim, vertexCount, vertType, bytesRead);
-	}
 
 private:
-	void DecodeVerts();
-	void DecodeVertsStep();
 	void DoFlush();
 
 	void ApplyDrawState(int prim);
 	void ApplyDrawStateLate();
-	bool ApplyShaderBlending();
 	void ResetShaderBlending();
 
 	IDirect3DVertexDeclaration9 *SetupDecFmtForDraw(VSShader *vshader, const DecVtxFormat &decFmt, u32 pspFmt);
 
-	u32 ComputeMiniHash();
-	ReliableHashType ComputeHash();  // Reads deferred vertex data.
 	void MarkUnreliable(VertexArrayInfoDX9 *vai);
 
-	LPDIRECT3DDEVICE9 device_;
+	LPDIRECT3DDEVICE9 device_ = nullptr;
 
-	// Defer all vertex decoding to a Flush, so that we can hash and cache the
-	// generated buffers without having to redecode them every time.
-	struct DeferredDrawCall {
-		void *verts;
-		void *inds;
-		u32 vertType;
-		u8 indexType;
-		s8 prim;
-		u32 vertexCount;
-		u16 indexLowerBound;
-		u16 indexUpperBound;
-	};
-
-	// Vertex collector state
-	IndexGenerator indexGen;
-	int decodedVerts_;
-	GEPrimitiveType prevPrim_;
-
-	u32 lastVType_;
-	
-	TransformedVertex *transformed;
-	TransformedVertex *transformedExpanded;
-
-	std::unordered_map<u32, VertexArrayInfoDX9 *> vai_;
-	std::unordered_map<u32, IDirect3DVertexDeclaration9 *> vertexDeclMap_;
+	PrehashMap<VertexArrayInfoDX9 *, nullptr> vai_;
+	DenseHashMap<u32, IDirect3DVertexDeclaration9 *, nullptr> vertexDeclMap_;
 
 	// SimpleVertex
-	IDirect3DVertexDeclaration9* transformedVertexDecl_;
+	IDirect3DVertexDeclaration9* transformedVertexDecl_ = nullptr;
 
 	// Other
-	ShaderManagerDX9 *shaderManager_;
-	TextureCacheDX9 *textureCache_;
-	FramebufferManagerDX9 *framebufferManager_;
-
-	enum { MAX_DEFERRED_DRAW_CALLS = 128 };
-
-	DeferredDrawCall drawCalls[MAX_DEFERRED_DRAW_CALLS];
-	int numDrawCalls;
-	int vertexCountInDrawCalls;
-
-	int decimationCounter_;
-	int decodeCounter_;
-	u32 dcid_;
-
-	UVScale uvScale[MAX_DEFERRED_DRAW_CALLS];
-
-	bool fboTexNeedBind_;
-	bool fboTexBound_;
+	ShaderManagerDX9 *shaderManager_ = nullptr;
+	TextureCacheDX9 *textureCache_ = nullptr;
+	FramebufferManagerDX9 *framebufferManager_ = nullptr;
 
 	// Hardware tessellation
 	class TessellationDataTransferDX9 : public TessellationDataTransfer {

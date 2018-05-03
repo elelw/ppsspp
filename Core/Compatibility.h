@@ -18,7 +18,7 @@
 #pragma once
 
 #include <string>
-#include <stdint.h>
+#include <cstdint>
 
 // Compatibility flags are controlled by assets/compat.ini.
 // Alternatively, if PSP/SYSTEM/compat.ini exists, it is merged on top, to enable editing
@@ -51,6 +51,14 @@ struct CompatFlags {
 	bool ClearToRAM;
 	bool Force04154000Download;
 	bool DrawSyncEatCycles;
+	bool FakeMipmapChange;
+	bool RequireBufferedRendering;
+	bool RequireBlockTransfer;
+	bool RequireDefaultCPUClock;
+	bool DisableReadbacks;
+	bool DisableAccurateDepth;
+	bool MGS2AcidHack;
+	bool SonicRivalsHack;
 };
 
 class IniFile;

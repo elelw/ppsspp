@@ -23,19 +23,9 @@ class VulkanPushBuffer {
 
 public:
 	VulkanPushBuffer(VulkanContext *vulkan, size_t size);
+	~VulkanPushBuffer();
 
-	~VulkanPushBuffer() {
-		assert(buffers_.empty());
-	}
-
-	void Destroy(VulkanContext *vulkan) {
-		for (BufInfo &info : buffers_) {
-			vulkan->Delete().QueueDeleteBuffer(info.buffer);
-			vulkan->Delete().QueueDeleteDeviceMemory(info.deviceMemory);
-		}
-
-		buffers_.clear();
-	}
+	void Destroy(VulkanContext *vulkan);
 
 	void Reset() { offset_ = 0; }
 
@@ -48,28 +38,17 @@ public:
 		Map();
 	}
 
+	void BeginNoReset() {
+		Map();
+	}
+
 	void End() {
 		Unmap();
 	}
 
-	void Map() {
-		assert(!writePtr_);
-		VkResult res = vkMapMemory(device_, buffers_[buf_].deviceMemory, offset_, size_, 0, (void **)(&writePtr_));
-		assert(VK_SUCCESS == res);
-	}
+	void Map();
 
-	void Unmap() {
-		assert(writePtr_);
-		/*
-		VkMappedMemoryRange range = { VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE };
-		range.offset = 0;
-		range.size = offset_;
-		range.memory = buffers_[buf_].deviceMemory;
-		vkFlushMappedMemoryRanges(device_, 1, &range);
-		*/
-		vkUnmapMemory(device_, buffers_[buf_].deviceMemory);
-		writePtr_ = nullptr;
-	}
+	void Unmap();
 
 	// When using the returned memory, make sure to bind the returned vkbuf.
 	// This will later allow for handling overflow correctly.
@@ -107,12 +86,22 @@ public:
 	}
 
 	// "Zero-copy" variant - you can write the data directly as you compute it.
+	// Recommended.
 	void *Push(size_t size, uint32_t *bindOffset, VkBuffer *vkbuf) {
 		assert(writePtr_);
 		size_t off = Allocate(size, vkbuf);
 		*bindOffset = (uint32_t)off;
 		return writePtr_ + off;
 	}
+	void *PushAligned(size_t size, uint32_t *bindOffset, VkBuffer *vkbuf, int align) {
+		assert(writePtr_);
+		offset_ = (offset_ + align - 1) & ~(align - 1);
+		size_t off = Allocate(size, vkbuf);
+		*bindOffset = (uint32_t)off;
+		return writePtr_ + off;
+	}
+
+	size_t GetTotalSize() const;
 
 private:
 	bool AddBuffer();
@@ -150,23 +139,46 @@ public:
 	}
 
 	// May return ALLOCATE_FAILED if the allocation fails.
-	size_t Allocate(const VkMemoryRequirements &reqs, VkDeviceMemory *deviceMemory);
+	size_t Allocate(const VkMemoryRequirements &reqs, VkDeviceMemory *deviceMemory, const std::string &tag);
 
 	// Crashes on a double or misfree.
 	void Free(VkDeviceMemory deviceMemory, size_t offset);
 
+	inline void Touch(VkDeviceMemory deviceMemory, size_t offset) {
+		if (TRACK_TOUCH) {
+			DoTouch(deviceMemory, offset);
+		}
+	}
+
 	static const size_t ALLOCATE_FAILED = -1;
+	// Set to true to report potential leaks / long held textures.
+	static const bool TRACK_TOUCH = false;
+
+	int GetSlabCount() const { return (int)slabs_.size(); }
+	int GetMinSlabSize() const { return (int)minSlabSize_; }
+	int GetMaxSlabSize() const { return (int)maxSlabSize_; }
+
+	int ComputeUsagePercent() const;
+	std::vector<uint8_t> GetSlabUsage(int slab) const;
 
 private:
 	static const size_t SLAB_GRAIN_SIZE = 1024;
 	static const uint8_t SLAB_GRAIN_SHIFT = 10;
 	static const uint32_t UNDEFINED_MEMORY_TYPE = -1;
 
+	struct UsageInfo {
+		std::string tag;
+		float created;
+		float touched;
+	};
+
 	struct Slab {
 		VkDeviceMemory deviceMemory;
 		std::vector<uint8_t> usage;
 		std::unordered_map<size_t, size_t> allocSizes;
+		std::unordered_map<size_t, UsageInfo> tags;
 		size_t nextFree;
+		size_t totalUsage;
 
 		size_t Size() {
 			return usage.size() * SLAB_GRAIN_SIZE;
@@ -185,19 +197,21 @@ private:
 
 	static void DispatchFree(void *userdata) {
 		auto freeInfo = static_cast<FreeInfo *>(userdata);
-		freeInfo->allocator->ExecuteFree(freeInfo);
+		freeInfo->allocator->ExecuteFree(freeInfo);  // this deletes freeInfo
 	}
 
-	bool AllocateSlab(size_t minBytes);
-	bool AllocateFromSlab(Slab &slab, size_t &start, size_t blocks);
+	bool AllocateSlab(VkDeviceSize minBytes);
+	bool AllocateFromSlab(Slab &slab, size_t &start, size_t blocks, const std::string &tag);
 	void Decimate();
+	void DoTouch(VkDeviceMemory deviceMemory, size_t offset);
 	void ExecuteFree(FreeInfo *userdata);
+	void ReportOldUsage();
 
 	VulkanContext *const vulkan_;
 	std::vector<Slab> slabs_;
-	size_t lastSlab_;
+	size_t lastSlab_ = 0;
 	size_t minSlabSize_;
 	const size_t maxSlabSize_;
-	uint32_t memoryTypeIndex_;
-	bool destroyed_;
+	uint32_t memoryTypeIndex_ = UNDEFINED_MEMORY_TYPE;
+	bool destroyed_ = false;
 };

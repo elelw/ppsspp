@@ -38,7 +38,6 @@ public:
 	MipsJit(MIPSState *mips);
 
 	void DoState(PointerWrap &p) override;
-	void DoDummyState(PointerWrap &p) override;
 
 	// Compiled ops should ignore delay slots
 	// the compiler will take care of them by itself
@@ -130,12 +129,14 @@ public:
 	void Comp_Vbfy(MIPSOpcode op) {}
 
 	JitBlockCache *GetBlockCache() override { return &blocks; }
+	JitBlockCacheDebugInterface *GetBlockCacheDebugInterface() override { return &blocks; }
 
 	std::vector<u32> SaveAndClearEmuHackOps() override { return blocks.SaveAndClearEmuHackOps(); }
 	void RestoreSavedEmuHackOps(std::vector<u32> saved) override { blocks.RestoreSavedEmuHackOps(saved); }
 
 	void ClearCache() override;
 	void InvalidateCacheAt(u32 em_address, int length = 4) override;
+	void UpdateFCR31() override;
 
 	void EatPrefix() override { js.EatPrefix(); }
 

@@ -30,7 +30,7 @@ public class NativeSurfaceView extends SurfaceView implements SensorEventListene
 	private Controller mController = null;
 	private boolean isMogaPro = false;
 
-	public NativeSurfaceView(NativeActivity activity, int fixedW, int fixedH) {
+	public NativeSurfaceView(NativeActivity activity) {
 		super(activity);
 
 		Log.i(TAG, "NativeSurfaceView");
@@ -40,14 +40,6 @@ public class NativeSurfaceView extends SurfaceView implements SensorEventListene
 
 		mController = Controller.getInstance(activity);
 
-		// Maybe we need to use this?
-		if (fixedW != 0 && fixedH != 0) {
-			Log.i(TAG, "Setting surface holder to use a fixed size of " + fixedW + "x" + fixedH + " pixels");
-			this.getHolder().setFixedSize(fixedW, fixedH);
-		} else {
-			Log.i(TAG, "Using default backbuffer size.");
-		}
-
 		// this.getHolder().setFormat(PixelFormat.RGBA_8888);
 
 		try {
@@ -55,7 +47,7 @@ public class NativeSurfaceView extends SurfaceView implements SensorEventListene
 			Log.i(TAG, "MOGA initialized");
 			mController.setListener(this, new Handler());
 		} catch (Exception e) {
-			Log.i(TAG, "Moga failed to initialize");
+			// Ignore.
 		}
 	}
 
@@ -134,13 +126,13 @@ public class NativeSurfaceView extends SurfaceView implements SensorEventListene
 		mSensorManager.registerListener(this, mAccelerometer, SensorManager.SENSOR_DELAY_GAME);
 		if (mController != null) {
 			mController.onResume();
-
 			// According to the docs, the Moga's state can be inconsistent here.
-			// We should do a one time poll. TODO
+			// Should we do a one time poll?
 		}
 	}
 
 	public void onDestroy() {
+		Log.i(TAG, "onDestroy");
 		if (mController != null) {
 			mController.exit();
 		}

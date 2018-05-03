@@ -15,14 +15,20 @@ public:
 	UIScreen();
 	~UIScreen();
 
-	virtual void update(InputState &input) override;
-	virtual void preRender() override;
-	virtual void render() override;
-	virtual void postRender() override;
+	void update() override;
+	void preRender() override;
+	void render() override;
+	void postRender() override;
+	void deviceLost() override;
+	void deviceRestored() override;
 
-	virtual bool touch(const TouchInput &touch) override;
-	virtual bool key(const KeyInput &touch) override;
-	virtual bool axis(const AxisInput &touch) override;
+	bool touch(const TouchInput &touch) override;
+	bool key(const KeyInput &touch) override;
+	bool axis(const AxisInput &touch) override;
+
+	TouchInput transformTouch(const TouchInput &touch) override;
+
+	virtual void TriggerFinish(DialogResult result);
 
 	// Some useful default event handlers
 	UI::EventReturn OnOK(UI::EventParams &e);
@@ -36,6 +42,9 @@ protected:
 	virtual void RecreateViews() override { recreateViews_ = true; }
 
 	UI::ViewGroup *root_;
+	Vec3 translation_;
+	Vec3 scale_;
+	float alpha_ = 1.0f;
 
 private:
 	void DoRecreateViews();
@@ -48,7 +57,8 @@ private:
 class UIDialogScreen : public UIScreen {
 public:
 	UIDialogScreen() : UIScreen(), finished_(false) {}
-	virtual bool key(const KeyInput &key) override;
+	bool key(const KeyInput &key) override;
+	void sendMessage(const char *msg, const char *value) override;
 
 private:
 	bool finished_;
@@ -64,6 +74,11 @@ public:
 	virtual bool isTransparent() const override { return true; }
 	virtual bool touch(const TouchInput &touch) override;
 	virtual bool key(const KeyInput &key) override;
+	virtual void resized() override;
+
+	virtual void TriggerFinish(DialogResult result) override;
+
+	void SetPopupOrigin(const UI::View *view);
 
 protected:
 	virtual bool FillVertical() const { return false; }
@@ -71,15 +86,25 @@ protected:
 	virtual bool ShowButtons() const { return true; }
 	virtual void OnCompleted(DialogResult result) {}
 
-private:
-	UI::EventReturn OnOK(UI::EventParams &e);
-	UI::EventReturn OnCancel(UI::EventParams &e);
+	virtual void update() override;
 
+private:
 	UI::ViewGroup *box_;
 	UI::Button *defaultButton_;
 	std::string title_;
 	std::string button1_;
 	std::string button2_;
+
+	enum {
+		FRAMES_LEAD_IN = 6,
+		FRAMES_LEAD_OUT = 4,
+	};
+
+	int frames_ = 0;
+	int finishFrame_ = -1;
+	DialogResult finishResult_;
+	bool hasPopupOrigin_ = false;
+	Point popupOrigin_;
 };
 
 class ListPopupScreen : public PopupScreen {
@@ -222,7 +247,7 @@ public:
 	}
 
 	virtual void Draw(UIContext &dc) override;
-	virtual void Update(const InputState &input_state) override;
+	virtual void Update() override;
 
 	void HideChoice(int c) {
 		hidden_.insert(c);
@@ -243,7 +268,7 @@ private:
 	const char *category_;
 	ScreenManager *screenManager_;
 	std::string valueText_;
-	bool restoreFocus_;
+	bool restoreFocus_ = false;
 	std::set<int> hidden_;
 };
 
@@ -331,17 +356,22 @@ private:
 class ChoiceWithValueDisplay : public UI::Choice {
 public:
 	ChoiceWithValueDisplay(int *value, const std::string &text, LayoutParams *layoutParams = 0)
-		: Choice(text, layoutParams), iValue_(value), category_(nullptr) { sValue_ = nullptr; }
+		: Choice(text, layoutParams), iValue_(value) {}
 
 	ChoiceWithValueDisplay(std::string *value, const std::string &text, const char *category, LayoutParams *layoutParams = 0)
-		: Choice(text, layoutParams), sValue_(value), category_(category) { iValue_ = nullptr; }
+		: Choice(text, layoutParams), sValue_(value), category_(category) {}
+
+	ChoiceWithValueDisplay(std::string *value, const std::string &text, std::string (*translateCallback)(const char *value), LayoutParams *layoutParams = 0)
+		: Choice(text, layoutParams), sValue_(value), translateCallback_(translateCallback) {
+	}
 
 	virtual void Draw(UIContext &dc) override;
 
 private:
-	int *iValue_;
-	std::string *sValue_;
-	const char *category_;
+	int *iValue_ = nullptr;
+	std::string *sValue_ = nullptr;
+	const char *category_ = nullptr;
+	std::string (*translateCallback_)(const char *value) = nullptr;
 };
 
 }  // namespace UI

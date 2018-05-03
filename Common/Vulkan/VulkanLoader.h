@@ -22,7 +22,9 @@
 #elif defined(_WIN32)
 #define VK_USE_PLATFORM_WIN32_KHR
 #define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #endif
 
 #define VK_NO_PROTOTYPES
@@ -172,6 +174,12 @@ extern PFN_vkCreateAndroidSurfaceKHR vkCreateAndroidSurfaceKHR;
 #elif defined(_WIN32)
 extern PFN_vkCreateWin32SurfaceKHR vkCreateWin32SurfaceKHR;
 #endif
+#if defined(VK_USE_PLATFORM_XLIB_KHR)
+extern PFN_vkCreateXlibSurfaceKHR vkCreateXlibSurfaceKHR;
+#endif
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
+extern PFN_vkCreateWaylandSurfaceKHR vkCreateWaylandSurfaceKHR;
+#endif
 
 extern PFN_vkDestroySurfaceKHR vkDestroySurfaceKHR;
 
@@ -187,12 +195,17 @@ extern PFN_vkGetSwapchainImagesKHR vkGetSwapchainImagesKHR;
 extern PFN_vkAcquireNextImageKHR vkAcquireNextImageKHR;
 extern PFN_vkQueuePresentKHR vkQueuePresentKHR;
 
-// And the DEBUG_REPORT extension.
-extern PFN_vkCreateDebugReportCallbackEXT vkCreateDebugReportCallbackEXT;
-extern PFN_vkDestroyDebugReportCallbackEXT vkDestroyDebugReportCallbackEXT;
+// And the DEBUG_REPORT extension. Since we load this dynamically even in static
+// linked mode, we have to rename it :(
+extern PFN_vkCreateDebugReportCallbackEXT dyn_vkCreateDebugReportCallbackEXT;
+extern PFN_vkDestroyDebugReportCallbackEXT dyn_vkDestroyDebugReportCallbackEXT;
+
+
+// Way to do a quick check before even attempting to load.
+bool VulkanMayBeAvailable();
+void VulkanSetAvailable(bool available);
 
 bool VulkanLoad();
 void VulkanLoadInstanceFunctions(VkInstance instance);
 void VulkanLoadDeviceFunctions(VkDevice device);
 void VulkanFree();
-

@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ppsspp_config.h"
 #include "CommonWindows.h"
 
 #include <WinUser.h>
@@ -8,19 +9,12 @@
 #include "Misc.h"
 #include "util/text/utf8.h"
 
-bool IsVistaOrHigher() {
-	OSVERSIONINFOEX osvi;
-	DWORDLONG dwlConditionMask = 0;
-	int op = VER_GREATER_EQUAL;
-	ZeroMemory(&osvi, sizeof(osvi));
-	osvi.dwOSVersionInfoSize = sizeof(osvi);
-	osvi.dwMajorVersion = 6;  // Vista is 6.0
-	osvi.dwMinorVersion = 0;
-
-	VER_SET_CONDITION(dwlConditionMask, VER_MAJORVERSION, op);
-	VER_SET_CONDITION(dwlConditionMask, VER_MINORVERSION, op);
-
-	return VerifyVersionInfo(&osvi, VER_MAJORVERSION | VER_MINORVERSION, dwlConditionMask) != FALSE;
+bool KeyDownAsync(int vkey) {
+#if PPSSPP_PLATFORM(UWP)
+	return 0;
+#else
+	return (GetAsyncKeyState(vkey) & 0x8000) != 0;
+#endif
 }
 
 namespace W32Util
@@ -62,7 +56,7 @@ namespace W32Util
  
 	void NiceSizeFormat(size_t size, char *out)
 	{
-		char *sizes[] = {"B","KB","MB","GB","TB","PB","EB"};
+		const char *sizes[] = {"B","KB","MB","GB","TB","PB","EB"};
 		int s = 0;
 		int frac = 0;
 		while (size>=1024)
@@ -178,7 +172,7 @@ GenericListControl::GenericListControl(HWND hwnd, const GenericListViewDef& def)
 	int totalListSize = rect.right-rect.left;
 	for (int i = 0; i < columnCount; i++) {
 		lvc.cx = columns[i].size * totalListSize;
-		lvc.pszText = columns[i].name;
+		lvc.pszText = (LPTSTR)columns[i].name;
 
 		if (columns[i].flags & GLVC_CENTERED)
 			lvc.fmt = LVCFMT_CENTER;

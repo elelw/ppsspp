@@ -32,7 +32,6 @@
 #include "GPU/GPUState.h"
 #include "GPU/ge_constants.h"
 
-#include "GPU/Common/TextureDecoder.h"
 #include "GPU/Common/SplineCommon.h"
 #include "GPU/Common/TransformCommon.h"
 #include "GPU/Common/VertexDecoderCommon.h"
@@ -85,20 +84,8 @@ static const D3DVERTEXELEMENT9 TransformedVertexElements[] = {
 	D3DDECL_END()
 };
 
-DrawEngineDX9::DrawEngineDX9(LPDIRECT3DDEVICE9 device)
-	: device_(device),
-		decodedVerts_(0),
-		prevPrim_(GE_PRIM_INVALID),
-		lastVType_(-1),
-		shaderManager_(0),
-		textureCache_(0),
-		framebufferManager_(0),
-		numDrawCalls(0),
-		vertexCountInDrawCalls(0),
-		decodeCounter_(0),
-		dcid_(0),
-		fboTexNeedBind_(false),
-		fboTexBound_(false) {
+DrawEngineDX9::DrawEngineDX9(Draw::DrawContext *draw) : vai_(256), vertexDeclMap_(64) {
+	device_ = (LPDIRECT3DDEVICE9)draw->GetNativeObject(Draw::NativeObject::DEVICE);
 	decOptions_.expandAllWeightsToFloat = true;
 	decOptions_.expand8BitNormalsToFloat = true;
 
@@ -109,8 +96,6 @@ DrawEngineDX9::DrawEngineDX9(LPDIRECT3DDEVICE9 device)
 	decoded = (u8 *)AllocateMemoryPages(DECODED_VERTEX_BUFFER_SIZE, MEM_PROT_READ | MEM_PROT_WRITE);
 	decIndex = (u16 *)AllocateMemoryPages(DECODED_INDEX_BUFFER_SIZE, MEM_PROT_READ | MEM_PROT_WRITE);
 	splineBuffer = (u8 *)AllocateMemoryPages(SPLINE_BUFFER_SIZE, MEM_PROT_READ | MEM_PROT_WRITE);
-	transformed = (TransformedVertex *)AllocateMemoryPages(TRANSFORMED_VERTEX_BUFFER_SIZE, MEM_PROT_READ | MEM_PROT_WRITE);
-	transformedExpanded = (TransformedVertex *)AllocateMemoryPages(3 * TRANSFORMED_VERTEX_BUFFER_SIZE, MEM_PROT_READ | MEM_PROT_WRITE);
 
 	indexGen.Setup(decIndex);
 
@@ -130,14 +115,12 @@ DrawEngineDX9::~DrawEngineDX9() {
 	FreeMemoryPages(decoded, DECODED_VERTEX_BUFFER_SIZE);
 	FreeMemoryPages(decIndex, DECODED_INDEX_BUFFER_SIZE);
 	FreeMemoryPages(splineBuffer, SPLINE_BUFFER_SIZE);
-	FreeMemoryPages(transformed, TRANSFORMED_VERTEX_BUFFER_SIZE);
-	FreeMemoryPages(transformedExpanded, 3 * TRANSFORMED_VERTEX_BUFFER_SIZE);
-	for (auto decl = vertexDeclMap_.begin(); decl != vertexDeclMap_.end(); ++decl) {
-		if (decl->second) {
-			decl->second->Release();
+	vertexDeclMap_.Iterate([&](const uint32_t &key, IDirect3DVertexDeclaration9 *decl) {
+		if (decl) {
+			decl->Release();
 		}
-	}
-
+	});
+	vertexDeclMap_.Clear();
 	delete tessDataTransfer;
 }
 
@@ -172,9 +155,6 @@ static const DeclTypeInfo VComp[] = {
 	{0, "UNUSED_DEC_U16_2" },	// 	DEC_U16_2,
 	{D3DDECLTYPE_USHORT4N	,"D3DDECLTYPE_USHORT4N "}, // DEC_U16_3,
 	{D3DDECLTYPE_USHORT4N	,"D3DDECLTYPE_USHORT4N "}, // DEC_U16_4,
-	// Not supported in regular DX9 so faking, will cause graphics bugs until worked around
-	{0,"UNUSED_DEC_U8A_2"}, // DEC_U8A_2,
-	{0,"UNUSED_DEC_U16A_2" }, // DEC_U16A_2,
 };
 
 static void VertexAttribSetup(D3DVERTEXELEMENT9 * VertexElement, u8 fmt, u8 offset, u8 usage, u8 usage_index = 0) {
@@ -186,9 +166,11 @@ static void VertexAttribSetup(D3DVERTEXELEMENT9 * VertexElement, u8 fmt, u8 offs
 }
 
 IDirect3DVertexDeclaration9 *DrawEngineDX9::SetupDecFmtForDraw(VSShader *vshader, const DecVtxFormat &decFmt, u32 pspFmt) {
-	auto vertexDeclCached = vertexDeclMap_.find(pspFmt);
+	IDirect3DVertexDeclaration9 *vertexDeclCached = vertexDeclMap_.Get(pspFmt);
 
-	if (vertexDeclCached == vertexDeclMap_.end()) {
+	if (vertexDeclCached) {
+		return vertexDeclCached;
+	} else {
 		D3DVERTEXELEMENT9 VertexElements[8];
 		D3DVERTEXELEMENT9 *VertexElement = &VertexElements[0];
 
@@ -245,226 +227,9 @@ IDirect3DVertexDeclaration9 *DrawEngineDX9::SetupDecFmtForDraw(VSShader *vshader
 		}
 
 		// Add it to map
-		vertexDeclMap_[pspFmt] = pHardwareVertexDecl;
+		vertexDeclMap_.Insert(pspFmt, pHardwareVertexDecl);
 		return pHardwareVertexDecl;
-	} else {
-		// Set it from map
-		return vertexDeclCached->second;
 	}
-}
-
-void DrawEngineDX9::SetupVertexDecoder(u32 vertType) {
-	SetupVertexDecoderInternal(vertType);
-}
-
-inline void DrawEngineDX9::SetupVertexDecoderInternal(u32 vertType) {
-	// As the decoder depends on the UVGenMode when we use UV prescale, we simply mash it
-	// into the top of the verttype where there are unused bits.
-	const u32 vertTypeID = (vertType & 0xFFFFFF) | (gstate.getUVGenMode() << 24);
-
-	// If vtype has changed, setup the vertex decoder.
-	if (vertTypeID != lastVType_) {
-		dec_ = GetVertexDecoder(vertTypeID);
-		lastVType_ = vertTypeID;
-	}
-}
-
-void DrawEngineDX9::SubmitPrim(void *verts, void *inds, GEPrimitiveType prim, int vertexCount, u32 vertType, int *bytesRead) {
-	if (!indexGen.PrimCompatible(prevPrim_, prim) || numDrawCalls >= MAX_DEFERRED_DRAW_CALLS || vertexCountInDrawCalls + vertexCount > VERTEX_BUFFER_MAX)
-		Flush();
-
-	// TODO: Is this the right thing to do?
-	if (prim == GE_PRIM_KEEP_PREVIOUS) {
-		prim = prevPrim_ != GE_PRIM_INVALID ? prevPrim_ : GE_PRIM_POINTS;
-	} else {
-		prevPrim_ = prim;
-	}
-
-	SetupVertexDecoderInternal(vertType);
-
-	*bytesRead = vertexCount * dec_->VertexSize();
-
-	if ((vertexCount < 2 && prim > 0) || (vertexCount < 3 && prim > 2 && prim != GE_PRIM_RECTANGLES))
-		return;
-
-	DeferredDrawCall &dc = drawCalls[numDrawCalls];
-	dc.verts = verts;
-	dc.inds = inds;
-	dc.vertType = vertType;
-	dc.indexType = (vertType & GE_VTYPE_IDX_MASK) >> GE_VTYPE_IDX_SHIFT;
-	dc.prim = prim;
-	dc.vertexCount = vertexCount;
-
-	u32 dhash = dcid_;
-	dhash ^= (u32)(uintptr_t)verts;
-	dhash = __rotl(dhash, 13);
-	dhash ^= (u32)(uintptr_t)inds;
-	dhash = __rotl(dhash, 13);
-	dhash ^= (u32)vertType;
-	dhash = __rotl(dhash, 13);
-	dhash ^= (u32)vertexCount;
-	dhash = __rotl(dhash, 13);
-	dhash ^= (u32)prim;
-	dcid_ = dhash;
-
-	if (inds) {
-		GetIndexBounds(inds, vertexCount, vertType, &dc.indexLowerBound, &dc.indexUpperBound);
-	} else {
-		dc.indexLowerBound = 0;
-		dc.indexUpperBound = vertexCount - 1;
-	}
-
-	uvScale[numDrawCalls] = gstate_c.uv;
-
-	numDrawCalls++;
-	vertexCountInDrawCalls += vertexCount;
-
-	if (g_Config.bSoftwareSkinning && (vertType & GE_VTYPE_WEIGHT_MASK)) {
-		DecodeVertsStep();
-		decodeCounter_++;
-	}
-
-	if (prim == GE_PRIM_RECTANGLES && (gstate.getTextureAddress(0) & 0x3FFFFFFF) == (gstate.getFrameBufAddress() & 0x3FFFFFFF)) {
-		// Rendertarget == texture?
-		if (!g_Config.bDisableSlowFramebufEffects) {
-			gstate_c.Dirty(DIRTY_TEXTURE_PARAMS);
-			Flush();
-		}
-	}
-}
-
-void DrawEngineDX9::DecodeVerts() {
-	const UVScale origUV = gstate_c.uv;
-	for (; decodeCounter_ < numDrawCalls; decodeCounter_++) {
-		gstate_c.uv = uvScale[decodeCounter_];
-		DecodeVertsStep();
-	}
-	gstate_c.uv = origUV;
-
-	// Sanity check
-	if (indexGen.Prim() < 0) {
-		ERROR_LOG_REPORT(G3D, "DecodeVerts: Failed to deduce prim: %i", indexGen.Prim());
-		// Force to points (0)
-		indexGen.AddPrim(GE_PRIM_POINTS, 0);
-	}
-}
-
-void DrawEngineDX9::DecodeVertsStep() {
-	const int i = decodeCounter_;
-
-	const DeferredDrawCall &dc = drawCalls[i];
-
-	indexGen.SetIndex(decodedVerts_);
-	int indexLowerBound = dc.indexLowerBound, indexUpperBound = dc.indexUpperBound;
-
-	u32 indexType = dc.indexType;
-	void *inds = dc.inds;
-	if (indexType == GE_VTYPE_IDX_NONE >> GE_VTYPE_IDX_SHIFT) {
-		// Decode the verts and apply morphing. Simple.
-		dec_->DecodeVerts(decoded + decodedVerts_ * (int)dec_->GetDecVtxFmt().stride,
-			dc.verts, indexLowerBound, indexUpperBound);
-		decodedVerts_ += indexUpperBound - indexLowerBound + 1;
-		indexGen.AddPrim(dc.prim, dc.vertexCount);
-	} else {
-		// It's fairly common that games issue long sequences of PRIM calls, with differing
-		// inds pointer but the same base vertex pointer. We'd like to reuse vertices between
-		// these as much as possible, so we make sure here to combine as many as possible
-		// into one nice big drawcall, sharing data.
-
-		// 1. Look ahead to find the max index, only looking as "matching" drawcalls.
-		//    Expand the lower and upper bounds as we go.
-		int lastMatch = i;
-		const int total = numDrawCalls;
-		for (int j = i + 1; j < total; ++j) {
-			if (drawCalls[j].verts != dc.verts)
-				break;
-			if (memcmp(&uvScale[j], &uvScale[i], sizeof(uvScale[0])) != 0)
-				break;
-
-			indexLowerBound = std::min(indexLowerBound, (int)drawCalls[j].indexLowerBound);
-			indexUpperBound = std::max(indexUpperBound, (int)drawCalls[j].indexUpperBound);
-			lastMatch = j;
-		}
-
-		// 2. Loop through the drawcalls, translating indices as we go.
-		switch (indexType) {
-		case GE_VTYPE_IDX_8BIT >> GE_VTYPE_IDX_SHIFT:
-			for (int j = i; j <= lastMatch; j++) {
-				indexGen.TranslatePrim(drawCalls[j].prim, drawCalls[j].vertexCount, (const u8 *)drawCalls[j].inds, indexLowerBound);
-			}
-			break;
-		case GE_VTYPE_IDX_16BIT >> GE_VTYPE_IDX_SHIFT:
-			for (int j = i; j <= lastMatch; j++) {
-				indexGen.TranslatePrim(drawCalls[j].prim, drawCalls[j].vertexCount, (const u16_le *)drawCalls[j].inds, indexLowerBound);
-			}
-			break;
-		case GE_VTYPE_IDX_32BIT >> GE_VTYPE_IDX_SHIFT:
-			for (int j = i; j <= lastMatch; j++) {
-				indexGen.TranslatePrim(drawCalls[j].prim, drawCalls[j].vertexCount, (const u32_le *)drawCalls[j].inds, indexLowerBound);
-			}
-			break;
-		}
-
-		const int vertexCount = indexUpperBound - indexLowerBound + 1;
-
-		// This check is a workaround for Pangya Fantasy Golf, which sends bogus index data when switching items in "My Room" sometimes.
-		if (decodedVerts_ + vertexCount > VERTEX_BUFFER_MAX) {
-			return;
-		}
-
-		// 3. Decode that range of vertex data.
-		dec_->DecodeVerts(decoded + decodedVerts_ * (int)dec_->GetDecVtxFmt().stride,
-			dc.verts, indexLowerBound, indexUpperBound);
-		decodedVerts_ += vertexCount;
-
-		// 4. Advance indexgen vertex counter.
-		indexGen.Advance(vertexCount);
-		decodeCounter_ = lastMatch;
-	}
-}
-
-inline u32 ComputeMiniHashRange(const void *ptr, size_t sz) {
-	// Switch to u32 units.
-	const u32 *p = (const u32 *)ptr;
-	sz >>= 2;
-
-	if (sz > 100) {
-		size_t step = sz / 4;
-		u32 hash = 0;
-		for (size_t i = 0; i < sz; i += step) {
-			hash += DoReliableHash32(p + i, 100, 0x3A44B9C4);
-		}
-		return hash;
-	} else {
-		return p[0] + p[sz - 1];
-	}
-}
-
-u32 DrawEngineDX9::ComputeMiniHash() {
-	u32 fullhash = 0;
-	const int vertexSize = dec_->GetDecVtxFmt().stride;
-	const int indexSize = IndexSize(dec_->VertexType());
-
-	int step;
-	if (numDrawCalls < 3) {
-		step = 1;
-	} else if (numDrawCalls < 8) {
-		step = 4;
-	} else {
-		step = numDrawCalls / 8;
-	}
-	for (int i = 0; i < numDrawCalls; i += step) {
-		const DeferredDrawCall &dc = drawCalls[i];
-		if (!dc.inds) {
-			fullhash += ComputeMiniHashRange(dc.verts, vertexSize * dc.vertexCount);
-		} else {
-			int indexLowerBound = dc.indexLowerBound, indexUpperBound = dc.indexUpperBound;
-			fullhash += ComputeMiniHashRange((const u8 *)dc.verts + vertexSize * indexLowerBound, vertexSize * (indexUpperBound - indexLowerBound));
-			fullhash += ComputeMiniHashRange(dc.inds, indexSize * dc.vertexCount);
-		}
-	}
-
-	return fullhash;
 }
 
 void DrawEngineDX9::MarkUnreliable(VertexArrayInfoDX9 *vai) {
@@ -479,50 +244,11 @@ void DrawEngineDX9::MarkUnreliable(VertexArrayInfoDX9 *vai) {
 	}
 }
 
-ReliableHashType DrawEngineDX9::ComputeHash() {
-	ReliableHashType fullhash = 0;
-	const int vertexSize = dec_->GetDecVtxFmt().stride;
-	const int indexSize = IndexSize(dec_->VertexType());
-
-	// TODO: Add some caps both for numDrawCalls and num verts to check?
-	// It is really very expensive to check all the vertex data so often.
-	for (int i = 0; i < numDrawCalls; i++) {
-		const DeferredDrawCall &dc = drawCalls[i];
-		if (!dc.inds) {
-			fullhash += DoReliableHash((const char *)dc.verts, vertexSize * dc.vertexCount, 0x1DE8CAC4);
-		} else {
-			int indexLowerBound = dc.indexLowerBound, indexUpperBound = dc.indexUpperBound;
-			int j = i + 1;
-			int lastMatch = i;
-			while (j < numDrawCalls) {
-				if (drawCalls[j].verts != dc.verts)
-					break;
-				indexLowerBound = std::min(indexLowerBound, (int)dc.indexLowerBound);
-				indexUpperBound = std::max(indexUpperBound, (int)dc.indexUpperBound);
-				lastMatch = j;
-				j++;
-			}
-			// This could get seriously expensive with sparse indices. Need to combine hashing ranges the same way
-			// we do when drawing.
-			fullhash += DoReliableHash((const char *)dc.verts + vertexSize * indexLowerBound,
-				vertexSize * (indexUpperBound - indexLowerBound), 0x029F3EE1);
-			// Hm, we will miss some indices when combining above, but meh, it should be fine.
-			fullhash += DoReliableHash((const char *)dc.inds, indexSize * dc.vertexCount, 0x955FD1CA);
-			i = lastMatch;
-		}
-	}
-	if (uvScale) {
-		fullhash += DoReliableHash(&uvScale[0], sizeof(uvScale[0]) * numDrawCalls, 0x0123e658);
-	}
-
-	return fullhash;
-}
-
 void DrawEngineDX9::ClearTrackedVertexArrays() {
-	for (auto vai = vai_.begin(); vai != vai_.end(); vai++) {
-		delete vai->second;
-	}
-	vai_.clear();
+	vai_.Iterate([&](uint32_t hash, DX9::VertexArrayInfoDX9 *vai) {
+		delete vai;
+	});
+	vai_.Clear();
 }
 
 void DrawEngineDX9::DecimateTrackedVertexArrays() {
@@ -535,21 +261,20 @@ void DrawEngineDX9::DecimateTrackedVertexArrays() {
 	const int threshold = gpuStats.numFlips - VAI_KILL_AGE;
 	const int unreliableThreshold = gpuStats.numFlips - VAI_UNRELIABLE_KILL_AGE;
 	int unreliableLeft = VAI_UNRELIABLE_KILL_MAX;
-	for (auto iter = vai_.begin(); iter != vai_.end(); ) {
+	vai_.Iterate([&](uint32_t hash, DX9::VertexArrayInfoDX9 *vai) {
 		bool kill;
-		if (iter->second->status == VertexArrayInfoDX9::VAI_UNRELIABLE) {
+		if (vai->status == VertexArrayInfoDX9::VAI_UNRELIABLE) {
 			// We limit killing unreliable so we don't rehash too often.
-			kill = iter->second->lastFrame < unreliableThreshold && --unreliableLeft >= 0;
+			kill = vai->lastFrame < unreliableThreshold && --unreliableLeft >= 0;
 		} else {
-			kill = iter->second->lastFrame < threshold;
+			kill = vai->lastFrame < threshold;
 		}
 		if (kill) {
-			delete iter->second;
-			vai_.erase(iter++);
-		} else {
-			++iter;
+			delete vai;
+			vai_.Remove(hash);
 		}
-	}
+	});
+	vai_.Maintain();
 
 	// Enable if you want to see vertex decoders in the log output. Need a better way.
 #if 0
@@ -605,14 +330,10 @@ void DrawEngineDX9::DoFlush() {
 
 		if (useCache) {
 			u32 id = dcid_ ^ gstate.getUVGenMode();  // This can have an effect on which UV decoder we need to use! And hence what the decoded data will look like. See #9263
-			auto iter = vai_.find(id);
-			VertexArrayInfoDX9 *vai;
-			if (iter != vai_.end()) {
-				// We've seen this before. Could have been a cached draw.
-				vai = iter->second;
-			} else {
+			VertexArrayInfoDX9 *vai = vai_.Get(id);
+			if (!vai) {
 				vai = new VertexArrayInfoDX9();
-				vai_[id] = vai;
+				vai_.Insert(id, vai);
 			}
 
 			switch (vai->status) {
@@ -624,7 +345,7 @@ void DrawEngineDX9::DoFlush() {
 					vai->minihash = ComputeMiniHash();
 					vai->status = VertexArrayInfoDX9::VAI_HASHING;
 					vai->drawsUntilNextFullHash = 0;
-					DecodeVerts(); // writes to indexGen
+					DecodeVerts(decoded); // writes to indexGen
 					vai->numVerts = indexGen.VertexCount();
 					vai->prim = indexGen.Prim();
 					vai->maxIndex = indexGen.MaxIndex();
@@ -650,7 +371,7 @@ void DrawEngineDX9::DoFlush() {
 						}
 						if (newMiniHash != vai->minihash || newHash != vai->hash) {
 							MarkUnreliable(vai);
-							DecodeVerts();
+							DecodeVerts(decoded);
 							goto rotateVBO;
 						}
 						if (vai->numVerts > 64) {
@@ -669,13 +390,13 @@ void DrawEngineDX9::DoFlush() {
 						u32 newMiniHash = ComputeMiniHash();
 						if (newMiniHash != vai->minihash) {
 							MarkUnreliable(vai);
-							DecodeVerts();
+							DecodeVerts(decoded);
 							goto rotateVBO;
 						}
 					}
 
 					if (vai->vbo == 0) {
-						DecodeVerts();
+						DecodeVerts(decoded);
 						vai->numVerts = indexGen.VertexCount();
 						vai->prim = indexGen.Prim();
 						vai->maxIndex = indexGen.MaxIndex();
@@ -744,14 +465,14 @@ void DrawEngineDX9::DoFlush() {
 					if (vai->lastFrame != gpuStats.numFlips) {
 						vai->numFrames++;
 					}
-					DecodeVerts();
+					DecodeVerts(decoded);
 					goto rotateVBO;
 				}
 			}
 
 			vai->lastFrame = gpuStats.numFlips;
 		} else {
-			DecodeVerts();
+			DecodeVerts(decoded);
 rotateVBO:
 			gpuStats.numUncachedVertsDrawn += indexGen.VertexCount();
 			useElements = !indexGen.SeenOnlyPurePrims();
@@ -796,7 +517,7 @@ rotateVBO:
 			}
 		}
 	} else {
-		DecodeVerts();
+		DecodeVerts(decoded);
 		bool hasColor = (lastVType_ & GE_VTYPE_COL_MASK) != GE_VTYPE_COL_NONE;
 		if (gstate.isModeThrough()) {
 			gstate_c.vertexFullAlpha = gstate_c.vertexFullAlpha && (hasColor || gstate.getMaterialAmbientA() == 255);
@@ -815,16 +536,14 @@ rotateVBO:
 		bool drawIndexed = false;
 		u16 *inds = decIndex;
 		TransformedVertex *drawBuffer = NULL;
-		SoftwareTransformResult result;
-		memset(&result, 0, sizeof(result));
-
-		SoftwareTransformParams params;
-		memset(&params, 0, sizeof(params));
+		SoftwareTransformResult result{};
+		SoftwareTransformParams params{};
 		params.decoded = decoded;
 		params.transformed = transformed;
 		params.transformedExpanded = transformedExpanded;
 		params.fbman = framebufferManager_;
 		params.texCache = textureCache_;
+		params.allowClear = true;
 		params.allowSeparateAlphaClear = true;
 
 		int maxIndex = indexGen.MaxIndex();
@@ -869,28 +588,26 @@ rotateVBO:
 			}
 
 			dxstate.colorMask.set((mask & D3DCLEAR_TARGET) != 0, (mask & D3DCLEAR_TARGET) != 0, (mask & D3DCLEAR_TARGET) != 0, (mask & D3DCLEAR_STENCIL) != 0);
-
 			device_->Clear(0, NULL, mask, SwapRB(clearColor), clearDepth, clearColor >> 24);
 
-			int scissorX1 = gstate.getScissorX1();
-			int scissorY1 = gstate.getScissorY1();
 			int scissorX2 = gstate.getScissorX2() + 1;
 			int scissorY2 = gstate.getScissorY2() + 1;
 			framebufferManager_->SetSafeSize(scissorX2, scissorY2);
-
 			if (g_Config.bBlockTransferGPU && (gstate_c.featureFlags & GPU_USE_CLEAR_RAM_HACK) && gstate.isClearModeColorMask() && (gstate.isClearModeAlphaMask() || gstate.FrameBufFormat() == GE_FORMAT_565)) {
-				ApplyClearToMemory(scissorX1, scissorY1, scissorX2, scissorY2, clearColor);
+				int scissorX1 = gstate.getScissorX1();
+				int scissorY1 = gstate.getScissorY1();
+				framebufferManager_->ApplyClearToMemory(scissorX1, scissorY1, scissorX2, scissorY2, clearColor);
 			}
 		}
 	}
 
 	gpuStats.numDrawCalls += numDrawCalls;
-	gpuStats.numVertsSubmitted += vertexCountInDrawCalls;
+	gpuStats.numVertsSubmitted += vertexCountInDrawCalls_;
 
 	indexGen.Reset();
 	decodedVerts_ = 0;
 	numDrawCalls = 0;
-	vertexCountInDrawCalls = 0;
+	vertexCountInDrawCalls_ = 0;
 	decodeCounter_ = 0;
 	dcid_ = 0;
 	prevPrim_ = GE_PRIM_INVALID;
@@ -906,21 +623,7 @@ rotateVBO:
 	host->GPUNotifyDraw();
 }
 
-void DrawEngineDX9::Resized() {
-	decJitCache_->Clear();
-	lastVType_ = -1;
-	dec_ = NULL;
-	for (auto iter = decoderMap_.begin(); iter != decoderMap_.end(); iter++) {
-		delete iter->second;
-	}
-	decoderMap_.clear();
-}
-
-bool DrawEngineDX9::IsCodePtrVertexDecoder(const u8 *ptr) const {
-	return decJitCache_->IsInSpace(ptr);
-}
-
-void DX9::DrawEngineDX9::TessellationDataTransferDX9::SendDataToShader(const float * pos, const float * tex, const float * col, int size, bool hasColor, bool hasTexCoords)
+void DrawEngineDX9::TessellationDataTransferDX9::SendDataToShader(const float * pos, const float * tex, const float * col, int size, bool hasColor, bool hasTexCoords)
 {
 }
 

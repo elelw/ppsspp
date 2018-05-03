@@ -15,6 +15,8 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include "ppsspp_config.h"
+
 #ifdef _WIN32
 #pragma warning(disable:4091)
 #include "Common/CommonWindows.h"
@@ -23,10 +25,13 @@
 #include <codecvt>
 #endif
 
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+
+#include "base/timeutil.h"
 #include "math/math_util.h"
-#include "thread/thread.h"
 #include "thread/threadutil.h"
-#include "base/mutex.h"
 #include "util/text/utf8.h"
 
 #include "Core/MemMap.h"
@@ -76,13 +81,13 @@ ParamSFOData g_paramSFO;
 static GlobalUIState globalUIState;
 static CoreParameter coreParameter;
 static FileLoader *loadedFile;
-static std::thread *cpuThread = nullptr;
-static std::thread::id cpuThreadID;
-static recursive_mutex cpuThreadLock;
-static condition_variable cpuThreadCond;
-static condition_variable cpuThreadReplyCond;
-static u64 cpuThreadUntil;
+static std::mutex loadingReasonLock;
+static std::string loadingReason;
+
 bool audioInitialized;
+
+bool coreCollectDebugStats = false;
+bool coreCollectDebugStatsForced = false;
 
 // This can be read and written from ANYWHERE.
 volatile CoreState coreState = CORE_STEPPING;
@@ -91,6 +96,10 @@ volatile bool coreStatePending = false;
 static volatile CPUThreadState cpuThreadState = CPU_THREAD_NOT_RUNNING;
 
 static GPUBackend gpuBackend;
+
+void ResetUIState() {
+	globalUIState = UISTATE_MENU;
+}
 
 void UpdateUIState(GlobalUIState newState) {
 	// Never leave the EXIT state.
@@ -123,42 +132,16 @@ void Audio_Init() {
 	}
 }
 
-bool IsOnSeparateCPUThread() {
-	if (cpuThread != nullptr) {
-		return cpuThreadID == std::this_thread::get_id();
-	} else {
-		return false;
-	}
-}
-
-void CPU_SetState(CPUThreadState to) {
-	lock_guard guard(cpuThreadLock);
-	cpuThreadState = to;
-	cpuThreadCond.notify_one();
-	cpuThreadReplyCond.notify_one();
-}
-
-bool CPU_NextState(CPUThreadState from, CPUThreadState to) {
-	lock_guard guard(cpuThreadLock);
-	if (cpuThreadState == from) {
-		CPU_SetState(to);
-		return true;
-	} else {
-		return false;
-	}
-}
-
-bool CPU_NextStateNot(CPUThreadState from, CPUThreadState to) {
-	lock_guard guard(cpuThreadLock);
-	if (cpuThreadState != from) {
-		CPU_SetState(to);
-		return true;
-	} else {
-		return false;
+void Audio_Shutdown() {
+	if (audioInitialized) {
+		audioInitialized = false;
+		host->ShutdownSound();
 	}
 }
 
 bool CPU_IsReady() {
+	if (coreState == CORE_POWERUP)
+		return false;
 	return cpuThreadState == CPU_THREAD_RUNNING || cpuThreadState == CPU_THREAD_NOT_RUNNING;
 }
 
@@ -168,13 +151,6 @@ bool CPU_IsShutdown() {
 
 bool CPU_HasPendingAction() {
 	return cpuThreadState != CPU_THREAD_RUNNING;
-}
-
-void CPU_WaitStatus(condition_variable &cond, bool (*pred)()) {
-	lock_guard guard(cpuThreadLock);
-	while (!pred()) {
-		cond.wait(cpuThreadLock);
-	}
 }
 
 void CPU_Shutdown();
@@ -211,17 +187,16 @@ void CPU_Init() {
 	Replacement_Init();
 
 	switch (type) {
-	case FILETYPE_PSP_ISO:
-	case FILETYPE_PSP_ISO_NP:
-	case FILETYPE_PSP_DISC_DIRECTORY:
+	case IdentifiedFileType::PSP_ISO:
+	case IdentifiedFileType::PSP_ISO_NP:
+	case IdentifiedFileType::PSP_DISC_DIRECTORY:
 		InitMemoryForGameISO(loadedFile);
 		break;
-	case FILETYPE_PSP_PBP:
-		InitMemoryForGamePBP(loadedFile);
-		break;
-	case FILETYPE_PSP_PBP_DIRECTORY:
+	case IdentifiedFileType::PSP_PBP:
+	case IdentifiedFileType::PSP_PBP_DIRECTORY:
 		// This is normal for homebrew.
 		// ERROR_LOG(LOADER, "PBP directory resolution failed.");
+		InitMemoryForGamePBP(loadedFile);
 		break;
 	default:
 		break;
@@ -230,10 +205,8 @@ void CPU_Init() {
 	// Here we have read the PARAM.SFO, let's see if we need any compatibility overrides.
 	// Homebrew usually has an empty discID, and even if they do have a disc id, it's not
 	// likely to collide with any commercial ones.
-	std::string discID = g_paramSFO.GetValueString("DISC_ID");
-	if (!discID.empty()) {
-		coreParameter.compat.Load(discID);
-	}
+	std::string discID = g_paramSFO.GetDiscID();
+	coreParameter.compat.Load(discID);
 
 	Memory::Init();
 	mipsr4k.Reset();
@@ -251,11 +224,11 @@ void CPU_Init() {
 
 	// TODO: Check Game INI here for settings, patches and cheats, and modify coreParameter accordingly
 
-	// Why did we check for CORE_POWERDOWN here?
+	// If they shut down early, we'll catch it when load completes.
+	// Note: this may return before init is complete, which is checked if CPU_IsReady().
 	if (!LoadFile(&loadedFile, &coreParameter.errorString)) {
 		CPU_Shutdown();
 		coreParameter.fileToStart = "";
-		CPU_SetState(CPU_THREAD_NOT_RUNNING);
 		return;
 	}
 
@@ -263,8 +236,6 @@ void CPU_Init() {
 	if (coreParameter.updateRecent) {
 		g_Config.AddRecent(filename);
 	}
-
-	coreState = coreParameter.startPaused ? CORE_STEPPING : CORE_RUNNING;
 }
 
 void CPU_Shutdown() {
@@ -278,8 +249,7 @@ void CPU_Shutdown() {
 	__KernelShutdown();
 	HLEShutdown();
 	if (coreParameter.enableSound) {
-		host->ShutdownSound();
-		audioInitialized = false;  // deleted in ShutdownSound
+		Audio_Shutdown();
 	}
 	pspFileSystem.Shutdown();
 	mipsr4k.Shutdown();
@@ -301,59 +271,6 @@ void UpdateLoadedFile(FileLoader *fileLoader) {
 	loadedFile = fileLoader;
 }
 
-void CPU_RunLoop() {
-	setCurrentThreadName("CPU");
-
-	if (CPU_NextState(CPU_THREAD_PENDING, CPU_THREAD_STARTING)) {
-		CPU_Init();
-		CPU_NextState(CPU_THREAD_STARTING, CPU_THREAD_RUNNING);
-	} else if (!CPU_NextState(CPU_THREAD_RESUME, CPU_THREAD_RUNNING)) {
-		ERROR_LOG(CPU, "CPU thread in unexpected state: %d", cpuThreadState);
-		return;
-	}
-
-	while (cpuThreadState != CPU_THREAD_SHUTDOWN)
-	{
-		CPU_WaitStatus(cpuThreadCond, &CPU_HasPendingAction);
-		switch (cpuThreadState) {
-		case CPU_THREAD_EXECUTE:
-			mipsr4k.RunLoopUntil(cpuThreadUntil);
-			gpu->FinishEventLoop();
-			CPU_NextState(CPU_THREAD_EXECUTE, CPU_THREAD_RUNNING);
-			break;
-
-		// These are fine, just keep looping.
-		case CPU_THREAD_RUNNING:
-		case CPU_THREAD_SHUTDOWN:
-			break;
-
-		case CPU_THREAD_QUIT:
-			// Just leave the thread, CPU is switching off thread.
-			CPU_SetState(CPU_THREAD_NOT_RUNNING);
-			return;
-
-		default:
-			ERROR_LOG(CPU, "CPU thread in unexpected state: %d", cpuThreadState);
-			// Begin shutdown, otherwise we'd just spin on this bad state.
-			CPU_SetState(CPU_THREAD_SHUTDOWN);
-			break;
-		}
-	}
-
-	if (coreState != CORE_ERROR) {
-		coreState = CORE_POWERDOWN;
-	}
-
-	// Let's make sure the gpu has already cleaned up before we start freeing memory.
-	if (gpu) {
-		gpu->FinishEventLoop();
-		gpu->SyncThread(true);
-	}
-
-	CPU_Shutdown();
-	CPU_SetState(CPU_THREAD_NOT_RUNNING);
-}
-
 void Core_UpdateState(CoreState newState) {
 	if ((coreState == CORE_RUNNING || coreState == CORE_NEXTFRAME) && newState != CORE_RUNNING)
 		coreStatePending = true;
@@ -361,21 +278,23 @@ void Core_UpdateState(CoreState newState) {
 	Core_UpdateSingleStep();
 }
 
-void System_Wake() {
-	// Ping the threads so they check coreState.
-	CPU_NextStateNot(CPU_THREAD_NOT_RUNNING, CPU_THREAD_SHUTDOWN);
-	if (gpu) {
-		gpu->FinishEventLoop();
+void Core_UpdateDebugStats(bool collectStats) {
+	if (coreCollectDebugStats != collectStats) {
+		coreCollectDebugStats = collectStats;
+		mipsr4k.ClearJitCache();
 	}
+
+	kernelStats.ResetFrame();
+	gpuStats.ResetFrame();
 }
 
+// Ugly!
 static bool pspIsInited = false;
 static bool pspIsIniting = false;
-static bool pspIsQuiting = false;
-// Ugly!
+static bool pspIsQuitting = false;
 
 bool PSP_InitStart(const CoreParameter &coreParam, std::string *error_string) {
-	if (pspIsIniting || pspIsQuiting) {
+	if (pspIsIniting || pspIsQuitting) {
 		return false;
 	}
 
@@ -394,16 +313,9 @@ bool PSP_InitStart(const CoreParameter &coreParam, std::string *error_string) {
 	}
 	coreParameter.errorString = "";
 	pspIsIniting = true;
+	PSP_SetLoading("Loading game...");
 
-	if (g_Config.bSeparateCPUThread) {
-		Core_ListenShutdown(System_Wake);
-		CPU_SetState(CPU_THREAD_PENDING);
-		cpuThread = new std::thread(&CPU_RunLoop);
-		cpuThreadID = cpuThread->get_id();
-		cpuThread->detach();
-	} else {
-		CPU_Init();
-	}
+	CPU_Init();
 
 	*error_string = coreParameter.errorString;
 	bool success = coreParameter.fileToStart != "";
@@ -418,32 +330,30 @@ bool PSP_InitUpdate(std::string *error_string) {
 		return true;
 	}
 
-	if (g_Config.bSeparateCPUThread && !CPU_IsReady()) {
+	if (!CPU_IsReady()) {
 		return false;
 	}
 
 	bool success = coreParameter.fileToStart != "";
 	*error_string = coreParameter.errorString;
-	if (success) {
+	if (success && gpu == nullptr) {
+		PSP_SetLoading("Starting graphics...");
 		success = GPU_Init(coreParameter.graphicsContext, coreParameter.thin3d);
 		if (!success) {
 			PSP_Shutdown();
 			*error_string = "Unable to initialize rendering engine.";
 		}
 	}
-	pspIsInited = success;
-	pspIsIniting = false;
-	return true;
+	pspIsInited = success && GPU_IsReady();
+	pspIsIniting = success && !pspIsInited;
+	return !success || pspIsInited;
 }
 
 bool PSP_Init(const CoreParameter &coreParam, std::string *error_string) {
 	PSP_InitStart(coreParam, error_string);
 
-	if (g_Config.bSeparateCPUThread) {
-		CPU_WaitStatus(cpuThreadReplyCond, &CPU_IsReady);
-	}
-
-	PSP_InitUpdate(error_string);
+	while (!PSP_InitUpdate(error_string))
+		sleep_ms(10);
 	return pspIsInited;
 }
 
@@ -452,12 +362,12 @@ bool PSP_IsIniting() {
 }
 
 bool PSP_IsInited() {
-	return pspIsInited && !pspIsQuiting;
+	return pspIsInited && !pspIsQuitting;
 }
 
 void PSP_Shutdown() {
 	// Do nothing if we never inited.
-	if (!pspIsInited && !pspIsIniting && !pspIsQuiting) {
+	if (!pspIsInited && !pspIsIniting && !pspIsQuitting) {
 		return;
 	}
 
@@ -468,26 +378,18 @@ void PSP_Shutdown() {
 #endif
 
 	// Make sure things know right away that PSP memory, etc. is going away.
-	pspIsQuiting = true;
+	pspIsQuitting = true;
 	if (coreState == CORE_RUNNING)
 		Core_UpdateState(CORE_ERROR);
 	Core_NotifyShutdown();
-	if (cpuThread != nullptr) {
-		CPU_NextStateNot(CPU_THREAD_NOT_RUNNING, CPU_THREAD_SHUTDOWN);
-		CPU_WaitStatus(cpuThreadReplyCond, &CPU_IsShutdown);
-		delete cpuThread;
-		cpuThread = 0;
-		cpuThreadID = std::thread::id();
-	} else {
-		CPU_Shutdown();
-	}
+	CPU_Shutdown();
 	GPU_Shutdown();
 	g_paramSFO.Clear();
 	host->SetWindowTitle(0);
 	currentMIPS = 0;
 	pspIsInited = false;
 	pspIsIniting = false;
-	pspIsQuiting = false;
+	pspIsQuitting = false;
 	g_Config.unloadGameConfig();
 }
 
@@ -510,56 +412,22 @@ void PSP_RunLoopUntil(u64 globalticks) {
 		return;
 	}
 
-	// Switch the CPU thread on or off, as the case may be.
-	bool useCPUThread = g_Config.bSeparateCPUThread;
-	if (useCPUThread && cpuThread == nullptr) {
-		// Need to start the cpu thread.
-		Core_ListenShutdown(System_Wake);
-		CPU_SetState(CPU_THREAD_RESUME);
-		cpuThread = new std::thread(&CPU_RunLoop);
-		cpuThreadID = cpuThread->get_id();
-		cpuThread->detach();
-		if (gpu) {
-			gpu->SetThreadEnabled(true);
-		}
-		CPU_WaitStatus(cpuThreadReplyCond, &CPU_IsReady);
-	} else if (!useCPUThread && cpuThread != nullptr) {
-		CPU_SetState(CPU_THREAD_QUIT);
-		CPU_WaitStatus(cpuThreadReplyCond, &CPU_IsShutdown);
-		delete cpuThread;
-		cpuThread = nullptr;
-		cpuThreadID = std::thread::id();
-		if (gpu) {
-			gpu->SetThreadEnabled(false);
-		}
-	}
-
-	if (cpuThread != nullptr) {
-		// Tell the gpu a new frame is about to begin, before we start the CPU.
-		gpu->SyncBeginFrame();
-
-		cpuThreadUntil = globalticks;
-		if (CPU_NextState(CPU_THREAD_RUNNING, CPU_THREAD_EXECUTE)) {
-			// The CPU doesn't actually respect cpuThreadUntil well, especially when skipping frames.
-			// TODO: Something smarter?  Or force CPU to bail periodically?
-			while (!CPU_IsReady()) {
-				gpu->RunEventsUntil(CoreTiming::GetTicks() + msToCycles(1000));
-				if (coreState != CORE_RUNNING) {
-					CPU_WaitStatus(cpuThreadReplyCond, &CPU_IsReady);
-				}
-			}
-		} else {
-			ERROR_LOG(CPU, "Unable to execute CPU run loop, unexpected state: %d", cpuThreadState);
-		}
-	} else {
-		mipsr4k.RunLoopUntil(globalticks);
-	}
-
+	mipsr4k.RunLoopUntil(globalticks);
 	gpu->CleanupBeforeUI();
 }
 
 void PSP_RunLoopFor(int cycles) {
 	PSP_RunLoopUntil(CoreTiming::GetTicks() + cycles);
+}
+
+void PSP_SetLoading(const std::string &reason) {
+	std::lock_guard<std::mutex> guard(loadingReasonLock);
+	loadingReason = reason;
+}
+
+std::string PSP_GetLoading() {
+	std::lock_guard<std::mutex> guard(loadingReasonLock);
+	return loadingReason;
 }
 
 CoreParameter &PSP_CoreParameter() {
@@ -613,19 +481,26 @@ void InitSysDirectories() {
 	const std::string path = File::GetExeDirectory();
 
 	// Mount a filesystem
-	g_Config.flash0Directory = path + "flash0/";
+	g_Config.flash0Directory = path + "assets/flash0/";
 
 	// Detect the "My Documents"(XP) or "Documents"(on Vista/7/8) folder.
+#if PPSSPP_PLATFORM(UWP)
+	// We set g_Config.memStickDirectory outside.
+
+#else
 	wchar_t myDocumentsPath[MAX_PATH];
 	const HRESULT result = SHGetFolderPath(NULL, CSIDL_PERSONAL, NULL, SHGFP_TYPE_CURRENT, myDocumentsPath);
 	const std::string myDocsPath = ConvertWStringToUTF8(myDocumentsPath) + "/PPSSPP/";
-
 	const std::string installedFile = path + "installed.txt";
 	const bool installed = File::Exists(installedFile);
 
 	// If installed.txt exists(and we can determine the Documents directory)
 	if (installed && (result == S_OK))	{
+#if defined(_WIN32) && defined(__MINGW32__)
+		std::ifstream inputFile(installedFile);
+#else
 		std::ifstream inputFile(ConvertUTF8ToWString(installedFile));
+#endif
 
 		if (!inputFile.fail() && inputFile.is_open()) {
 			std::string tempString;
@@ -669,6 +544,19 @@ void InitSysDirectories() {
 	// Clean up our mess.
 	if (File::Exists(testFile))
 		File::Delete(testFile);
+#endif
+
+	// Create the default directories that a real PSP creates. Good for homebrew so they can
+	// expect a standard environment. Skipping THEME though, that's pointless.
+	File::CreateDir(g_Config.memStickDirectory + "PSP");
+	File::CreateDir(g_Config.memStickDirectory + "PSP/COMMON");
+	File::CreateDir(g_Config.memStickDirectory + "PSP/GAME");
+	File::CreateDir(g_Config.memStickDirectory + "PSP/SAVEDATA");
+	File::CreateDir(g_Config.memStickDirectory + "PSP/PPSSPP_STATE");
+#ifdef ANDROID
+	// Avoid media scanners in PPSSPP_STATE directory
+	File::CreateEmptyFile(g_Config.memStickDirectory + "PSP/PPSSPP_STATE/.nomedia");
+#endif
 
 	if (g_Config.currentDirectory.empty()) {
 		g_Config.currentDirectory = GetSysDirectory(DIRECTORY_GAME);

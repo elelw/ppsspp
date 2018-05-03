@@ -66,19 +66,7 @@ void MipsJit::DoState(PointerWrap &p)
 	}
 }
 
-// This is here so the savestate matches between jit and non-jit.
-void MipsJit::DoDummyState(PointerWrap &p)
-{
-	auto s = p.Section("Jit", 1, 2);
-	if (!s)
-		return;
-
-	bool dummy = false;
-	p.Do(dummy);
-	if (s >= 2) {
-		dummy = true;
-		p.Do(dummy);
-	}
+void MipsJit::UpdateFCR31() {
 }
 
 void MipsJit::FlushAll()

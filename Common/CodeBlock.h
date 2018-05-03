@@ -38,11 +38,14 @@ protected:
 	size_t region_size;
 };
 
-template<class T> class CodeBlock : public CodeBlockCommon, public T, NonCopyable {
+template<class T> class CodeBlock : public CodeBlockCommon, public T {
 private:
+	CodeBlock(const CodeBlock &) = delete;
+	void operator=(const CodeBlock &) = delete;
+
 	// A privately used function to set the executable RAM space to something invalid.
 	// For debugging usefulness it should be used to set the RAM to a host specific breakpoint instruction
-	virtual void PoisonMemory() = 0;
+	virtual void PoisonMemory(int offset) = 0;
 
 public:
 	CodeBlock() : writeStart_(nullptr) {}
@@ -58,14 +61,17 @@ public:
 
 	// Always clear code space with breakpoints, so that if someone accidentally executes
 	// uninitialized, it just breaks into the debugger.
-	void ClearCodeSpace() {
+	void ClearCodeSpace(int offset) {
 		if (PlatformIsWXExclusive()) {
 			ProtectMemoryPages(region, region_size, MEM_PROT_READ | MEM_PROT_WRITE);
-		} else {
-			ProtectMemoryPages(region, region_size, MEM_PROT_READ | MEM_PROT_WRITE | MEM_PROT_EXEC);
 		}
-		PoisonMemory();
-		ResetCodePtr();
+		// If not WX Exclusive, no need to call ProtectMemoryPages because we never change the protection from RWX.
+		PoisonMemory(offset);
+		ResetCodePtr(offset);
+		if (PlatformIsWXExclusive()) {
+			// Need to re-protect the part we didn't clear.
+			ProtectMemoryPages(region, offset, MEM_PROT_READ | MEM_PROT_EXEC);
+		}
 	}
 
 	// BeginWrite/EndWrite assume that we keep appending.
@@ -109,8 +115,8 @@ public:
 		return T::GetCodePointer();
 	}
 
-	void ResetCodePtr() {
-		T::SetCodePointer(region);
+	void ResetCodePtr(int offset) {
+		T::SetCodePointer(region + offset);
 	}
 
 	size_t GetSpaceLeft() const {

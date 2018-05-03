@@ -41,11 +41,14 @@ namespace MainWindow {
 	static const int numCPUs = 1;  // what?
 	extern bool noFocusPause;
 	static W32Util::AsyncBrowseDialog *browseDialog;
+	static W32Util::AsyncBrowseDialog *browseImageDialog;
 	static bool browsePauseAfter;
 
 	static std::map<int, std::string> initialMenuKeys;
-	static std::vector<std::string> countryCodes;
 	static std::vector<std::string> availableShaders;
+	static std::string menuLanguageID = "";
+	static bool menuShaderInfoLoaded = false;
+	std::vector<ShaderInfo> menuShaderInfo;
 
 	LRESULT CALLBACK About(HWND, UINT, WPARAM, LPARAM);
 
@@ -66,8 +69,9 @@ namespace MainWindow {
 		EnableMenuItem(menu, ID_DEBUG_LOADSYMFILE, menuEnable);
 		EnableMenuItem(menu, ID_DEBUG_SAVESYMFILE, menuEnable);
 		EnableMenuItem(menu, ID_DEBUG_RESETSYMBOLTABLE, menuEnable);
-		EnableMenuItem(menu, ID_DEBUG_EXTRACTFILE, menuEnable);
+		EnableMenuItem(menu, ID_DEBUG_TAKESCREENSHOT, menuEnable);
 		EnableMenuItem(menu, ID_DEBUG_SHOWDEBUGSTATISTICS, menuEnable);
+		EnableMenuItem(menu, ID_DEBUG_EXTRACTFILE, menuEnable);
 
 		// While playing, this pop up doesn't work - and probably doesn't make sense.
 		EnableMenuItem(menu, ID_OPTIONS_LANGUAGE, state == UISTATE_INGAME ? MF_GRAYED : MF_ENABLED);
@@ -162,7 +166,23 @@ namespace MainWindow {
 			CheckMenuItem(menu, item++, ((g_Config.sPostShaderName == availableShaders[i]) ? MF_CHECKED : MF_UNCHECKED));
 	}
 
-	void CreateShadersSubmenu(HMENU menu) {
+	bool CreateShadersSubmenu(HMENU menu) {
+		// NOTE: We do not load this until translations are loaded!
+		if (!I18NCategoryLoaded("PostShaders"))
+			return false;
+
+		// We only reload this initially and when a menu is actually opened.
+		if (!menuShaderInfoLoaded) {
+			ReloadAllPostShaderInfo();
+			menuShaderInfoLoaded = true;
+		}
+
+		std::vector<ShaderInfo> info = GetAllPostShaderInfo();
+
+		if (menuShaderInfo.size() == info.size() && std::equal(info.begin(), info.end(), menuShaderInfo.begin())) {
+			return false;
+		}
+
 		I18NCategory *des = GetI18NCategory("DesktopUI");
 		I18NCategory *ps = GetI18NCategory("PostShaders");
 		const std::wstring key = ConvertUTF8ToWString(des->T("Postprocessing Shader"));
@@ -174,25 +194,31 @@ namespace MainWindow {
 		RemoveMenu(optionsMenu, SUBMENU_CUSTOM_SHADERS, MF_BYPOSITION);
 		InsertMenu(optionsMenu, SUBMENU_CUSTOM_SHADERS, MF_POPUP | MF_STRING | MF_BYPOSITION, (UINT_PTR)shaderMenu, key.c_str());
 
-		std::vector<ShaderInfo> info = GetAllPostShaderInfo();
-		availableShaders.clear();
-
 		int item = ID_SHADERS_BASE + 1;
 		int checkedStatus = -1;
 
 		const char *translatedShaderName = nullptr;
 
-		for (auto i = info.begin(); i != info.end(); ++i) {
-			checkedStatus = MF_UNCHECKED;
-			availableShaders.push_back(i->section);
-			if (g_Config.sPostShaderName == i->section) {
-				checkedStatus = MF_CHECKED;
+		availableShaders.clear();
+		if (GetGPUBackend() == GPUBackend::DIRECT3D9) {
+			translatedShaderName = ps->T("Not available in Direct3D9 backend");
+			AppendMenu(shaderMenu, MF_STRING | MF_BYPOSITION | MF_GRAYED, item++, ConvertUTF8ToWString(translatedShaderName).c_str());
+		} else {
+			for (auto i = info.begin(); i != info.end(); ++i) {
+				checkedStatus = MF_UNCHECKED;
+				availableShaders.push_back(i->section);
+				if (g_Config.sPostShaderName == i->section) {
+					checkedStatus = MF_CHECKED;
+				}
+
+				translatedShaderName = ps->T(i->section.c_str(), i->name.c_str());
+
+				AppendMenu(shaderMenu, MF_STRING | MF_BYPOSITION | checkedStatus, item++, ConvertUTF8ToWString(translatedShaderName).c_str());
 			}
-
-			translatedShaderName = ps->T(i->section.c_str());
-
-			AppendMenu(shaderMenu, MF_STRING | MF_BYPOSITION | checkedStatus, item++, ConvertUTF8ToWString(translatedShaderName).c_str());
 		}
+
+		menuShaderInfo = info;
+		return true;
 	}
 
 	static void _TranslateMenuItem(const HMENU hMenu, const int menuIDOrPosition, const char *key, bool byCommand = false, const std::wstring& accelerator = L"") {
@@ -221,7 +247,7 @@ namespace MainWindow {
 		_TranslateMenuItem(GetSubMenu(menu, mainMenuItem), subMenuItem, key, false, accelerator);
 	}
 
-	void TranslateMenus(HWND hWnd, HMENU menu) {
+	void DoTranslateMenus(HWND hWnd, HMENU menu) {
 		// Menu headers and submenu headers don't have resource IDs,
 		// So we have to hardcode strings here, unfortunately.
 		TranslateMenu(menu, "File", MENU_FILE);
@@ -229,8 +255,6 @@ namespace MainWindow {
 		TranslateMenu(menu, "Debugging", MENU_DEBUG);
 		TranslateMenu(menu, "Game Settings", MENU_OPTIONS);
 		TranslateMenu(menu, "Help", MENU_HELP);
-
-		CreateShadersSubmenu(menu);
 
 		// File menu
 		TranslateMenuItem(menu, ID_FILE_LOAD);
@@ -297,13 +321,12 @@ namespace MainWindow {
 		TranslateSubMenu(menu, "Window Size", MENU_OPTIONS, SUBMENU_WINDOW_SIZE);
 		// Skip window size 1x-4x..
 		TranslateSubMenu(menu, "Backend", MENU_OPTIONS, SUBMENU_RENDERING_BACKEND);
+		TranslateMenuItem(menu, ID_OPTIONS_DIRECT3D11);
 		TranslateMenuItem(menu, ID_OPTIONS_DIRECT3D9);
 		TranslateMenuItem(menu, ID_OPTIONS_OPENGL);
 		TranslateSubMenu(menu, "Rendering Mode", MENU_OPTIONS, SUBMENU_RENDERING_MODE);
 		TranslateMenuItem(menu, ID_OPTIONS_NONBUFFEREDRENDERING);
 		TranslateMenuItem(menu, ID_OPTIONS_BUFFEREDRENDERING);
-		TranslateMenuItem(menu, ID_OPTIONS_READFBOTOMEMORYCPU);
-		TranslateMenuItem(menu, ID_OPTIONS_READFBOTOMEMORYGPU);
 		TranslateSubMenu(menu, "Frame Skipping", MENU_OPTIONS, SUBMENU_FRAME_SKIPPING, L"\tF7");
 		TranslateMenuItem(menu, ID_OPTIONS_FRAMESKIP_AUTO);
 		TranslateMenuItem(menu, ID_OPTIONS_FRAMESKIP_0);
@@ -332,17 +355,29 @@ namespace MainWindow {
 
 		// Help menu: it's translated in CreateHelpMenu.
 		CreateHelpMenu(menu);
+	}
 
-		// TODO: Urgh! Why do we need this here?
-		// The menu is supposed to enable/disable this stuff directly afterward.
-		SetIngameMenuItemStates(menu, GetUIState());
+	void TranslateMenus(HWND hWnd, HMENU menu) {
+		bool changed = false;
 
-		DrawMenuBar(hWnd);
-		UpdateMenus();
+		const std::string curLanguageID = i18nrepo.LanguageID();
+		if (curLanguageID != menuLanguageID) {
+			DoTranslateMenus(hWnd, menu);
+			menuLanguageID = curLanguageID;
+			changed = true;
+		}
+
+		if (CreateShadersSubmenu(menu)) {
+			changed = true;
+		}
+
+		if (changed) {
+			DrawMenuBar(hWnd);
+		}
 	}
 
 	void BrowseAndBoot(std::string defaultPath, bool browseDirectory) {
-		static std::wstring filter = L"All supported file types (*.iso *.cso *.pbp *.elf *.prx *.zip)|*.pbp;*.elf;*.iso;*.cso;*.prx;*.zip|PSP ROMs (*.iso *.cso *.pbp *.elf *.prx)|*.pbp;*.elf;*.iso;*.cso;*.prx|Homebrew/Demos installers (*.zip)|*.zip|All files (*.*)|*.*||";
+		static std::wstring filter = L"All supported file types (*.iso *.cso *.pbp *.elf *.prx *.zip *.ppdmp)|*.pbp;*.elf;*.iso;*.cso;*.prx;*.zip;*.ppdmp|PSP ROMs (*.iso *.cso *.pbp *.elf *.prx)|*.pbp;*.elf;*.iso;*.cso;*.prx|Homebrew/Demos installers (*.zip)|*.zip|All files (*.*)|*.*||";
 		for (int i = 0; i < (int)filter.length(); i++) {
 			if (filter[i] == '|')
 				filter[i] = '\0';
@@ -374,18 +409,6 @@ namespace MainWindow {
 				Core_EnableStepping(false);
 			}
 
-			// TODO: What is this for / what does it fix?
-			if (browseDialog->GetType() != W32Util::AsyncBrowseDialog::DIR) {
-				// Decode the filename with fullpath.
-				char drive[MAX_PATH];
-				char dir[MAX_PATH];
-				char fname[MAX_PATH];
-				char ext[MAX_PATH];
-				_splitpath(filename.c_str(), drive, dir, fname, ext);
-
-				filename = std::string(drive) + std::string(dir) + std::string(fname) + std::string(ext);
-			}
-
 			filename = ReplaceAll(filename, "\\", "/");
 			NativeMessageReceived("boot", filename.c_str());
 		}
@@ -396,6 +419,37 @@ namespace MainWindow {
 		browseDialog = 0;
 	}
 
+	void BrowseBackground() {
+		static std::wstring filter = L"All supported images (*.jpg *.png)|*.jpg;*.png|All files (*.*)|*.*||";
+		for (size_t i = 0; i < filter.length(); i++) {
+			if (filter[i] == '|')
+				filter[i] = '\0';
+		}
+
+		W32Util::MakeTopMost(GetHWND(), false);
+		browseImageDialog = new W32Util::AsyncBrowseDialog(W32Util::AsyncBrowseDialog::OPEN, GetHWND(), WM_USER_BROWSE_BG_DONE, L"LoadFile", L"", filter, L"*.jpg;*.png;");
+	}
+
+	void BrowseBackgroundDone() {
+		std::string filename;
+		if (browseImageDialog->GetResult(filename)) {
+			std::wstring src = ConvertUTF8ToWString(filename);
+			std::wstring dest;
+			if (filename.size() >= 4 && filename.substr(filename.size() - 4) == ".jpg") {
+				dest = ConvertUTF8ToWString(GetSysDirectory(DIRECTORY_SYSTEM) + "background.jpg");
+			} else {
+				dest = ConvertUTF8ToWString(GetSysDirectory(DIRECTORY_SYSTEM) + "background.png");
+			}
+
+			CopyFileW(src.c_str(), dest.c_str(), FALSE);
+			NativeMessageReceived("bgImage_updated", "");
+		}
+
+		W32Util::MakeTopMost(GetHWND(), g_Config.bTopMost);
+
+		delete browseImageDialog;
+		browseImageDialog = nullptr;
+	}
 
 	static void UmdSwitchAction() {
 		std::string fn;
@@ -426,7 +480,7 @@ namespace MainWindow {
 	// not static
 	void setTexScalingMultiplier(int level) {
 		g_Config.iTexScalingLevel = level;
-		NativeMessageReceived("gpu clear cache", "");
+		NativeMessageReceived("gpu_clearCache", "");
 	}
 
 	static void setTexFiltering(int type) {
@@ -439,19 +493,13 @@ namespace MainWindow {
 
 	static void setTexScalingType(int type) {
 		g_Config.iTexScalingType = type;
-		NativeMessageReceived("gpu clear cache", "");
+		NativeMessageReceived("gpu_clearCache", "");
 	}
 
 	static void setRenderingMode(int mode) {
-		if (mode >= FB_NON_BUFFERED_MODE)
-			g_Config.iRenderingMode = mode;
-		else {
-			if (++g_Config.iRenderingMode > FB_READFBOMEMORY_GPU)
-				g_Config.iRenderingMode = FB_NON_BUFFERED_MODE;
-		}
-
 		I18NCategory *gr = GetI18NCategory("Graphics");
 
+		g_Config.iRenderingMode = mode;
 		switch (g_Config.iRenderingMode) {
 		case FB_NON_BUFFERED_MODE:
 			osm.Show(gr->T("Non-Buffered Rendering"));
@@ -461,17 +509,9 @@ namespace MainWindow {
 		case FB_BUFFERED_MODE:
 			osm.Show(gr->T("Buffered Rendering"));
 			break;
-
-		case FB_READFBOMEMORY_CPU:
-			osm.Show(gr->T("Read Framebuffers To Memory (CPU)"));
-			break;
-
-		case FB_READFBOMEMORY_GPU:
-			osm.Show(gr->T("Read Framebuffers To Memory (GPU)"));
-			break;
 		}
 
-		NativeMessageReceived("gpu resized", "");
+		NativeMessageReceived("gpu_resized", "");
 	}
 
 	static void setFpsLimit(int fps) {
@@ -505,7 +545,16 @@ namespace MainWindow {
 
 	static void setDisplayOptions(int options) {
 		g_Config.iSmallDisplayZoomType = options;
-		NativeMessageReceived("gpu resized", "");
+		NativeMessageReceived("gpu_resized", "");
+	}
+
+	static void RestartApp() {
+		if (IsDebuggerPresent()) {
+			PostMessage(MainWindow::GetHWND(), WM_USER_RESTART_EMUTHREAD, 0, 0);
+		} else {
+			g_Config.bRestartRequired = true;
+			PostMessage(MainWindow::GetHWND(), WM_CLOSE, 0, 0);
+		}
 	}
 
 	void MainWindowMenu_Process(HWND hWnd, WPARAM wParam) {
@@ -676,6 +725,12 @@ namespace MainWindow {
 		case ID_OPTIONS_WINDOW2X:   SetWindowSize(2); break;
 		case ID_OPTIONS_WINDOW3X:   SetWindowSize(3); break;
 		case ID_OPTIONS_WINDOW4X:   SetWindowSize(4); break;
+		case ID_OPTIONS_WINDOW5X:   SetWindowSize(5); break;
+		case ID_OPTIONS_WINDOW6X:   SetWindowSize(6); break;
+		case ID_OPTIONS_WINDOW7X:   SetWindowSize(7); break;
+		case ID_OPTIONS_WINDOW8X:   SetWindowSize(8); break;
+		case ID_OPTIONS_WINDOW9X:   SetWindowSize(9); break;
+		case ID_OPTIONS_WINDOW10X:   SetWindowSize(10); break;
 
 		case ID_OPTIONS_RESOLUTIONDUMMY:
 		{
@@ -694,11 +749,11 @@ namespace MainWindow {
 			break;
 
 		case ID_TEXTURESCALING_AUTO: setTexScalingMultiplier(TEXSCALING_AUTO); break;
-		case ID_TEXTURESCALING_OFF: setTexScalingMultiplier(TEXSCALING_OFF); break;
-		case ID_TEXTURESCALING_2X:  setTexScalingMultiplier(TEXSCALING_2X); break;
-		case ID_TEXTURESCALING_3X:  setTexScalingMultiplier(TEXSCALING_3X); break;
-		case ID_TEXTURESCALING_4X:  setTexScalingMultiplier(TEXSCALING_4X); break;
-		case ID_TEXTURESCALING_5X:  setTexScalingMultiplier(TEXSCALING_MAX); break;
+		case ID_TEXTURESCALING_OFF:  setTexScalingMultiplier(TEXSCALING_OFF); break;
+		case ID_TEXTURESCALING_2X:   setTexScalingMultiplier(TEXSCALING_2X); break;
+		case ID_TEXTURESCALING_3X:   setTexScalingMultiplier(TEXSCALING_3X); break;
+		case ID_TEXTURESCALING_4X:   setTexScalingMultiplier(TEXSCALING_4X); break;
+		case ID_TEXTURESCALING_5X:   setTexScalingMultiplier(TEXSCALING_MAX); break;
 
 		case ID_TEXTURESCALING_XBRZ:            setTexScalingType(TextureScalerCommon::XBRZ); break;
 		case ID_TEXTURESCALING_HYBRID:          setTexScalingType(TextureScalerCommon::HYBRID); break;
@@ -707,31 +762,31 @@ namespace MainWindow {
 
 		case ID_TEXTURESCALING_DEPOSTERIZE:
 			g_Config.bTexDeposterize = !g_Config.bTexDeposterize;
-			NativeMessageReceived("gpu clear cache", "");
+			NativeMessageReceived("gpu_clearCache", "");
 			break;
 
 		case ID_OPTIONS_DIRECT3D9:
-			g_Config.iGPUBackend = GPU_BACKEND_DIRECT3D9;
-			g_Config.bRestartRequired = true;
-			PostMessage(MainWindow::GetHWND(), WM_CLOSE, 0, 0);
+			g_Config.iGPUBackend = (int)GPUBackend::DIRECT3D9;
+			RestartApp();
+			break;
+
+		case ID_OPTIONS_DIRECT3D11:
+			g_Config.iGPUBackend = (int)GPUBackend::DIRECT3D11;
+			RestartApp();
 			break;
 
 		case ID_OPTIONS_OPENGL:
-			g_Config.iGPUBackend = GPU_BACKEND_OPENGL;
-			g_Config.bRestartRequired = true;
-			PostMessage(MainWindow::GetHWND(), WM_CLOSE, 0, 0);
+			g_Config.iGPUBackend = (int)GPUBackend::OPENGL;
+			RestartApp();
 			break;
 
 		case ID_OPTIONS_VULKAN:
-			g_Config.iGPUBackend = GPU_BACKEND_VULKAN;
-			g_Config.bRestartRequired = true;
-			PostMessage(MainWindow::GetHWND(), WM_CLOSE, 0, 0);
+			g_Config.iGPUBackend = (int)GPUBackend::VULKAN;
+			RestartApp();
 			break;
 
 		case ID_OPTIONS_NONBUFFEREDRENDERING:   setRenderingMode(FB_NON_BUFFERED_MODE); break;
 		case ID_OPTIONS_BUFFEREDRENDERING:      setRenderingMode(FB_BUFFERED_MODE); break;
-		case ID_OPTIONS_READFBOTOMEMORYCPU:     setRenderingMode(FB_READFBOMEMORY_CPU); break;
-		case ID_OPTIONS_READFBOTOMEMORYGPU:     setRenderingMode(FB_READFBOMEMORY_GPU); break;
 
 		case ID_DEBUG_SHOWDEBUGSTATISTICS:
 			g_Config.bShowDebugStats = !g_Config.bShowDebugStats;
@@ -855,14 +910,25 @@ namespace MainWindow {
 			} else if (info.type == FILETYPE_DIRECTORY) {
 				MessageBox(hWnd, L"Cannot extract directories.", L"Sorry", 0);
 			} else if (W32Util::BrowseForFileName(false, hWnd, L"Save file as...", 0, L"All files\0*.*\0\0", L"", fn)) {
-				FILE *fp = File::OpenCFile(fn, "wb");
 				u32 handle = pspFileSystem.OpenFile(filename, FILEACCESS_READ, "");
+				// Note: len may be in blocks.
+				size_t len = pspFileSystem.SeekFile(handle, 0, FILEMOVE_END);
+				bool isBlockMode = pspFileSystem.DevType(handle) == PSP_DEV_TYPE_BLOCK;
+
+				FILE *fp = File::OpenCFile(fn, "wb");
+				pspFileSystem.SeekFile(handle, 0, FILEMOVE_BEGIN);
 				u8 buffer[4096];
-				size_t bytes;
-				do {
-					bytes = pspFileSystem.ReadFile(handle, buffer, sizeof(buffer));
+				size_t bufferSize = isBlockMode ? sizeof(buffer) / 2048 : sizeof(buffer);
+				while (len > 0) {
+					// This is all in blocks, not bytes, if isBlockMode.
+					size_t remain = std::min(len, bufferSize);
+					size_t readSize = pspFileSystem.ReadFile(handle, buffer, remain);
+					if (readSize == 0)
+						break;
+					size_t bytes = isBlockMode ? readSize * 2048 : readSize;
 					fwrite(buffer, 1, bytes, fp);
-				} while (bytes == sizeof(buffer));
+					len -= readSize;
+				}
 				pspFileSystem.CloseFile(handle);
 				fclose(fp);
 			}
@@ -969,8 +1035,7 @@ namespace MainWindow {
 			if (index < availableShaders.size()) {
 				g_Config.sPostShaderName = availableShaders[index];
 
-				NativeMessageReceived("gpu resized", "");
-
+				NativeMessageReceived("gpu_resized", "");
 				break;
 			}
 
@@ -980,7 +1045,11 @@ namespace MainWindow {
 		}
 	}
 
-	void UpdateMenus() {
+	void UpdateMenus(bool isMenuSelect) {
+		if (isMenuSelect) {
+			menuShaderInfoLoaded = false;
+		}
+
 		HMENU menu = GetMenu(GetHWND());
 #define CHECKITEM(item,value) 	CheckMenuItem(menu,item,MF_BYCOMMAND | ((value) ? MF_CHECKED : MF_UNCHECKED));
 		CHECKITEM(ID_DEBUG_IGNOREILLEGALREADS, g_Config.bIgnoreBadMemAccess);
@@ -1048,11 +1117,17 @@ namespace MainWindow {
 			CheckMenuItem(menu, zoomitems[i], MF_BYCOMMAND | ((i == g_Config.iInternalResolution) ? MF_CHECKED : MF_UNCHECKED));
 		}
 
-		static const int windowSizeItems[4] = {
+		static const int windowSizeItems[10] = {
 			ID_OPTIONS_WINDOW1X,
 			ID_OPTIONS_WINDOW2X,
 			ID_OPTIONS_WINDOW3X,
 			ID_OPTIONS_WINDOW4X,
+			ID_OPTIONS_WINDOW5X,
+			ID_OPTIONS_WINDOW6X,
+			ID_OPTIONS_WINDOW7X,
+			ID_OPTIONS_WINDOW8X,
+			ID_OPTIONS_WINDOW9X,
+			ID_OPTIONS_WINDOW10X,
 		};
 
 		RECT rc;
@@ -1084,7 +1159,7 @@ namespace MainWindow {
 			CheckMenuItem(menu, texscalingitems[i], MF_BYCOMMAND | ((i == g_Config.iTexScalingLevel) ? MF_CHECKED : MF_UNCHECKED));
 		}
 
-		if (!gl_extensions.OES_texture_npot) {
+		if (g_Config.iGPUBackend == (int)GPUBackend::OPENGL && !gl_extensions.OES_texture_npot) {
 			EnableMenuItem(menu, ID_TEXTURESCALING_3X, MF_GRAYED);
 			EnableMenuItem(menu, ID_TEXTURESCALING_5X, MF_GRAYED);
 		} else {
@@ -1140,14 +1215,7 @@ namespace MainWindow {
 		static const int renderingmode[] = {
 			ID_OPTIONS_NONBUFFEREDRENDERING,
 			ID_OPTIONS_BUFFEREDRENDERING,
-			ID_OPTIONS_READFBOTOMEMORYCPU,
-			ID_OPTIONS_READFBOTOMEMORYGPU,
 		};
-		if (g_Config.iRenderingMode < FB_NON_BUFFERED_MODE)
-			g_Config.iRenderingMode = FB_NON_BUFFERED_MODE;
-
-		else if (g_Config.iRenderingMode > FB_READFBOMEMORY_GPU)
-			g_Config.iRenderingMode = FB_READFBOMEMORY_GPU;
 
 		for (int i = 0; i < ARRAY_SIZE(renderingmode); i++) {
 			CheckMenuItem(menu, renderingmode[i], MF_BYCOMMAND | ((i == g_Config.iRenderingMode) ? MF_CHECKED : MF_UNCHECKED));
@@ -1192,30 +1260,46 @@ namespace MainWindow {
 			CheckMenuItem(menu, savestateSlot[i], MF_BYCOMMAND | ((i == g_Config.iCurrentStateSlot) ? MF_CHECKED : MF_UNCHECKED));
 		}
 
-		switch (g_Config.iGPUBackend) {
-		case GPU_BACKEND_DIRECT3D9:
+		switch (GetGPUBackend()) {
+		case GPUBackend::DIRECT3D9:
 			EnableMenuItem(menu, ID_OPTIONS_DIRECT3D9, MF_GRAYED);
+			EnableMenuItem(menu, ID_OPTIONS_DIRECT3D11, MF_ENABLED);
 			EnableMenuItem(menu, ID_OPTIONS_OPENGL, MF_ENABLED);
 			EnableMenuItem(menu, ID_OPTIONS_VULKAN, MF_ENABLED);
 			CheckMenuItem(menu, ID_OPTIONS_DIRECT3D9, MF_CHECKED);
+			CheckMenuItem(menu, ID_OPTIONS_DIRECT3D11, MF_UNCHECKED);
 			CheckMenuItem(menu, ID_OPTIONS_OPENGL, MF_UNCHECKED);
 			CheckMenuItem(menu, ID_OPTIONS_VULKAN, MF_UNCHECKED);
 			break;
-		case GPU_BACKEND_OPENGL:
+		case GPUBackend::OPENGL:
 			EnableMenuItem(menu, ID_OPTIONS_DIRECT3D9, MF_ENABLED);
+			EnableMenuItem(menu, ID_OPTIONS_DIRECT3D11, MF_ENABLED);
 			EnableMenuItem(menu, ID_OPTIONS_OPENGL, MF_GRAYED);
 			EnableMenuItem(menu, ID_OPTIONS_VULKAN, MF_ENABLED);
 			CheckMenuItem(menu, ID_OPTIONS_DIRECT3D9, MF_UNCHECKED);
+			CheckMenuItem(menu, ID_OPTIONS_DIRECT3D11, MF_UNCHECKED);
 			CheckMenuItem(menu, ID_OPTIONS_OPENGL, MF_CHECKED);
 			CheckMenuItem(menu, ID_OPTIONS_VULKAN, MF_UNCHECKED);
 			break;
-		case GPU_BACKEND_VULKAN:
+		case GPUBackend::VULKAN:
 			EnableMenuItem(menu, ID_OPTIONS_DIRECT3D9, MF_ENABLED);
+			EnableMenuItem(menu, ID_OPTIONS_DIRECT3D11, MF_ENABLED);
 			EnableMenuItem(menu, ID_OPTIONS_OPENGL, MF_ENABLED);
 			EnableMenuItem(menu, ID_OPTIONS_VULKAN, MF_GRAYED);
 			CheckMenuItem(menu, ID_OPTIONS_DIRECT3D9, MF_UNCHECKED);
+			CheckMenuItem(menu, ID_OPTIONS_DIRECT3D11, MF_UNCHECKED);
 			CheckMenuItem(menu, ID_OPTIONS_OPENGL, MF_UNCHECKED);
 			CheckMenuItem(menu, ID_OPTIONS_VULKAN, MF_CHECKED);
+			break;
+		case GPUBackend::DIRECT3D11:
+			EnableMenuItem(menu, ID_OPTIONS_DIRECT3D9, MF_ENABLED);
+			EnableMenuItem(menu, ID_OPTIONS_DIRECT3D11, MF_GRAYED);
+			EnableMenuItem(menu, ID_OPTIONS_OPENGL, MF_ENABLED);
+			EnableMenuItem(menu, ID_OPTIONS_VULKAN, MF_ENABLED);
+			CheckMenuItem(menu, ID_OPTIONS_DIRECT3D9, MF_UNCHECKED);
+			CheckMenuItem(menu, ID_OPTIONS_DIRECT3D11, MF_CHECKED);
+			CheckMenuItem(menu, ID_OPTIONS_OPENGL, MF_UNCHECKED);
+			CheckMenuItem(menu, ID_OPTIONS_VULKAN, MF_UNCHECKED);
 			break;
 		}
 
@@ -1227,19 +1311,18 @@ namespace MainWindow {
 		static GlobalUIState lastGlobalUIState = UISTATE_PAUSEMENU;
 		static CoreState lastCoreState = CORE_ERROR;
 
+		HMENU menu = GetMenu(GetHWND());
+		EnableMenuItem(menu, ID_DEBUG_LOG, !g_Config.bEnableLogging);
+		SetIngameMenuItemStates(menu, GetUIState());
+
 		if (lastGlobalUIState == GetUIState() && lastCoreState == coreState)
 			return;
 
 		lastCoreState = coreState;
 		lastGlobalUIState = GetUIState();
 
-		HMENU menu = GetMenu(GetHWND());
-
 		bool isPaused = Core_IsStepping() && GetUIState() == UISTATE_INGAME;
 		TranslateMenuItem(menu, ID_TOGGLE_PAUSE, L"\tF8", isPaused ? "Run" : "Pause");
-
-		SetIngameMenuItemStates(menu, GetUIState());
-		EnableMenuItem(menu, ID_DEBUG_LOG, !g_Config.bEnableLogging);
 	}
 
 	// Message handler for about box.
@@ -1249,7 +1332,7 @@ namespace MainWindow {
 		{
 			W32Util::CenterWindow(hDlg);
 			HWND versionBox = GetDlgItem(hDlg, IDC_VERSION);
-			std::string windowText = "PPSSPP ";
+			std::string windowText = System_GetPropertyBool(SYSPROP_APP_GOLD) ? "PPSSPP Gold " : "PPSSPP ";
 			windowText.append(PPSSPP_GIT_VERSION);
 			SetWindowText(versionBox, ConvertUTF8ToWString(windowText).c_str());
 		}
@@ -1263,9 +1346,5 @@ namespace MainWindow {
 			break;
 		}
 		return FALSE;
-	}
-
-	void ChangeMenu() {
-		SetIngameMenuItemStates(GetMenu(GetHWND()), UISTATE_INGAME);
 	}
 }

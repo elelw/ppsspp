@@ -15,7 +15,7 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-
+#include "GPU/Common/DrawEngineCommon.h"
 #include "GPU/Null/NullGpu.h"
 #include "GPU/GPUState.h"
 #include "GPU/ge_constants.h"
@@ -25,7 +25,17 @@
 #include "Core/HLE/sceKernelInterrupt.h"
 #include "Core/HLE/sceGe.h"
 
-NullGPU::NullGPU() : GPUCommon(nullptr, nullptr) { }
+class NullDrawEngine : public DrawEngineCommon {
+public:
+	void DispatchFlush() override {
+	}
+	void DispatchSubmitPrim(void *verts, void *inds, GEPrimitiveType prim, int vertexCount, u32 vertTypeID, int *bytesRead) override {
+	}
+};
+
+NullGPU::NullGPU() : GPUCommon(nullptr, nullptr) {
+	drawEngineCommon_ = new NullDrawEngine();
+}
 NullGPU::~NullGPU() { }
 
 void NullGPU::FastRunLoop(DisplayList &list) {
@@ -96,10 +106,13 @@ void NullGPU::ExecuteOp(u32 op, u32 diff) {
 		break;
 
 	case GE_CMD_BOUNDINGBOX:
-		if (data != 0)
+		if (data != 0) {
 			DEBUG_LOG(G3D, "Unsupported bounding box: %06x", data);
-		// bounding box test. Let's assume the box was within the drawing region.
-		currentList->bboxResult = true;
+			// Bounding box test. Let's assume the box was within the drawing region.
+			currentList->bboxResult = true;
+		} else {
+			currentList->bboxResult = false;
+		}
 		break;
 
 	case GE_CMD_VERTEXTYPE:

@@ -1,10 +1,8 @@
+#include <cstdio>
+
 #include "base/basictypes.h"
 #include "base/logging.h"
 #include "base/timeutil.h"
-
-// For NV time functions. Ugly!
-#include "gfx/gl_common.h"
-#include "gfx_es2/gpu_features.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -12,7 +10,6 @@
 #include <sys/time.h>
 #include <unistd.h>
 #endif
-#include <stdio.h>
 
 static double curtime = 0;
 static float curtime_f = 0;
@@ -42,25 +39,6 @@ uint64_t _frequency = 0;
 uint64_t _starttime = 0;
 
 double real_time_now() {
-#ifdef __ANDROID__
-	if (false && gl_extensions.EGL_NV_system_time) {
-		// This is needed to profile using PerfHUD on Tegra
-		if (_frequency == 0) {
-			_frequency = eglGetSystemTimeFrequencyNV();
-			_starttime = eglGetSystemTimeNV();
-		}
-
-		uint64_t cur = eglGetSystemTimeNV();
-		int64_t diff = cur - _starttime;
-
-		return (double)diff / (double)_frequency;
-	}
-#if 0
-	// This clock is really "choppy" on Nexus 9!
-	struct timespec time;
-	clock_gettime(CLOCK_MONOTONIC_RAW, &time);
-	return time.tv_sec + time.tv_nsec / 1.0e9;
-#else
 	static time_t start;
 	struct timeval tv;
 	gettimeofday(&tv, NULL);
@@ -69,18 +47,6 @@ double real_time_now() {
 	}
 	tv.tv_sec -= start;
 	return (double)tv.tv_sec + (double)tv.tv_usec / 1000000.0;
-#endif
-
-#else
-	static time_t start;
-	struct timeval tv;
-	gettimeofday(&tv, NULL);
-	if (start == 0) {
-		start = tv.tv_sec;
-	}
-	tv.tv_sec -= start;
-	return (double)tv.tv_sec + (double)tv.tv_usec / 1000000.0;
-#endif
 }
 
 #endif
@@ -112,9 +78,7 @@ int time_now_ms() {
 
 void sleep_ms(int ms) {
 #ifdef _WIN32
-#ifndef METRO
 	Sleep(ms);
-#endif
 #else
 	usleep(ms * 1000);
 #endif

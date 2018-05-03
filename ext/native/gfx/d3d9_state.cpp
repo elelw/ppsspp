@@ -1,4 +1,4 @@
-#ifdef _MSC_VER
+#ifdef _WIN32
 
 #include "d3d9_state.h"
 #include <assert.h>
@@ -59,6 +59,7 @@ void DirectXState::Restore() {
 	texMagFilter.restore(); count++;
 	texMipFilter.restore(); count++;
 	texMipLodBias.restore(); count++;
+	texMaxMipLevel.restore(); count++;
 	texAddressU.restore(); count++;
 	texAddressV.restore(); count++;
 }

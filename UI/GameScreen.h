@@ -33,12 +33,12 @@ public:
 	GameScreen(const std::string &gamePath);
 	~GameScreen();
 
-	virtual void update(InputState &input);
+	void update() override;
 
-	virtual std::string tag() const { return "game"; }
+	std::string tag() const override { return "game"; }
 
 protected:
-	virtual void CreateViews();
+	void CreateViews() override;
 	void CallbackDeleteConfig(bool yes);
 	void CallbackDeleteSaveData(bool yes);
 	void CallbackDeleteGame(bool yes);
@@ -59,6 +59,7 @@ private:
 	UI::EventReturn OnCreateConfig(UI::EventParams &e);
 	UI::EventReturn OnDeleteConfig(UI::EventParams &e);
 	UI::EventReturn OnCwCheat(UI::EventParams &e);
+	UI::EventReturn OnSetBackground(UI::EventParams &e);
 
 	// As we load metadata in the background, we need to be able to update these after the fact.
 	UI::TextureView *texvGameIcon_;
@@ -72,6 +73,7 @@ private:
 	UI::Choice *btnCreateGameConfig_;
 	UI::Choice *btnDeleteGameConfig_;
 	UI::Choice *btnDeleteSaveData_;
+	UI::Choice *btnSetBackground_;
 	std::vector<UI::Choice *> otherChoices_;
 	std::vector<std::string> saveDirs;
 };

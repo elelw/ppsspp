@@ -1,15 +1,18 @@
 #pragma once
 
+#include <cfloat>
 #include <vector>
 #include <set>
+#include <mutex>
 
 #include "base/logging.h"
-#include "base/mutex.h"
 #include "math/geom2d.h"
 #include "input/gesture_detector.h"
 #include "ui/view.h"
 
 namespace UI {
+
+class AnchorTranslateTween;
 
 struct NeighborResult {
 	NeighborResult() : view(0), score(0) {}
@@ -21,7 +24,7 @@ struct NeighborResult {
 
 class ViewGroup : public View {
 public:
-	ViewGroup(LayoutParams *layoutParams = 0) : View(layoutParams), defaultFocusView_(0), hasDropShadow_(false), clip_(false) {}
+	ViewGroup(LayoutParams *layoutParams = 0) : View(layoutParams) {}
 	virtual ~ViewGroup();
 
 	// Pass through external events to children.
@@ -32,8 +35,11 @@ public:
 	// By default, a container will layout to its own bounds.
 	virtual void Measure(const UIContext &dc, MeasureSpec horiz, MeasureSpec vert) override = 0;
 	virtual void Layout() override = 0;
-	virtual void Update(const InputState &input_state) override;
+	virtual void Update() override;
 	virtual void Query(float x, float y, std::vector<View *> &list) override;
+
+	virtual void DeviceLost() override;
+	virtual void DeviceRestored(Draw::DrawContext *draw) override;
 
 	virtual void Draw(UIContext &dc) override;
 
@@ -44,7 +50,7 @@ public:
 	// Takes ownership! DO NOT add a view to multiple parents!
 	template <class T>
 	T *Add(T *view) {
-		lock_guard guard(modifyLock_);
+		std::lock_guard<std::mutex> guard(modifyLock_);
 		views_.push_back(view);
 		return view;
 	}
@@ -69,6 +75,7 @@ public:
 	View *GetViewByIndex(int index) { return views_[index]; }
 	int GetNumSubviews() const { return (int)views_.size(); }
 	void SetHasDropShadow(bool has) { hasDropShadow_ = has; }
+	void SetDropShadowExpand(float s) { dropShadowExpand_ = s; }
 
 	void Lock() { modifyLock_.lock(); }
 	void Unlock() { modifyLock_.unlock(); }
@@ -77,12 +84,13 @@ public:
 	std::string Describe() const override { return "ViewGroup: " + View::Describe(); }
 
 protected:
-	recursive_mutex modifyLock_;  // Hold this when changing the subviews.
+	std::mutex modifyLock_;  // Hold this when changing the subviews.
 	std::vector<View *> views_;
-	View *defaultFocusView_;
+	View *defaultFocusView_ = nullptr;
 	Drawable bg_;
-	bool hasDropShadow_;
-	bool clip_;
+	float dropShadowExpand_ = 0.0f;
+	bool hasDropShadow_ = false;
+	bool clip_ = false;
 };
 
 // A frame layout contains a single child view (normally).
@@ -93,9 +101,7 @@ public:
 	void Layout() override;
 };
 
-enum {
-	NONE = -1,
-};
+const float NONE = -FLT_MAX;
 
 class AnchorLayoutParams : public LayoutParams {
 public:
@@ -130,6 +136,7 @@ public:
 	std::string Describe() const override { return "AnchorLayout: " + View::Describe(); }
 
 private:
+	void MeasureViews(const UIContext &dc, MeasureSpec horiz, MeasureSpec vert);
 	bool overflow_;
 };
 
@@ -220,17 +227,8 @@ private:
 // A scrollview usually contains just a single child - a linear layout or similar.
 class ScrollView : public ViewGroup {
 public:
-	ScrollView(Orientation orientation, LayoutParams *layoutParams = 0) :
-		ViewGroup(layoutParams),
-		orientation_(orientation),
-		scrollPos_(0),
-		scrollStart_(0),
-		scrollTarget_(0),
-		scrollToTarget_(false),
-		inertia_(0.0f),
-		pull_(0.0f),
-		lastViewSize_(0.0f),
-		scrollToTopOnSizeChange_(false) {}
+	ScrollView(Orientation orientation, LayoutParams *layoutParams = 0)
+		: ViewGroup(layoutParams), orientation_(orientation) {}
 
 	void Measure(const UIContext &dc, MeasureSpec horiz, MeasureSpec vert) override;
 	void Layout() override;
@@ -244,7 +242,7 @@ public:
 	void ScrollToBottom();
 	void ScrollRelative(float distance);
 	bool CanScroll() const;
-	void Update(const InputState &input_state) override;
+	void Update() override;
 
 	// Override so that we can scroll to the active one after moving the focus.
 	bool SubviewFocused(View *view) override;
@@ -259,14 +257,15 @@ private:
 
 	GestureDetector gesture_;
 	Orientation orientation_;
-	float scrollPos_;
-	float scrollStart_;
-	float scrollTarget_;
-	bool scrollToTarget_;
-	float inertia_;
-	float pull_;
-	float lastViewSize_;
-	bool scrollToTopOnSizeChange_;
+	float scrollPos_ = 0.0f;
+	float scrollStart_ = 0.0f;
+	float scrollTarget_ = 0.0f;
+	int scrollTouchId_ = -1;
+	bool scrollToTarget_ = false;
+	float inertia_ = 0.0f;
+	float pull_ = 0.0f;
+	float lastViewSize_ = 0.0f;
+	bool scrollToTopOnSizeChange_ = false;
 };
 
 class ViewPager : public ScrollView {
@@ -310,23 +309,11 @@ public:
 
 	template <class T>
 	T *AddTab(const std::string &title, T *tabContents) {
-		tabContents->ReplaceLayoutParams(new LinearLayoutParams(1.0f));
-		tabs_.push_back(tabContents);
-		tabStrip_->AddChoice(title);
-		Add(tabContents);
-		if (tabs_.size() > 1)
-			tabContents->SetVisibility(V_GONE);
+		AddTabContents(title, (View *)tabContents);
 		return tabContents;
 	}
 
-	void SetCurrentTab(int tab) {
-		if (tab != currentTab_) {
-			tabs_[currentTab_]->SetVisibility(V_GONE);
-			currentTab_ = tab;
-			tabs_[currentTab_]->SetVisibility(V_VISIBLE);
-		}
-		tabStrip_->SetSelection(tab);
-	}
+	void SetCurrentTab(int tab, bool skipTween = false);
 
 	int GetCurrentTab() const { return currentTab_; }
 	std::string Describe() const override { return "TabHolder: " + View::Describe(); }
@@ -334,14 +321,17 @@ public:
 	void PersistData(PersistStatus status, std::string anonId, PersistMap &storage) override;
 
 private:
+	void AddTabContents(const std::string &title, View *tabContents);
 	EventReturn OnTabClick(EventParams &e);
 
-	ChoiceStrip *tabStrip_;
-	ScrollView *tabScroll_;
+	ChoiceStrip *tabStrip_ = nullptr;
+	ScrollView *tabScroll_ = nullptr;
+	AnchorLayout *contents_ = nullptr;
 
 	float stripSize_;
-	int currentTab_;
+	int currentTab_ = 0;
 	std::vector<View *> tabs_;
+	std::vector<AnchorTranslateTween *> tabTweens_;
 };
 
 // Yes, this feels a bit Java-ish...
@@ -408,14 +398,10 @@ private:
 };
 
 void LayoutViewHierarchy(const UIContext &dc, ViewGroup *root);
-void UpdateViewHierarchy(const InputState &input_state, ViewGroup *root);
+void UpdateViewHierarchy(ViewGroup *root);
 // Hooks arrow keys for navigation
 bool KeyEvent(const KeyInput &key, ViewGroup *root);
 bool TouchEvent(const TouchInput &touch, ViewGroup *root);
 bool AxisEvent(const AxisInput &axis, ViewGroup *root);
-
-void CaptureDrag(int id);
-void ReleaseDrag(int id);
-bool IsDragCaptured(int id);
 
 }  // namespace UI

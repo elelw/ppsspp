@@ -37,77 +37,40 @@ public:
 	GPU_DX9(GraphicsContext *gfxCtx, Draw::DrawContext *draw);
 	~GPU_DX9();
 
-	void CheckGPUFeatures();
+	void CheckGPUFeatures() override;
 	void PreExecuteOp(u32 op, u32 diff) override;
 	void ExecuteOp(u32 op, u32 diff) override;
 
-	void ReapplyGfxStateInternal() override;
+	void ReapplyGfxState() override;
 	void SetDisplayFramebuffer(u32 framebuf, u32 stride, GEBufferFormat format) override;
-	void BeginFrame() override;
 	void GetStats(char *buffer, size_t bufsize) override;
 	void ClearCacheNextFrame() override;
 	void DeviceLost() override;  // Only happens on Android. Drop all textures and shaders.
 	void DeviceRestore() override;
 
-	void DumpNextFrame() override;
 	void DoState(PointerWrap &p) override;
 
 	void ClearShaderCache() override;
-	bool DecodeTexture(u8 *dest, const GPUgstate &state) override {
-		return textureCacheDX9_->DecodeTexture(dest, state);
-	}
-	bool FramebufferDirty() override;
-	bool FramebufferReallyDirty() override;
-
-	void GetReportingInfo(std::string &primaryInfo, std::string &fullInfo) override {
-		primaryInfo = reportingPrimaryInfo_;
-		fullInfo = reportingFullInfo_;
-	}
-	std::vector<FramebufferInfo> GetFramebufferList() override;
-
-	bool GetCurrentFramebuffer(GPUDebugBuffer &buffer, GPUDebugFramebufferType type, int maxRes = -1) override;
-	bool GetCurrentDepthbuffer(GPUDebugBuffer &buffer) override;
-	bool GetCurrentStencilbuffer(GPUDebugBuffer &buffer) override;
-	bool GetCurrentTexture(GPUDebugBuffer &buffer, int level) override;
-	bool GetCurrentClut(GPUDebugBuffer &buffer) override;
-	bool GetOutputFramebuffer(GPUDebugBuffer &buffer) override;
-	bool GetCurrentSimpleVertices(int count, std::vector<GPUDebugVertex> &vertices, std::vector<u16> &indices) override;
-
-	typedef void (GPU_DX9::*CmdFunc)(u32 op, u32 diff);
-	struct CommandInfo {
-		uint64_t flags;
-		GPU_DX9::CmdFunc func;
-	};
-
-	void Execute_Prim(u32 op, u32 diff);
-	void Execute_Bezier(u32 op, u32 diff);
-	void Execute_Spline(u32 op, u32 diff);
-	void Execute_VertexType(u32 op, u32 diff);
-	void Execute_VertexTypeSkinning(u32 op, u32 diff);
-	void Execute_TexSize0(u32 op, u32 diff);
-	void Execute_LoadClut(u32 op, u32 diff);
 
 	// Using string because it's generic - makes no assumptions on the size of the shader IDs of this backend.
 	std::vector<std::string> DebugGetShaderIDs(DebugShaderType shader) override;
 	std::string DebugGetShaderString(std::string id, DebugShaderType shader, DebugShaderStringType stringType) override;
 
+	void BeginHostFrame() override;
+
 protected:
-	void FastRunLoop(DisplayList &list) override;
 	void FinishDeferred() override;
 
 private:
-	void UpdateCmdInfo();
-
 	void Flush() {
 		drawEngine_.Flush();
 	}
-	// void ApplyDrawState(int prim);
 	void CheckFlushOp(int cmd, u32 diff);
 	void BuildReportingInfo();
 
-	void InitClearInternal() override;
-	void BeginFrameInternal() override;
-	void CopyDisplayToOutputInternal() override;
+	void InitClear() override;
+	void BeginFrame() override;
+	void CopyDisplayToOutput() override;
 
 	LPDIRECT3DDEVICE9 device_;
 	LPDIRECT3DDEVICE9EX deviceEx_;
@@ -118,12 +81,8 @@ private:
 	DrawEngineDX9 drawEngine_;
 	ShaderManagerDX9 *shaderManagerDX9_;
 
-	static CommandInfo cmdInfo_[256];
-
 	int lastVsync_;
-
-	std::string reportingPrimaryInfo_;
-	std::string reportingFullInfo_;
+	int vertexCost_ = 0;
 };
 
 }  // namespace DX9

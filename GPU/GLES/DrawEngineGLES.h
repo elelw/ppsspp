@@ -17,6 +17,7 @@
 
 #pragma once
 
+#include <Common/Hashmaps.h>
 #include <unordered_map>
 
 #include "GPU/GPUState.h"
@@ -27,7 +28,7 @@
 #include "GPU/Common/GPUStateUtils.h"
 #include "GPU/GLES/FragmentShaderGeneratorGLES.h"
 #include "gfx/gl_common.h"
-#include "gfx/gl_lost_manager.h"
+#include "thin3d/GLRenderManager.h"
 
 class LinkedShader;
 class ShaderManagerGLES;
@@ -39,6 +40,17 @@ class FragmentTestCacheGLES;
 struct TransformedVertex;
 
 struct DecVtxFormat;
+
+enum {
+	TEX_SLOT_PSP_TEXTURE = 0,
+	TEX_SLOT_SHADERBLEND_SRC = 1,
+	TEX_SLOT_ALPHATEST = 2,
+	TEX_SLOT_CLUT = 3,
+	TEX_SLOT_SPLINE_POS = 4,
+	TEX_SLOT_SPLINE_NRM = 5,
+	TEX_SLOT_SPLINE_COL = 6,
+};
+
 
 // States transitions:
 // On creation: DRAWN_NEW
@@ -55,20 +67,13 @@ enum {
 	VAI_FLAG_VERTEXFULLALPHA = 1,
 };
 
-// Avoiding the full include of TextureDecoder.h.
-#if (defined(_M_SSE) && defined(_M_X64)) || defined(ARM64)
-typedef u64 ReliableHashType;
-#else
-typedef u32 ReliableHashType;
-#endif
-
 // Try to keep this POD.
 class VertexArrayInfo {
 public:
 	VertexArrayInfo() {
 		status = VAI_NEW;
-		vbo = 0;
-		ebo = 0;
+		vbo = nullptr;
+		ebo = nullptr;
 		prim = GE_PRIM_INVALID;
 		numDraws = 0;
 		numFrames = 0;
@@ -78,7 +83,7 @@ public:
 		flags = 0;
 	}
 
-	enum Status {
+	enum Status : uint8_t {
 		VAI_NEW,
 		VAI_HASHING,
 		VAI_RELIABLE,  // cache, don't hash
@@ -88,15 +93,14 @@ public:
 	ReliableHashType hash;
 	u32 minihash;
 
-	Status status;
-
-	u32 vbo;
-	u32 ebo;
+	GLRBuffer *vbo;
+	GLRBuffer *ebo;
 
 	// Precalculated parameter for drawRangeElements
 	u16 numVerts;
 	u16 maxIndex;
 	s8 prim;
+	Status status;
 
 	// ID information
 	int numDraws;
@@ -107,12 +111,10 @@ public:
 };
 
 // Handles transform, lighting and drawing.
-class DrawEngineGLES : public DrawEngineCommon, public GfxResourceHolder {
+class DrawEngineGLES : public DrawEngineCommon {
 public:
-	DrawEngineGLES();
+	DrawEngineGLES(Draw::DrawContext *draw);
 	virtual ~DrawEngineGLES();
-
-	void SubmitPrim(void *verts, void *inds, GEPrimitiveType prim, int vertexCount, u32 vertType, int *bytesRead);
 
 	void SetShaderManager(ShaderManagerGLES *shaderManager) {
 		shaderManager_ = shaderManager;
@@ -126,18 +128,16 @@ public:
 	void SetFragmentTestCache(FragmentTestCacheGLES *testCache) {
 		fragmentTestCache_ = testCache;
 	}
-	void RestoreVAO();
-	void InitDeviceObjects();
-	void DestroyDeviceObjects();
-	void GLLost() override;
-	void GLRestore() override;
-	void Resized();
 
+	void DeviceLost();
+	void DeviceRestore();
+
+	void ClearTrackedVertexArrays() override;
 	void DecimateTrackedVertexArrays();
-	void ClearTrackedVertexArrays();
 
-	void SetupVertexDecoder(u32 vertType);
-	inline void SetupVertexDecoderInternal(u32 vertType);
+	void BeginFrame();
+	void EndFrame();
+
 
 	// So that this can be inlined
 	void Flush() {
@@ -149,112 +149,76 @@ public:
 	void FinishDeferred() {
 		if (!numDrawCalls)
 			return;
-		DecodeVerts();
+		DoFlush();
 	}
 
 	bool IsCodePtrVertexDecoder(const u8 *ptr) const;
 
 	void DispatchFlush() override { Flush(); }
-	void DispatchSubmitPrim(void *verts, void *inds, GEPrimitiveType prim, int vertexCount, u32 vertType, int *bytesRead) override {
-		SubmitPrim(verts, inds, prim, vertexCount, vertType, bytesRead);
+
+	GLPushBuffer *GetPushVertexBuffer() {
+		return frameData_[render_->GetCurFrame()].pushVertex;
+	}
+	GLPushBuffer *GetPushIndexBuffer() {
+		return frameData_[render_->GetCurFrame()].pushIndex;
 	}
 
-	GLuint BindBuffer(const void *p, size_t sz);
-	GLuint BindBuffer(const void *p1, size_t sz1, const void *p2, size_t sz2);
-	GLuint BindElementBuffer(const void *p, size_t sz);
-	void DecimateBuffers();
+	void ClearInputLayoutMap();
 
 private:
-	void DecodeVerts();
-	void DecodeVertsStep();
+	void InitDeviceObjects();
+	void DestroyDeviceObjects();
+
 	void DoFlush();
 	void ApplyDrawState(int prim);
-	void ApplyDrawStateLate();
-	bool ApplyShaderBlending();
+	void ApplyDrawStateLate(bool setStencil, int stencilValue);
 	void ResetShaderBlending();
 
-	GLuint AllocateBuffer(size_t sz);
-	void FreeBuffer(GLuint buf);
+	GLRInputLayout *SetupDecFmtForDraw(LinkedShader *program, const DecVtxFormat &decFmt);
+
+	void DecodeVertsToPushBuffer(GLPushBuffer *push, uint32_t *bindOffset, GLRBuffer **buf);
+
 	void FreeVertexArray(VertexArrayInfo *vai);
 
-	u32 ComputeMiniHash();
-	ReliableHashType ComputeHash();  // Reads deferred vertex data.
 	void MarkUnreliable(VertexArrayInfo *vai);
 
-	// Defer all vertex decoding to a Flush, so that we can hash and cache the
-	// generated buffers without having to redecode them every time.
-	struct DeferredDrawCall {
-		void *verts;
-		void *inds;
-		u32 vertType;
-		u8 indexType;
-		s8 prim;
-		u32 vertexCount;
-		u16 indexLowerBound;
-		u16 indexUpperBound;
+	struct FrameData {
+		GLPushBuffer *pushVertex;
+		GLPushBuffer *pushIndex;
 	};
+	FrameData frameData_[GLRenderManager::MAX_INFLIGHT_FRAMES];
 
-	// Vertex collector state
-	IndexGenerator indexGen;
-	int decodedVerts_;
-	GEPrimitiveType prevPrim_;
+	PrehashMap<VertexArrayInfo *, nullptr> vai_;
 
-	u32 lastVType_;
+	DenseHashMap<uint32_t, GLRInputLayout *, nullptr> inputLayoutMap_;
 
-	TransformedVertex *transformed;
-	TransformedVertex *transformedExpanded;
-
-	std::unordered_map<u32, VertexArrayInfo *> vai_;
-
-	// Vertex buffer objects
-	// Element buffer objects
-	struct BufferNameInfo {
-		BufferNameInfo() : sz(0), used(false), lastFrame(0) {}
-
-		size_t sz;
-		bool used;
-		int lastFrame;
-	};
-	std::vector<GLuint> bufferNameCache_;
-	std::multimap<size_t, GLuint> freeSizedBuffers_;
-	std::unordered_map<GLuint, BufferNameInfo> bufferNameInfo_;
-	std::vector<GLuint> buffersThisFrame_;
-	size_t bufferNameCacheSize_;
-	GLuint sharedVao_;
+	GLRInputLayout *softwareInputLayout_ = nullptr;
+	GLRenderManager *render_;
 
 	// Other
-	ShaderManagerGLES *shaderManager_;
-	TextureCacheGLES *textureCache_;
-	FramebufferManagerGLES *framebufferManager_;
-	FragmentTestCacheGLES *fragmentTestCache_;
+	ShaderManagerGLES *shaderManager_ = nullptr;
+	TextureCacheGLES *textureCache_ = nullptr;
+	FramebufferManagerGLES *framebufferManager_ = nullptr;
+	FragmentTestCacheGLES *fragmentTestCache_ = nullptr;
+	Draw::DrawContext *draw_;
 
-	enum { MAX_DEFERRED_DRAW_CALLS = 128 };
-	DeferredDrawCall drawCalls[MAX_DEFERRED_DRAW_CALLS];
-	int numDrawCalls;
-	int vertexCountInDrawCalls;
+	// Need to preserve the scissor for use when clearing.
+	ViewportAndScissor vpAndScissor;
 
-	int decimationCounter_;
-	int bufferDecimationCounter_;
-	int decodeCounter_;
-	u32 dcid_;
-
-	UVScale uvScale[MAX_DEFERRED_DRAW_CALLS];
-
-	bool fboTexNeedBind_;
-	bool fboTexBound_;
+	int bufferDecimationCounter_ = 0;
 
 	// Hardware tessellation
 	class TessellationDataTransferGLES : public TessellationDataTransfer {
 	private:
-		int data_tex[3];
-		bool isAllowTexture1D;
+		GLRTexture *data_tex[3]{};
+		GLRenderManager *renderManager_;
 	public:
-		TessellationDataTransferGLES(bool isAllowTexture1D) : TessellationDataTransfer(), data_tex(), isAllowTexture1D(isAllowTexture1D) {
-			glGenTextures(3, (GLuint*)data_tex);
-		}
+		TessellationDataTransferGLES(GLRenderManager *renderManager)
+			  : renderManager_(renderManager) { }
 		~TessellationDataTransferGLES() {
-			glDeleteTextures(3, (GLuint*)data_tex); 
+			EndFrame();
 		}
 		void SendDataToShader(const float *pos, const float *tex, const float *col, int size, bool hasColor, bool hasTexCoords) override;
+		void EndFrame() override;  // Queues textures for deletion.
 	};
 };

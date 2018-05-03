@@ -122,7 +122,7 @@ D3DFORMAT FormatToD3DFMT(DataFormat fmt) {
 	case DataFormat::R8G8B8A8_UNORM: return D3DFMT_A8R8G8B8;
 	case DataFormat::R4G4B4A4_UNORM_PACK16: return D3DFMT_A4R4G4B4;  // emulated
 	case DataFormat::B4G4R4A4_UNORM_PACK16: return D3DFMT_A4R4G4B4;  // native
-	case DataFormat::A4B4G4R4_UNORM_PACK16: return D3DFMT_A4R4G4B4;  // emulated
+	case DataFormat::A4R4G4B4_UNORM_PACK16: return D3DFMT_A4R4G4B4;  // emulated
 	case DataFormat::R5G6B5_UNORM_PACK16: return D3DFMT_R5G6B5;
 	case DataFormat::A1R5G5B5_UNORM_PACK16: return D3DFMT_A1R5G5B5;
 	case DataFormat::D24_S8: return D3DFMT_D24S8;
@@ -241,14 +241,12 @@ private:
 
 class D3D9ShaderModule : public ShaderModule {
 public:
-	D3D9ShaderModule(ShaderStage stage) : stage_(stage), vshader_(NULL), pshader_(NULL), constantTable_(NULL) {}
+	D3D9ShaderModule(ShaderStage stage) : stage_(stage), vshader_(nullptr), pshader_(nullptr) {}
 	~D3D9ShaderModule() {
 		if (vshader_)
 			vshader_->Release();
 		if (pshader_)
 			pshader_->Release();
-		if (constantTable_)
-			constantTable_->Release();
 	}
 	bool Compile(LPDIRECT3DDEVICE9 device, const uint8_t *data, size_t size);
 	void Apply(LPDIRECT3DDEVICE9 device) {
@@ -258,15 +256,12 @@ public:
 			device->SetVertexShader(vshader_);
 		}
 	}
-	void SetVector(LPDIRECT3DDEVICE9 device, const char *name, float *value, int n);
-	void SetMatrix4x4(LPDIRECT3DDEVICE9 device, const char *name, const float value[16]);
 	ShaderStage GetStage() const override { return stage_; }
 
 private:
 	ShaderStage stage_;
 	LPDIRECT3DVERTEXSHADER9 vshader_;
 	LPDIRECT3DPIXELSHADER9 pshader_;
-	LPD3DXCONSTANTTABLE constantTable_;
 };
 
 class D3D9Pipeline : public Pipeline {
@@ -291,10 +286,9 @@ public:
 	D3D9DepthStencilState *depthStencil = nullptr;
 	D3D9BlendState *blend = nullptr;
 	D3D9RasterState *raster = nullptr;
+	UniformBufferDesc dynamicUniforms;
 
 	void Apply(LPDIRECT3DDEVICE9 device);
-	void SetVector(const char *name, float *value, int n) { vshader->SetVector(device_, name, value, n); pshader->SetVector(device_, name, value, n); }
-	void SetMatrix4x4(const char *name, const float value[16]) { vshader->SetMatrix4x4(device_, name, value); }  // pshaders don't usually have matrices
 private:
 	LPDIRECT3DDEVICE9 device_;
 };
@@ -303,10 +297,10 @@ class D3D9Texture : public Texture {
 public:
 	D3D9Texture(LPDIRECT3DDEVICE9 device, LPDIRECT3DDEVICE9EX deviceEx, const TextureDesc &desc);
 	~D3D9Texture();
-	void SetImageData(int x, int y, int z, int width, int height, int depth, int level, int stride, const uint8_t *data) override;
 	void SetToSampler(LPDIRECT3DDEVICE9 device, int sampler);
 
 private:
+	void SetImageData(int x, int y, int z, int width, int height, int depth, int level, int stride, const uint8_t *data);
 	bool Create(const TextureDesc &desc);
 	LPDIRECT3DDEVICE9 device_;
 	LPDIRECT3DDEVICE9EX deviceEx_;
@@ -351,10 +345,12 @@ bool D3D9Texture::Create(const TextureDesc &desc) {
 		pool = D3DPOOL_DEFAULT;
 		usage = D3DUSAGE_DYNAMIC;
 	}
+	if (desc.generateMips)
+		usage |= D3DUSAGE_AUTOGENMIPMAP;
 	switch (type_) {
 	case TextureType::LINEAR1D:
 	case TextureType::LINEAR2D:
-		hr = device_->CreateTexture(desc.width, desc.height, desc.mipLevels, usage, d3dfmt_, pool, &tex_, NULL);
+		hr = device_->CreateTexture(desc.width, desc.height, desc.generateMips ? 0 : desc.mipLevels, usage, d3dfmt_, pool, &tex_, NULL);
 		break;
 	case TextureType::LINEAR3D:
 		hr = device_->CreateVolumeTexture(desc.width, desc.height, desc.depth, desc.mipLevels, usage, d3dfmt_, pool, &volTex_, NULL);
@@ -369,8 +365,11 @@ bool D3D9Texture::Create(const TextureDesc &desc) {
 	}
 
 	if (desc.initData.size()) {
-		for (int i = 0; i < desc.initData.size(); i++) {
-			this->SetImageData(0, 0, 0, width_, height_, depth_, i, 0, desc.initData[i]);
+		// In D3D9, after setting D3DUSAGE_AUTOGENMIPS, we can only access the top layer. The rest will be
+		// automatically generated.
+		int maxLevel = desc.generateMips ? 1 : (int)desc.initData.size();
+		for (int i = 0; i < maxLevel; i++) {
+			SetImageData(0, 0, 0, width_, height_, depth_, i, 0, desc.initData[i]);
 		}
 	}
 	return true;
@@ -401,7 +400,7 @@ void D3D9Texture::SetImageData(int x, int y, int z, int width, int height, int d
 	{
 		D3DLOCKED_RECT rect;
 		if (x == 0 && y == 0) {
-			tex_->LockRect(level, &rect, NULL, 0);
+			tex_->LockRect(level, &rect, NULL, D3DLOCK_DISCARD);
 			for (int i = 0; i < height; i++) {
 				uint8_t *dest = (uint8_t *)rect.pBits + rect.Pitch * i;
 				const uint8_t *source = data + stride * i;
@@ -413,9 +412,9 @@ void D3D9Texture::SetImageData(int x, int y, int z, int width, int height, int d
 						((uint16_t *)dest)[j] = (color << 12) | (color >> 4);
 					}
 					break;
-				case DataFormat::A4B4G4R4_UNORM_PACK16:
+				case DataFormat::A4R4G4B4_UNORM_PACK16:
 					// Native
-					memcpy(dest, source, j * sizeof(uint16_t));
+					memcpy(dest, source, width * sizeof(uint16_t));
 					break;
 
 				case DataFormat::R8G8B8A8_UNORM:
@@ -484,16 +483,14 @@ public:
 
 	void UpdateBuffer(Buffer *buffer, const uint8_t *data, size_t offset, size_t size, UpdateBufferFlags flags) override;
 
-	void CopyFramebufferImage(Framebuffer *src, int level, int x, int y, int z, Framebuffer *dst, int dstLevel, int dstX, int dstY, int dstZ, int width, int height, int depth) override {}
+	void CopyFramebufferImage(Framebuffer *src, int level, int x, int y, int z, Framebuffer *dst, int dstLevel, int dstX, int dstY, int dstZ, int width, int height, int depth, int channelBits) override {}
 	bool BlitFramebuffer(Framebuffer *src, int srcX1, int srcY1, int srcX2, int srcY2, Framebuffer *dst, int dstX1, int dstY1, int dstX2, int dstY2, int channelBits, FBBlitFilter filter) override;
 
 	// These functions should be self explanatory.
-	void BindFramebufferAsRenderTarget(Framebuffer *fbo) override;
+	void BindFramebufferAsRenderTarget(Framebuffer *fbo, const RenderPassInfo &rp) override;
 	// color must be 0, for now.
 	void BindFramebufferAsTexture(Framebuffer *fbo, int binding, FBChannel channelBit, int attachment) override;
-	void BindFramebufferForRead(Framebuffer *fbo) override {}
 	
-	void BindBackbufferAsRenderTarget() override;
 	uintptr_t GetFramebufferAPITexture(Framebuffer *fbo, int channelBits, int attachment) override;
 
 	void GetFramebufferDimensions(Framebuffer *fbo, int *w, int *h) override;
@@ -520,6 +517,8 @@ public:
 		curPipeline_ = (D3D9Pipeline *)pipeline;
 	}
 
+	void UpdateDynamicUniformBuffer(const void *ub, size_t size) override;
+
 	// Raster state
 	void SetScissorRect(int left, int top, int width, int height) override;
 	void SetViewports(int count, Viewport *viewports) override;
@@ -530,7 +529,7 @@ public:
 	void DrawUP(const void *vdata, int vertexCount) override;
 	void Clear(int mask, uint32_t colorval, float depthVal, int stencilVal);
 
-	uintptr_t GetNativeObject(NativeObject obj) const override {
+	uintptr_t GetNativeObject(NativeObject obj) override {
 		switch (obj) {
 		case NativeObject::CONTEXT:
 			return (uintptr_t)d3d_;
@@ -547,33 +546,33 @@ public:
 		switch (info) {
 		case APIVERSION: return "DirectX 9.0";
 		case VENDORSTRING: return identifier_.Description;
-		case VENDOR: return "-";
-		case RENDERER: return identifier_.Driver;  // eh, sort of
+		case VENDOR: return "";
+		case DRIVER: return identifier_.Driver;  // eh, sort of
 		case SHADELANGVERSION: return shadeLangVersion_;
 		case APINAME: return "Direct3D 9";
 		default: return "?";
 		}
 	}
 
-	void HandleEvent(Event ev) override;
+	void HandleEvent(Event ev, int width, int height, void *param1, void *param2) override;
 
 private:
 	LPDIRECT3D9 d3d_;
 	LPDIRECT3D9EX d3dEx_;
 	LPDIRECT3DDEVICE9 device_;
 	LPDIRECT3DDEVICE9EX deviceEx_;
-	int adapterId_;
-	D3DADAPTER_IDENTIFIER9 identifier_;
+	int adapterId_ = -1;
+	D3DADAPTER_IDENTIFIER9 identifier_{};
 	D3DCAPS9 d3dCaps_;
-	char shadeLangVersion_[64];
-	DeviceCaps caps_;
+	char shadeLangVersion_[64]{};
+	DeviceCaps caps_{};
 
 	// Bound state
-	D3D9Pipeline *curPipeline_;
-	D3D9Buffer *curVBuffers_[4];
-	int curVBufferOffsets_[4];
-	D3D9Buffer *curIBuffer_;
-	int curIBufferOffset_;
+	D3D9Pipeline *curPipeline_ = nullptr;
+	D3D9Buffer *curVBuffers_[4]{};
+	int curVBufferOffsets_[4]{};
+	D3D9Buffer *curIBuffer_ = nullptr;
+	int curIBufferOffset_ = 0;
 
 	// Framebuffer state
 	LPDIRECT3DSURFACE9 deviceRTsurf = 0;
@@ -586,19 +585,36 @@ private:
 
 D3D9Context::D3D9Context(IDirect3D9 *d3d, IDirect3D9Ex *d3dEx, int adapterId, IDirect3DDevice9 *device, IDirect3DDevice9Ex *deviceEx)
 	: d3d_(d3d), d3dEx_(d3dEx), adapterId_(adapterId), device_(device), deviceEx_(deviceEx), caps_{} {
-	CreatePresets();
-	d3d->GetAdapterIdentifier(adapterId, 0, &identifier_);
+	if (FAILED(d3d->GetAdapterIdentifier(adapterId, 0, &identifier_))) {
+		ELOG("Failed to get adapter identifier: %d", adapterId);
+	}
+	switch (identifier_.VendorId) {
+	case 0x10DE: caps_.vendor = GPUVendor::VENDOR_NVIDIA; break;
+	case 0x1002:
+	case 0x1022: caps_.vendor = GPUVendor::VENDOR_AMD; break;
+	case 0x163C:
+	case 0x8086:
+	case 0x8087: caps_.vendor = GPUVendor::VENDOR_INTEL; break;
+	default:
+		caps_.vendor = GPUVendor::VENDOR_UNKNOWN;
+	}
+
 	if (!FAILED(device->GetDeviceCaps(&d3dCaps_))) {
 		sprintf(shadeLangVersion_, "PS: %04x VS: %04x", d3dCaps_.PixelShaderVersion & 0xFFFF, d3dCaps_.VertexShaderVersion & 0xFFFF);
 	} else {
 		strcpy(shadeLangVersion_, "N/A");
 	}
+
 	caps_.multiViewport = false;
 	caps_.anisoSupported = true;
 	caps_.depthRangeMinusOneToOne = false;
 	caps_.preferredDepthBufferFormat = DataFormat::D24_S8;
 	caps_.dualSourceBlend = false;
 	caps_.tesselationShaderSupported = false;
+	caps_.framebufferBlitSupported = true;
+	caps_.framebufferCopySupported = false;
+	caps_.framebufferDepthBlitSupported = true;
+	caps_.framebufferDepthCopySupported = false;
 	if (d3d) {
 		D3DDISPLAYMODE displayMode;
 		d3d->GetAdapterDisplayMode(D3DADAPTER_DEFAULT, &displayMode);
@@ -630,6 +646,11 @@ Pipeline *D3D9Context::CreateGraphicsPipeline(const PipelineDesc &desc) {
 	}
 	D3D9Pipeline *pipeline = new D3D9Pipeline(device_);
 	for (auto iter : desc.shaders) {
+		if (!iter) {
+			ELOG("NULL shader passed to CreateGraphicsPipeline");
+			delete pipeline;
+			return NULL;
+		}
 		if (iter->GetStage() == ShaderStage::FRAGMENT) {
 			pipeline->pshader = static_cast<D3D9ShaderModule *>(iter);
 		}
@@ -647,6 +668,8 @@ Pipeline *D3D9Context::CreateGraphicsPipeline(const PipelineDesc &desc) {
 	pipeline->blend->AddRef();
 	pipeline->raster->AddRef();
 	pipeline->inputLayout->AddRef();
+	if (desc.uniformDesc)
+		pipeline->dynamicUniforms = *desc.uniformDesc;
 	return pipeline;
 }
 
@@ -724,7 +747,11 @@ Texture *D3D9Context::CreateTexture(const TextureDesc &desc) {
 void D3D9Context::BindTextures(int start, int count, Texture **textures) {
 	for (int i = start; i < start + count; i++) {
 		D3D9Texture *tex = static_cast<D3D9Texture *>(textures[i - start]);
-		tex->SetToSampler(device_, i);
+		if (tex) {
+			tex->SetToSampler(device_, i);
+		} else {
+			device_->SetTexture(i, nullptr);
+		}
 	}
 }
 
@@ -811,6 +838,39 @@ Buffer *D3D9Context::CreateBuffer(size_t size, uint32_t usageFlags) {
 	return new D3D9Buffer(device_, size, usageFlags);
 }
 
+inline void Transpose4x4(float out[16], const float in[16]) {
+	for (int i = 0; i < 4; i++) {
+		for (int j = 0; j < 4; j++) {
+			out[i * 4 + j] = in[j * 4 + i];
+		}
+	}
+}
+
+void D3D9Context::UpdateDynamicUniformBuffer(const void *ub, size_t size) {
+	if (size != curPipeline_->dynamicUniforms.uniformBufferSize)
+		Crash();
+	for (auto &uniform : curPipeline_->dynamicUniforms.uniforms) {
+		int count = 0;
+		switch (uniform.type) {
+		case UniformType::FLOAT4:
+			count = 1;
+			break;
+		case UniformType::MATRIX4X4:
+			count = 4;
+			break;
+		}
+		const float *srcPtr = (const float *)((const uint8_t *)ub + uniform.offset);
+		if (uniform.vertexReg != -1) {
+			float transp[16];
+			Transpose4x4(transp, srcPtr);
+			device_->SetVertexShaderConstantF(uniform.vertexReg, transp, count);
+		}
+		if (uniform.fragmentReg != -1) {
+			device_->SetPixelShaderConstantF(uniform.fragmentReg, srcPtr, count);
+		}
+	}
+}
+
 void D3D9Context::UpdateBuffer(Buffer *buffer, const uint8_t *data, size_t offset, size_t size, UpdateBufferFlags flags) {
 	D3D9Buffer *buf = (D3D9Buffer *)buffer;
 	if (!size)
@@ -874,31 +934,28 @@ static uint32_t SwapRB(uint32_t c) {
 
 void D3D9Context::Clear(int mask, uint32_t colorval, float depthVal, int stencilVal) {
 	UINT d3dMask = 0;
-	if (mask & ClearFlag::COLOR) d3dMask |= D3DCLEAR_TARGET;
-	if (mask & ClearFlag::DEPTH) d3dMask |= D3DCLEAR_ZBUFFER;
-	if (mask & ClearFlag::STENCIL) d3dMask |= D3DCLEAR_STENCIL;
-
-	device_->Clear(0, NULL, d3dMask, (D3DCOLOR)SwapRB(colorval), depthVal, stencilVal);
+	if (mask & FBChannel::FB_COLOR_BIT) d3dMask |= D3DCLEAR_TARGET;
+	if (mask & FBChannel::FB_DEPTH_BIT) d3dMask |= D3DCLEAR_ZBUFFER;
+	if (mask & FBChannel::FB_STENCIL_BIT) d3dMask |= D3DCLEAR_STENCIL;
+	if (d3dMask) {
+		device_->Clear(0, NULL, d3dMask, (D3DCOLOR)SwapRB(colorval), depthVal, stencilVal);
+	}
 }
 
 void D3D9Context::SetScissorRect(int left, int top, int width, int height) {
-	RECT rc;
-	rc.left = left;
-	rc.top = top;
-	rc.right = left + width;
-	rc.bottom = top + height;
-	device_->SetScissorRect(&rc);
+	using namespace DX9;
+
+	dxstate.scissorRect.set(left, top, left + width, top + height);
 }
 
 void D3D9Context::SetViewports(int count, Viewport *viewports) {
-	D3DVIEWPORT9 vp;
-	vp.X = (DWORD)viewports[0].TopLeftX;
-	vp.Y = (DWORD)viewports[0].TopLeftY;
-	vp.Width = (DWORD)viewports[0].Width;
-	vp.Height = (DWORD)viewports[0].Height;
-	vp.MinZ = viewports[0].MinDepth;
-	vp.MaxZ = viewports[0].MaxDepth;
-	device_->SetViewport(&vp);
+	using namespace DX9;
+
+	int x = (int)viewports[0].TopLeftX;
+	int y = (int)viewports[0].TopLeftY;
+	int w = (int)viewports[0].Width;
+	int h = (int)viewports[0].Height;
+	dxstate.viewport.set(x, y, w, h, viewports[0].MinDepth, viewports[0].MaxDepth);
 }
 
 void D3D9Context::SetBlendFactor(float color[4]) {
@@ -910,24 +967,26 @@ void D3D9Context::SetBlendFactor(float color[4]) {
 }
 
 bool D3D9ShaderModule::Compile(LPDIRECT3DDEVICE9 device, const uint8_t *data, size_t size) {
-	LPD3DXMACRO defines = NULL;
-	LPD3DXINCLUDE includes = NULL;
+	LPD3DXMACRO defines = nullptr;
+	LPD3DXINCLUDE includes = nullptr;
 	DWORD flags = 0;
-	LPD3DXBUFFER codeBuffer;
-	LPD3DXBUFFER errorBuffer;
+	LPD3DXBUFFER codeBuffer = nullptr;
+	LPD3DXBUFFER errorBuffer = nullptr;
 	const char *source = (const char *)data;
 	const char *profile = stage_ == ShaderStage::FRAGMENT ? "ps_2_0" : "vs_2_0";
-	HRESULT hr = dyn_D3DXCompileShader(source, (UINT)strlen(source), defines, includes, "main", profile, flags, &codeBuffer, &errorBuffer, &constantTable_);
+	HRESULT hr = dyn_D3DXCompileShader(source, (UINT)strlen(source), defines, includes, "main", profile, flags, &codeBuffer, &errorBuffer, nullptr);
 	if (FAILED(hr)) {
-		const char *error = (const char *)errorBuffer->GetBufferPointer();
+		const char *error = errorBuffer ? (const char *)errorBuffer->GetBufferPointer() : "(no errorbuffer returned)";
+		if (hr == ERROR_MOD_NOT_FOUND) {
+			// No D3D9-compatible shader compiler installed.
+			error = "D3D9 shader compiler not installed";
+		}
 		OutputDebugStringA(source);
 		OutputDebugStringA(error);
-		errorBuffer->Release();
-
+		if (errorBuffer)
+			errorBuffer->Release();
 		if (codeBuffer) 
 			codeBuffer->Release();
-		if (constantTable_) 
-			constantTable_->Release();
 		return false;
 	}
 
@@ -940,37 +999,8 @@ bool D3D9ShaderModule::Compile(LPDIRECT3DDEVICE9 device, const uint8_t *data, si
 		success = SUCCEEDED(result);
 	}
 
-#if 0
-	// Just for testing. Will later use to pre populate uniform tables.
-
-	D3DXCONSTANTTABLE_DESC desc;
-	constantTable_->GetDesc(&desc);
-
-	for (UINT i = 0; i < desc.Constants; i++) {
-		D3DXHANDLE c = constantTable_->GetConstant(NULL, i);
-		D3DXCONSTANT_DESC cdesc;
-		UINT count = 1;
-		constantTable_->GetConstantDesc(c, &cdesc, &count);
-		ILOG("%s", cdesc.Name);
-	}
-#endif
-
 	codeBuffer->Release();
 	return true;
-}
-
-void D3D9ShaderModule::SetVector(LPDIRECT3DDEVICE9 device, const char *name, float *value, int n) {
-	D3DXHANDLE handle = constantTable_->GetConstantByName(NULL, name);
-	if (handle) {
-		constantTable_->SetFloatArray(device, handle, value, n);
-	}
-}
-
-void D3D9ShaderModule::SetMatrix4x4(LPDIRECT3DDEVICE9 device, const char *name, const float value[16]) {
-	D3DXHANDLE handle = constantTable_->GetConstantByName(NULL, name);
-	if (handle) {
-		constantTable_->SetFloatArray(device, handle, value, 16);
-	}
 }
 
 class D3D9Framebuffer : public Framebuffer {
@@ -1036,21 +1066,33 @@ D3D9Framebuffer::~D3D9Framebuffer() {
 	}
 }
 
-void D3D9Context::BindBackbufferAsRenderTarget() {
+void D3D9Context::BindFramebufferAsRenderTarget(Framebuffer *fbo, const RenderPassInfo &rp) {
 	using namespace DX9;
+	if (fbo) {
+		D3D9Framebuffer *fb = (D3D9Framebuffer *)fbo;
+		device_->SetRenderTarget(0, fb->surf);
+		device_->SetDepthStencilSurface(fb->depthstencil);
+	} else {
+		device_->SetRenderTarget(0, deviceRTsurf);
+		device_->SetDepthStencilSurface(deviceDSsurf);
+	}
 
-	device_->SetRenderTarget(0, deviceRTsurf);
-	device_->SetDepthStencilSurface(deviceDSsurf);
-	dxstate.scissorRect.restore();
-	dxstate.viewport.restore();
-}
+	int clearFlags = 0;
+	if (rp.color == RPAction::CLEAR) {
+		clearFlags |= D3DCLEAR_TARGET;
+	}
+	if (rp.depth == RPAction::CLEAR) {
+		clearFlags |= D3DCLEAR_ZBUFFER;
+	}
+	if (rp.stencil == RPAction::CLEAR) {
+		clearFlags |= D3DCLEAR_STENCIL;
+	}
+	if (clearFlags) {
+		dxstate.scissorTest.force(false);
+		device_->Clear(0, nullptr, clearFlags, (D3DCOLOR)SwapRB(rp.clearColor), rp.clearDepth, rp.clearStencil);
+		dxstate.scissorRect.restore();
+	}
 
-void D3D9Context::BindFramebufferAsRenderTarget(Framebuffer *fbo) {
-	using namespace DX9;
-
-	D3D9Framebuffer *fb = (D3D9Framebuffer *)fbo;
-	device_->SetRenderTarget(0, fb->surf);
-	device_->SetDepthStencilSurface(fb->depthstencil);
 	dxstate.scissorRect.restore();
 	dxstate.viewport.restore();
 }
@@ -1103,8 +1145,13 @@ void D3D9Context::BindFramebufferAsTexture(Framebuffer *fbo, int binding, FBChan
 
 void D3D9Context::GetFramebufferDimensions(Framebuffer *fbo, int *w, int *h) {
 	D3D9Framebuffer *fb = (D3D9Framebuffer *)fbo;
-	*w = fb->width;
-	*h = fb->height;
+	if (fb) {
+		*w = fb->width;
+		*h = fb->height;
+	} else {
+		*w = targetWidth_;
+		*h = targetHeight_;
+	}
 }
 
 bool D3D9Context::BlitFramebuffer(Framebuffer *srcfb, int srcX1, int srcY1, int srcX2, int srcY2, Framebuffer *dstfb, int dstX1, int dstY1, int dstX2, int dstY2, int channelBits, FBBlitFilter filter) {
@@ -1119,7 +1166,7 @@ bool D3D9Context::BlitFramebuffer(Framebuffer *srcfb, int srcX1, int srcY1, int 
 	return SUCCEEDED(device_->StretchRect(srcSurf, &srcRect, dstSurf, &dstRect, filter == FB_BLIT_LINEAR ? D3DTEXF_LINEAR : D3DTEXF_POINT));
 }
 
-void D3D9Context::HandleEvent(Event ev) {
+void D3D9Context::HandleEvent(Event ev, int width, int height, void *param1, void *param2) {
 	switch (ev) {
 	case Event::LOST_BACKBUFFER:
 		if (deviceRTsurf)
@@ -1149,7 +1196,7 @@ DrawContext *T3DCreateDX9Context(IDirect3D9 *d3d, IDirect3D9Ex *d3dEx, int adapt
 uint32_t D3D9Context::GetDataFormatSupport(DataFormat fmt) const {
 	switch (fmt) {
 	case DataFormat::B8G8R8A8_UNORM:
-		return FMT_RENDERTARGET | FMT_TEXTURE;
+		return FMT_RENDERTARGET | FMT_TEXTURE | FMT_AUTOGEN_MIPS;
 
 	case DataFormat::R4G4B4A4_UNORM_PACK16:
 		return 0;
@@ -1157,11 +1204,11 @@ uint32_t D3D9Context::GetDataFormatSupport(DataFormat fmt) const {
 		return FMT_TEXTURE;  // emulated support
 	case DataFormat::R5G6B5_UNORM_PACK16:
 	case DataFormat::A1R5G5B5_UNORM_PACK16:
-	case DataFormat::A4B4G4R4_UNORM_PACK16:
-		return FMT_RENDERTARGET | FMT_TEXTURE;  // native support
+	case DataFormat::A4R4G4B4_UNORM_PACK16:
+		return FMT_RENDERTARGET | FMT_TEXTURE | FMT_AUTOGEN_MIPS;  // native support
 
 	case DataFormat::R8G8B8A8_UNORM:
-		return FMT_RENDERTARGET | FMT_TEXTURE | FMT_INPUTLAYOUT;
+		return FMT_RENDERTARGET | FMT_TEXTURE | FMT_INPUTLAYOUT | FMT_AUTOGEN_MIPS;
 
 	case DataFormat::R32_FLOAT:
 	case DataFormat::R32G32_FLOAT:

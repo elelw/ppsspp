@@ -41,7 +41,7 @@ static const char *vulkan_glsl_preamble =
 #define WRITE p+=sprintf
 
 // Missing: Z depth range
-bool GenerateVulkanGLSLFragmentShader(const ShaderID &id, char *buffer) {
+bool GenerateVulkanGLSLFragmentShader(const FShaderID &id, char *buffer) {
 	char *p = buffer;
 
 	const char *lastFragData = nullptr;
@@ -60,6 +60,7 @@ bool GenerateVulkanGLSLFragmentShader(const ShaderID &id, char *buffer) {
 	bool doTextureProjection = id.Bit(FS_BIT_DO_TEXTURE_PROJ);
 	bool doTextureAlpha = id.Bit(FS_BIT_TEXALPHA);
 	bool doFlatShading = id.Bit(FS_BIT_FLATSHADE);
+	bool shaderDepal = id.Bit(FS_BIT_SHADER_DEPAL);
 
 	GEComparison alphaTestFunc = (GEComparison)id.Bits(FS_BIT_ALPHA_TEST_FUNC, 3);
 	GEComparison colorTestFunc = (GEComparison)id.Bits(FS_BIT_COLOR_TEST_FUNC, 2);
@@ -80,7 +81,7 @@ bool GenerateVulkanGLSLFragmentShader(const ShaderID &id, char *buffer) {
 
 	const char *shading = doFlatShading ? "flat" : "";
 
-	WRITE(p, "layout (std140, set = 0, binding = 2) uniform baseUBO {\n%s} base;\n", ub_baseStr);
+	WRITE(p, "layout (std140, set = 0, binding = 3) uniform baseUBO {\n%s} base;\n", ub_baseStr);
 	if (doTexture) {
 		WRITE(p, "layout (binding = 0) uniform sampler2D tex;\n");
 	}
@@ -89,6 +90,10 @@ bool GenerateVulkanGLSLFragmentShader(const ShaderID &id, char *buffer) {
 		if (replaceBlend == REPLACE_BLEND_COPY_FBO) {
 			WRITE(p, "layout (binding = 1) uniform sampler2D fbotex;\n");
 		}
+	}
+
+	if (shaderDepal) {
+		WRITE(p, "layout (binding = 2) uniform sampler2D pal;\n");
 	}
 
 	WRITE(p, "layout (location = 1) %s in vec4 v_color0;\n", shading);
@@ -172,10 +177,95 @@ bool GenerateVulkanGLSLFragmentShader(const ShaderID &id, char *buffer) {
 
 			if (doTextureProjection) {
 				WRITE(p, "  vec4 t = textureProj(tex, %s);\n", texcoord);
+				if (shaderDepal) {
+					WRITE(p, "  vec4 t1 = textureProjOffset(tex, %s, ivec2(1, 0));\n", texcoord);
+					WRITE(p, "  vec4 t2 = textureProjOffset(tex, %s, ivec2(0, 1));\n", texcoord);
+					WRITE(p, "  vec4 t3 = textureProjOffset(tex, %s, ivec2(1, 1));\n", texcoord);
+				}
 			} else {
 				WRITE(p, "  vec4 t = texture(tex, %s.xy);\n", texcoord);
+				if (shaderDepal) {
+					WRITE(p, "  vec4 t1 = textureOffset(tex, %s.xy, ivec2(1, 0));\n", texcoord);
+					WRITE(p, "  vec4 t2 = textureOffset(tex, %s.xy, ivec2(0, 1));\n", texcoord);
+					WRITE(p, "  vec4 t3 = textureOffset(tex, %s.xy, ivec2(1, 1));\n", texcoord);
+				}
 			}
-			WRITE(p, "  vec4 p = v_color0;\n");
+
+			if (shaderDepal) {
+				WRITE(p, "  uint depalMask = (base.depal_mask_shift_off_fmt & 0xFF);\n");
+				WRITE(p, "  uint depalShift = (base.depal_mask_shift_off_fmt >> 8) & 0xFF;\n");
+				WRITE(p, "  uint depalOffset = ((base.depal_mask_shift_off_fmt >> 16) & 0xFF) << 4;\n");
+				WRITE(p, "  uint depalFmt = (base.depal_mask_shift_off_fmt >> 24) & 0x3;\n");
+				WRITE(p, "  bool bilinear = (base.depal_mask_shift_off_fmt >> 31) != 0;\n");
+				WRITE(p, "  vec2 fraction = fract(%s.xy * vec2(textureSize(tex, 0).xy));\n", texcoord);
+				WRITE(p, "  uvec4 col; uint index0; uint index1; uint index2; uint index3;\n");
+				WRITE(p, "  switch (depalFmt) {\n");  // We might want to include fmt in the shader ID if this is a performance issue.
+				WRITE(p, "  case 0:\n");  // 565
+				WRITE(p, "    col = uvec4(t.rgb * vec3(31.99, 63.99, 31.99), 0);\n");
+				WRITE(p, "    index0 = (col.b << 11) | (col.g << 5) | (col.r);\n");
+				WRITE(p, "    if (bilinear) {\n");
+				WRITE(p, "      col = uvec4(t1.rgb * vec3(31.99, 63.99, 31.99), 0);\n");
+				WRITE(p, "      index1 = (col.b << 11) | (col.g << 5) | (col.r);\n");
+				WRITE(p, "      col = uvec4(t2.rgb * vec3(31.99, 63.99, 31.99), 0);\n");
+				WRITE(p, "      index2 = (col.b << 11) | (col.g << 5) | (col.r);\n");
+				WRITE(p, "      col = uvec4(t3.rgb * vec3(31.99, 63.99, 31.99), 0);\n");
+				WRITE(p, "      index3 = (col.b << 11) | (col.g << 5) | (col.r);\n");
+				WRITE(p, "    }\n");
+				WRITE(p, "    break;\n");
+				WRITE(p, "  case 1:\n");  // 5551
+				WRITE(p, "    col = uvec4(t.rgba * vec4(31.99, 31.99, 31.99, 1.0));\n");
+				WRITE(p, "    index0 = (col.a << 15) | (col.b << 10) | (col.g << 5) | (col.r);\n");
+				WRITE(p, "    if (bilinear) {\n");
+				WRITE(p, "      col = uvec4(t1.rgba * vec4(31.99, 31.99, 31.99, 1.0));\n");
+				WRITE(p, "      index1 = (col.a << 15) | (col.b << 10) | (col.g << 5) | (col.r);\n");
+				WRITE(p, "      col = uvec4(t2.rgba * vec4(31.99, 31.99, 31.99, 1.0));\n");
+				WRITE(p, "      index2 = (col.a << 15) | (col.b << 10) | (col.g << 5) | (col.r);\n");
+				WRITE(p, "      col = uvec4(t3.rgba * vec4(31.99, 31.99, 31.99, 1.0));\n");
+				WRITE(p, "      index3 = (col.a << 15) | (col.b << 10) | (col.g << 5) | (col.r);\n");
+				WRITE(p, "    }\n");
+				WRITE(p, "    break;\n");
+				WRITE(p, "  case 2:\n");  // 4444
+				WRITE(p, "    col = uvec4(t.rgba * vec4(15.99, 15.99, 15.99, 15.99));\n");
+				WRITE(p, "    index0 = (col.a << 12) | (col.b << 8) | (col.g << 4) | (col.r);\n");
+				WRITE(p, "    if (bilinear) {\n");
+				WRITE(p, "      col = uvec4(t1.rgba * vec4(15.99, 15.99, 15.99, 15.99));\n");
+				WRITE(p, "      index1 = (col.a << 12) | (col.b << 8) | (col.g << 4) | (col.r);\n");
+				WRITE(p, "      col = uvec4(t2.rgba * vec4(15.99, 15.99, 15.99, 15.99));\n");
+				WRITE(p, "      index2 = (col.a << 12) | (col.b << 8) | (col.g << 4) | (col.r);\n");
+				WRITE(p, "      col = uvec4(t3.rgba * vec4(15.99, 15.99, 15.99, 15.99));\n");
+				WRITE(p, "      index3 = (col.a << 12) | (col.b << 8) | (col.g << 4) | (col.r);\n");
+				WRITE(p, "    }\n");
+				WRITE(p, "    break;\n");
+				WRITE(p, "  case 3:\n");  // 8888
+				WRITE(p, "    col = uvec4(t.rgba * vec4(255.99, 255.99, 255.99, 255.99));\n");
+				WRITE(p, "    index0 = (col.a << 24) | (col.b << 16) | (col.g << 8) | (col.r);\n");
+				WRITE(p, "    if (bilinear) {\n");
+				WRITE(p, "      col = uvec4(t1.rgba * vec4(255.99, 255.99, 255.99, 255.99));\n");
+				WRITE(p, "      index1 = (col.a << 24) | (col.b << 16) | (col.g << 8) | (col.r);\n");
+				WRITE(p, "      col = uvec4(t2.rgba * vec4(255.99, 255.99, 255.99, 255.99));\n");
+				WRITE(p, "      index2 = (col.a << 24) | (col.b << 16) | (col.g << 8) | (col.r);\n");
+				WRITE(p, "      col = uvec4(t3.rgba * vec4(255.99, 255.99, 255.99, 255.99));\n");
+				WRITE(p, "      index3 = (col.a << 24) | (col.b << 16) | (col.g << 8) | (col.r);\n");
+				WRITE(p, "    }\n");
+				WRITE(p, "    break;\n");
+				WRITE(p, "  };\n");
+				WRITE(p, "  index0 = ((index0 >> depalShift) & depalMask) | depalOffset;\n");
+				WRITE(p, "  t = texelFetch(pal, ivec2(index0, 0), 0);\n");
+				WRITE(p, "  if (bilinear) {\n");
+				WRITE(p, "    index1 = ((index1 >> depalShift) & depalMask) | depalOffset;\n");
+				WRITE(p, "    index2 = ((index2 >> depalShift) & depalMask) | depalOffset;\n");
+				WRITE(p, "    index3 = ((index3 >> depalShift) & depalMask) | depalOffset;\n");
+				WRITE(p, "    t1 = texelFetch(pal, ivec2(index1, 0), 0);\n");
+				WRITE(p, "    t2 = texelFetch(pal, ivec2(index2, 0), 0);\n");
+				WRITE(p, "    t3 = texelFetch(pal, ivec2(index3, 0), 0);\n");
+				WRITE(p, "    t = mix(t, t1, fraction.x);\n");
+				WRITE(p, "    t2 = mix(t2, t3, fraction.x);\n");
+				WRITE(p, "    t = mix(t, t2, fraction.y);\n");
+				WRITE(p, "  }\n");
+			}
+
+			if (texFunc != GE_TEXFUNC_REPLACE || !doTextureAlpha)
+				WRITE(p, "  vec4 p = v_color0;\n");
 
 			if (doTextureAlpha) { // texfmt == RGBA
 				switch (texFunc) {
@@ -268,12 +358,13 @@ bool GenerateVulkanGLSLFragmentShader(const ShaderID &id, char *buffer) {
 		if (enableColorTest) {
 			if (colorTestAgainstZero) {
 				// When testing against 0 (common), we can avoid some math.
+				// Have my doubts that this special case is actually worth it, but whatever.
 				// 0.002 is approximately half of 1.0 / 255.0.
 				if (colorTestFunc == GE_COMP_NOTEQUAL) {
-					WRITE(p, "  if (v.r < 0.002 && v.g < 0.002 && v.b < 0.002) discard;\n");
+					WRITE(p, "  if (v.r + v.g + v.b < 0.002) discard;\n");
 				} else if (colorTestFunc != GE_COMP_NEVER) {
 					// Anything else is a test for == 0.
-					WRITE(p, "  if (v.r > 0.002 || v.g > 0.002 || v.b > 0.002) discard;\n");
+					WRITE(p, "  if (v.r + v.g + v.b > 0.002) discard;\n");
 				} else {
 					// NEVER has been logged as used by games, although it makes little sense - statically failing.
 					// Maybe we could discard the drawcall, but it's pretty rare.  Let's just statically discard here.
@@ -387,7 +478,7 @@ bool GenerateVulkanGLSLFragmentShader(const ShaderID &id, char *buffer) {
 	if (stencilToAlpha != REPLACE_ALPHA_NO) {
 		switch (replaceAlphaWithStencilType) {
 		case STENCIL_VALUE_UNIFORM:
-			replacedAlpha = "base.fogcoef_stencilreplace.z";
+			replacedAlpha = "base.stencilReplace";
 			break;
 
 		case STENCIL_VALUE_ZERO:
@@ -456,8 +547,20 @@ bool GenerateVulkanGLSLFragmentShader(const ShaderID &id, char *buffer) {
 	}
 
 	if (gstate_c.Supports(GPU_ROUND_FRAGMENT_DEPTH_TO_16BIT)) {
+		const double scale = DepthSliceFactor() * 65535.0;
+
 		WRITE(p, "  highp float z = gl_FragCoord.z;\n");
-		WRITE(p, "  z = (1.0/65535.0) * floor(z * 65535.0);\n");
+		if (gstate_c.Supports(GPU_SUPPORTS_ACCURATE_DEPTH)) {
+			// We center the depth with an offset, but only its fraction matters.
+			// When (DepthSliceFactor() - 1) is odd, it will be 0.5, otherwise 0.
+			if (((int)(DepthSliceFactor() - 1.0f) & 1) == 1) {
+				WRITE(p, "  z = (floor((z * %f) - (1.0 / 2.0)) + (1.0 / 2.0)) * (1.0 / %f);\n", scale, scale);
+			} else {
+				WRITE(p, "  z = floor(z * %f) * (1.0 / %f);\n", scale, scale);
+			}
+		} else {
+			WRITE(p, "  z = (1.0/65535.0) * floor(z * 65535.0);\n");
+		}
 		WRITE(p, "  gl_FragDepth = z;\n");
 	}
 

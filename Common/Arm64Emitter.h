@@ -591,6 +591,7 @@ public:
 	void SUB(ARM64Reg Rd, ARM64Reg Rn, u32 imm, bool shift = false);
 	void SUBS(ARM64Reg Rd, ARM64Reg Rn, u32 imm, bool shift = false);
 	void CMP(ARM64Reg Rn, u32 imm, bool shift = false);
+	void CMN(ARM64Reg Rn, u32 imm, bool shift = false);
 
 	// Data Processing (Immediate)
 	void MOVZ(ARM64Reg Rd, u32 imm, ShiftAmount pos = SHIFT_0);
@@ -714,13 +715,13 @@ public:
 	void SUBI2R(ARM64Reg Rd, ARM64Reg Rn, u64 imm, ARM64Reg scratch = INVALID_REG);
 	void SUBSI2R(ARM64Reg Rd, ARM64Reg Rn, u64 imm, ARM64Reg scratch = INVALID_REG);
 
-	bool TryADDI2R(ARM64Reg Rd, ARM64Reg Rn, u32 imm);
-	bool TrySUBI2R(ARM64Reg Rd, ARM64Reg Rn, u32 imm);
-	bool TryCMPI2R(ARM64Reg Rn, u32 imm);
+	bool TryADDI2R(ARM64Reg Rd, ARM64Reg Rn, u64 imm);
+	bool TrySUBI2R(ARM64Reg Rd, ARM64Reg Rn, u64 imm);
+	bool TryCMPI2R(ARM64Reg Rn, u64 imm);
 
-	bool TryANDI2R(ARM64Reg Rd, ARM64Reg Rn, u32 imm);
-	bool TryORRI2R(ARM64Reg Rd, ARM64Reg Rn, u32 imm);
-	bool TryEORI2R(ARM64Reg Rd, ARM64Reg Rn, u32 imm);
+	bool TryANDI2R(ARM64Reg Rd, ARM64Reg Rn, u64 imm);
+	bool TryORRI2R(ARM64Reg Rd, ARM64Reg Rn, u64 imm);
+	bool TryEORI2R(ARM64Reg Rd, ARM64Reg Rn, u64 imm);
 
 	// Pseudo-instruction for convenience. PUSH pushes 16 bytes even though we only push a single register.
 	// This is so the stack pointer is always 16-byte aligned, which is checked by hardware!
@@ -985,15 +986,6 @@ private:
 class ARM64CodeBlock : public CodeBlock<ARM64XEmitter>
 {
 private:
-	void PoisonMemory() override
-	{
-		u32* ptr = (u32*)region;
-		u32* maxptr = (u32*)(region + region_size);
-		// If our memory isn't a multiple of u32 then this won't write the last remaining bytes with anything
-		// Less than optimal, but there would be nothing we could do but throw a runtime warning anyway.
-		// AArch64: 0xD4200000 = BRK 0
-		while (ptr < maxptr)
-			*ptr++ = 0xD4200000;
-	}
+	void PoisonMemory(int offset) override;
 };
 }

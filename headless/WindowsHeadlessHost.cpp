@@ -17,8 +17,7 @@
 
 #include <stdio.h>
 
-#include "WindowsHeadlessHost.h"
-#include "Compare.h"
+#include "headless/WindowsHeadlessHost.h"
 
 #include "Common/FileUtil.h"
 #include "Common/CommonWindows.h"
@@ -29,9 +28,11 @@
 #include "GPU/GPUState.h"
 #include "Windows/GPU/WindowsGLContext.h"
 #include "Windows/GPU/D3D9Context.h"
+#include "Windows/GPU/D3D11Context.h"
 #include "Windows/GPU/WindowsVulkanContext.h"
 
 #include "base/logging.h"
+#include "base/timeutil.h"
 #include "gfx/gl_common.h"
 #include "gfx_es2/gpu_features.h"
 #include "file/vfs.h"
@@ -77,72 +78,6 @@ void WindowsHeadlessHost::SendDebugOutput(const std::string &output)
 	OutputDebugStringUTF8(output.c_str());
 }
 
-void WindowsHeadlessHost::SendOrCollectDebugOutput(const std::string &data)
-{
-	if (PSP_CoreParameter().printfEmuLog)
-		SendDebugOutput(data);
-	else if (PSP_CoreParameter().collectEmuLog)
-		*PSP_CoreParameter().collectEmuLog += data;
-	else
-		DEBUG_LOG(COMMON, "%s", data.c_str());
-}
-
-void WindowsHeadlessHost::SendDebugScreenshot(const u8 *pixbuf, u32 w, u32 h)
-{
-	// Only if we're actually comparing.
-	if (comparisonScreenshot.empty()) {
-		return;
-	}
-
-	// We ignore the current framebuffer parameters and just grab the full screen.
-	const static u32 FRAME_STRIDE = 512;
-	const static u32 FRAME_WIDTH = 480;
-	const static u32 FRAME_HEIGHT = 272;
-
-	GPUDebugBuffer buffer;
-	gpuDebug->GetCurrentFramebuffer(buffer, GPU_DBG_FRAMEBUF_RENDER);
-	const std::vector<u32> pixels = TranslateDebugBufferToCompare(&buffer, 512, 272);
-
-	std::string error;
-	double errors = CompareScreenshot(pixels, FRAME_STRIDE, FRAME_WIDTH, FRAME_HEIGHT, comparisonScreenshot, error);
-	if (errors < 0)
-		SendOrCollectDebugOutput(error);
-
-	if (errors > 0)
-	{
-		char temp[256];
-		sprintf_s(temp, "Screenshot error: %f%%\n", errors * 100.0f);
-		SendOrCollectDebugOutput(temp);
-	}
-
-	if (errors > 0 && !teamCityMode)
-	{
-		// Lazy, just read in the original header to output the failed screenshot.
-		u8 header[14 + 40] = {0};
-		FILE *bmp = File::OpenCFile(comparisonScreenshot, "rb");
-		if (bmp)
-		{
-			fread(&header, sizeof(header), 1, bmp);
-			fclose(bmp);
-		}
-
-		FILE *saved = File::OpenCFile("__testfailure.bmp", "wb");
-		if (saved)
-		{
-			fwrite(&header, sizeof(header), 1, saved);
-			fwrite(pixels.data(), sizeof(u32), FRAME_STRIDE * FRAME_HEIGHT, saved);
-			fclose(saved);
-
-			SendOrCollectDebugOutput("Actual output written to: __testfailure.bmp\n");
-		}
-	}
-}
-
-void WindowsHeadlessHost::SetComparisonScreenshot(const std::string &filename)
-{
-	comparisonScreenshot = filename;
-}
-
 bool WindowsHeadlessHost::InitGraphics(std::string *error_message, GraphicsContext **ctx) {
 	hWnd = CreateHiddenWindow();
 
@@ -152,11 +87,13 @@ bool WindowsHeadlessHost::InitGraphics(std::string *error_message, GraphicsConte
 	}
 
 	WindowsGraphicsContext *graphicsContext = nullptr;
+	bool needRenderThread = false;
 	switch (gpuCore_) {
 	case GPUCORE_NULL:
 	case GPUCORE_GLES:
 	case GPUCORE_SOFTWARE:
 		graphicsContext = new WindowsGLContext();
+		needRenderThread = true;
 		break;
 
 	case GPUCORE_DIRECTX9:
@@ -164,7 +101,8 @@ bool WindowsHeadlessHost::InitGraphics(std::string *error_message, GraphicsConte
 		break;
 
 	case GPUCORE_DIRECTX11:
-		return false;
+		graphicsContext = new D3D11Context();
+		break;
 
 	case GPUCORE_VULKAN:
 		graphicsContext = new WindowsVulkanContext();
@@ -181,17 +119,53 @@ bool WindowsHeadlessHost::InitGraphics(std::string *error_message, GraphicsConte
 		return false;
 	}
 
-	if (gpuCore_ == GPUCORE_GLES) {
-		// TODO: Do we need to do this here?
-		CheckGLExtensions();
+	if (needRenderThread) {
+		std::thread th([&]{
+			while (threadState_ == RenderThreadState::IDLE)
+				sleep_ms(1);
+			threadState_ = RenderThreadState::STARTING;
+
+			std::string err;
+			if (!gfx_->InitFromRenderThread(&err)) {
+				threadState_ = RenderThreadState::START_FAILED;
+				return;
+			}
+			gfx_->ThreadStart();
+			threadState_ = RenderThreadState::STARTED;
+
+			while (threadState_ != RenderThreadState::STOP_REQUESTED) {
+				if (!gfx_->ThreadFrame()) {
+					break;
+				}
+				gfx_->SwapBuffers();
+			}
+
+			threadState_ = RenderThreadState::STOPPING;
+			gfx_->ThreadEnd();
+			gfx_->ShutdownFromRenderThread();
+			threadState_ = RenderThreadState::STOPPED;
+		});
+		th.detach();
 	}
 
 	LoadNativeAssets();
+
+	if (needRenderThread) {
+		threadState_ = RenderThreadState::START_REQUESTED;
+		while (threadState_ == RenderThreadState::START_REQUESTED || threadState_ == RenderThreadState::STARTING)
+			sleep_ms(1);
+
+		return threadState_ == RenderThreadState::STARTED;
+	}
 
 	return true;
 }
 
 void WindowsHeadlessHost::ShutdownGraphics() {
+	gfx_->StopThread();
+	while (threadState_ != RenderThreadState::STOPPED)
+		sleep_ms(1);
+
 	gfx_->Shutdown();
 	delete gfx_;
 	gfx_ = nullptr;

@@ -21,7 +21,7 @@
 
 #include "gfx_es2/gpu_features.h"
 #include "gfx/gl_common.h"
-#include "Globals.h"
+#include "thin3d/GLRenderManager.h"
 #include "GPU/GPUInterface.h"
 #include "GPU/GPUState.h"
 #include "GPU/GLES/TextureScalerGLES.h"
@@ -32,32 +32,17 @@ class FramebufferManagerGLES;
 class DepalShaderCacheGLES;
 class ShaderManagerGLES;
 class DrawEngineGLES;
-
-inline bool UseBGRA8888() {
-	// TODO: Other platforms?  May depend on vendor which is faster?
-#ifdef _WIN32
-	return gl_extensions.EXT_bgra;
-#endif
-	return false;
-}
+class GLRTexture;
 
 class TextureCacheGLES : public TextureCacheCommon {
 public:
 	TextureCacheGLES(Draw::DrawContext *draw);
 	~TextureCacheGLES();
 
-	void SetTexture(bool force = false);
-	virtual bool SetOffsetTexture(u32 offset) override;
-
-	void Clear(bool delete_them);
+	void Clear(bool delete_them) override;
 	void StartFrame();
-	void Invalidate(u32 addr, int size, GPUInvalidationType type) override;
-	void InvalidateAll(GPUInvalidationType type) override;
-	void ClearNextFrame();
 
-	void SetFramebufferManager(FramebufferManagerGLES *fbManager) {
-		framebufferManager_ = fbManager;
-	}
+	void SetFramebufferManager(FramebufferManagerGLES *fbManager);
 	void SetDepalShaderCache(DepalShaderCacheGLES *dpCache) {
 		depalShaderCache_ = dpCache;
 	}
@@ -68,72 +53,52 @@ public:
 		drawEngine_ = td;
 	}
 
-	size_t NumLoadedTextures() const {
-		return cache.size();
-	}
-
 	void ForgetLastTexture() override {
-		lastBoundTexture = -1;
+		lastBoundTexture = nullptr;
 		gstate_c.Dirty(DIRTY_TEXTURE_PARAMS);
 	}
+	void InvalidateLastTexture(TexCacheEntry *entry = nullptr) override {
+		if (!entry || entry->textureName == lastBoundTexture) {
+			lastBoundTexture = nullptr;
+		}
+	}
 
-	u32 AllocTextureName();
+	void SetFramebufferSamplingParams(u16 bufferWidth, u16 bufferHeight, bool forcePoint);
+	bool GetCurrentTextureDebug(GPUDebugBuffer &buffer, int level) override;
 
-	// Only used by Qt UI?
-	bool DecodeTexture(u8 *output, const GPUgstate &state);
-
-	void SetFramebufferSamplingParams(u16 bufferWidth, u16 bufferHeight);
-
-	void ApplyTexture();
+	void DeviceLost();
+	void DeviceRestore(Draw::DrawContext *draw);
 
 protected:
-	void DownloadFramebufferForClut(u32 clutAddr, u32 bytes) override;
+	void BindTexture(TexCacheEntry *entry) override;
+	void Unbind() override;
+	void ReleaseTexture(TexCacheEntry *entry, bool delete_them) override;
 
 private:
-	void Decimate();  // Run this once per frame to get rid of old textures.
-	void DeleteTexture(TexCache::iterator it);
 	void UpdateSamplingParams(TexCacheEntry &entry, bool force);
-	void LoadTextureLevel(TexCacheEntry &entry, ReplacedTexture &replaced, int level, bool replaceImages, int scaleFactor, GLenum dstFmt);
+	void LoadTextureLevel(TexCacheEntry &entry, ReplacedTexture &replaced, int level, int scaleFactor, GLenum dstFmt);
 	GLenum GetDestFormat(GETextureFormat format, GEPaletteFormat clutFormat) const;
-	void *DecodeTextureLevelOld(GETextureFormat format, GEPaletteFormat clutformat, int level, GLenum dstFmt, int scaleFactor, int *bufw = 0);
-	TexCacheEntry::Status CheckAlpha(const u32 *pixelData, GLenum dstFmt, int stride, int w, int h);
-	u32 GetCurrentClutHash();
-	void UpdateCurrentClut(GEPaletteFormat clutFormat, u32 clutBase, bool clutIndexIsSimple);
-	bool AttachFramebuffer(TexCacheEntry *entry, u32 address, VirtualFramebuffer *framebuffer, u32 texaddrOffset = 0) override;
-	void SetTextureFramebuffer(TexCacheEntry *entry, VirtualFramebuffer *framebuffer);
-	void ApplyTextureFramebuffer(TexCacheEntry *entry, VirtualFramebuffer *framebuffer);
 
-	bool CheckFullHash(TexCacheEntry *const entry, bool &doDelete);
-	bool HandleTextureChange(TexCacheEntry *const entry, const char *reason, bool initialMatch, bool doDelete);
-	void BuildTexture(TexCacheEntry *const entry, bool replaceImages);
+	TexCacheEntry::TexStatus CheckAlpha(const uint8_t *pixelData, GLenum dstFmt, int stride, int w, int h);
+	void UpdateCurrentClut(GEPaletteFormat clutFormat, u32 clutBase, bool clutIndexIsSimple) override;
+	void ApplyTextureFramebuffer(TexCacheEntry *entry, VirtualFramebuffer *framebuffer) override;
 
-	std::vector<u32> nameCache_;
-	TexCache secondCache;
-	u32 secondCacheSizeEstimate_;
+	void BuildTexture(TexCacheEntry *const entry) override;
 
-	bool clearCacheNextFrame_;
-	bool lowMemoryMode_;
+	GLRenderManager *render_;
 
 	TextureScalerGLES scaler;
 
-	u32 clutHash_;
+	GLRTexture *lastBoundTexture;
 
-	u32 lastBoundTexture;
-	float maxAnisotropyLevel;
-
-	int decimationCounter_;
-	int texelsScaledThisFrame_;
-	int timesInvalidatedAllThisFrame_;
-
-	FramebufferManagerGLES *framebufferManager_;
+	FramebufferManagerGLES *framebufferManagerGL_;
 	DepalShaderCacheGLES *depalShaderCache_;
 	ShaderManagerGLES *shaderManager_;
 	DrawEngineGLES *drawEngine_;
 
-	const char *nextChangeReason_;
-	bool nextNeedsRehash_;
-	bool nextNeedsChange_;
-	bool nextNeedsRebuild_;
+	GLRInputLayout *shadeInputLayout_ = nullptr;
+
+	enum { INVALID_TEX = -1 };
 };
 
 GLenum getClutDestFormat(GEPaletteFormat format);
