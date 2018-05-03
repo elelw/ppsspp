@@ -94,7 +94,6 @@ static float dp_yscale = 1.0f;
 
 static double lastSelectPress = 0.0f;
 static double lastStartPress = 0.0f;
-static bool simulateAnalog = false;
 static bool threadEnabled = true;
 static bool threadStopped = false;
 static UITouch *g_touches[10];
@@ -105,7 +104,7 @@ static CameraHelper *cameraHelper;
 static LocationHelper *locationHelper;
 
 @interface ViewController () {
-	std::map<uint16_t, uint16_t> iCadeToKeyMap;
+	std::map<uint32_t, uint16_t> iCadeToKeyMap;
 }
 
 @property (nonatomic, strong) EAGLContext* context;
@@ -161,7 +160,7 @@ static LocationHelper *locationHelper;
 		}
 #endif
         std::vector<KeyDef> keys;
-        KeyMap::KeyFromPspButton(VIRTKEY_ANALOG_LIGHTLY, &keys);
+        KeyMap::KeyFromPspButton(VIRTKEY_ANALOG_LIGHTLY, &keys, false);
         for (size_t i = 0; i < keys.size(); i++)
         {
             if (keys[i].deviceId != DEVICE_ID_PAD_0)
