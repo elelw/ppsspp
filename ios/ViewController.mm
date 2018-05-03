@@ -76,7 +76,6 @@ static float dp_xscale = 1.0f;
 static float dp_yscale = 1.0f;
 static double lastSelectPress = 0.0f;
 static double lastStartPress = 0.0f;
-static bool simulateAnalog = false;
 static bool threadEnabled = true;
 static bool threadStopped = false;
 
@@ -84,7 +83,7 @@ __unsafe_unretained ViewController* sharedViewController;
 static GraphicsContext *graphicsContext;
 
 @interface ViewController () {
-	std::map<uint16_t, uint16_t> iCadeToKeyMap;
+	std::map<uint32_t, uint16_t> iCadeToKeyMap;
 }
 
 @property (nonatomic, strong) EAGLContext* context;
