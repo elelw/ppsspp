@@ -15,6 +15,10 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+
 #include "Core/Reporting.h"
 
 #include "Common/CPUDetect.h"
@@ -32,14 +36,12 @@
 #include "Core/ELF/ParamSFO.h"
 #include "GPU/GPUInterface.h"
 #include "GPU/GPUState.h"
-#include "GPU/GLES/Framebuffer.h"
 #include "net/http_client.h"
 #include "net/resolve.h"
 #include "net/url.h"
 
 #include "base/stringutil.h"
 #include "base/buffer.h"
-#include "thread/thread.h"
 #include "thread/threadutil.h"
 #include "file/zip_read.h"
 
@@ -85,8 +87,8 @@ namespace Reporting
 	static Payload payloadBuffer[PAYLOAD_BUFFER_SIZE];
 	static int payloadBufferPos = 0;
 
-	static recursive_mutex crcLock;
-	static condition_variable crcCond;
+	static std::mutex crcLock;
+	static std::condition_variable crcCond;
 	static std::string crcFilename;
 	static std::map<std::string, u32> crcResults;
 
@@ -105,7 +107,7 @@ namespace Reporting
 		delete blockDevice;
 		delete fileLoader;
 
-		lock_guard guard(crcLock);
+		std::lock_guard<std::mutex> guard(crcLock);
 		crcResults[crcFilename] = crc;
 		crcCond.notify_one();
 
@@ -113,7 +115,7 @@ namespace Reporting
 	}
 
 	void QueueCRC() {
-		lock_guard guard(crcLock);
+		std::lock_guard<std::mutex> guard(crcLock);
 
 		const std::string &gamePath = PSP_CoreParameter().fileToStart;
 		auto it = crcResults.find(gamePath);
@@ -137,10 +139,10 @@ namespace Reporting
 		const std::string &gamePath = PSP_CoreParameter().fileToStart;
 		QueueCRC();
 
-		lock_guard guard(crcLock);
+		std::unique_lock<std::mutex> guard(crcLock);
 		auto it = crcResults.find(gamePath);
 		while (it == crcResults.end()) {
-			crcCond.wait(crcLock);
+			crcCond.wait(guard);
 			it = crcResults.find(gamePath);
 		}
 
@@ -217,7 +219,6 @@ namespace Reporting
 	bool SendReportRequest(const char *uri, const std::string &data, const std::string &mimeType, Buffer *output = NULL)
 	{
 		bool result = false;
-		net::AutoInit netInit;
 		http::Client http;
 		Buffer theVoid;
 
@@ -270,6 +271,8 @@ namespace Reporting
 		return "DragonFly";
 #elif defined(__FreeBSD__)
 		return "FreeBSD";
+#elif defined(__FreeBSD_kernel__) && defined(__GLIBC__)
+		return "GNU/kFreeBSD";
 #elif defined(__NetBSD__)
 		return "NetBSD";
 #elif defined(__OpenBSD__)
@@ -361,13 +364,10 @@ namespace Reporting
 		// Just to get an idea of how long they played.
 		postdata.Add("ticks", (const uint64_t)CoreTiming::GetTicks());
 
-		if (g_Config.iShowFPSCounter && g_Config.iShowFPSCounter < 4)
-		{
-			float vps, fps;
-			__DisplayGetAveragedFPS(&vps, &fps);
-			postdata.Add("vps", vps);
-			postdata.Add("fps", fps);
-		}
+		float vps, fps;
+		__DisplayGetAveragedFPS(&vps, &fps);
+		postdata.Add("vps", vps);
+		postdata.Add("fps", fps);
 
 		postdata.Add("savestate_used", SaveState::HasLoadedState());
 	}
@@ -453,14 +453,11 @@ namespace Reporting
 	bool IsSupported()
 	{
 		// Disabled when using certain hacks, because they make for poor reports.
-		if (g_Config.iRenderingMode >= FBO_READFBOMEMORY_MIN)
-			return false;
 		if (g_Config.bTimerHack)
 			return false;
 		if (CheatsInEffect())
 			return false;
-		// Not sure if we should support locked cpu at all, but definitely not far out values.
-		if (g_Config.iLockedCPUSpeed != 0 && (g_Config.iLockedCPUSpeed < 111 || g_Config.iLockedCPUSpeed > 333))
+		if (g_Config.iLockedCPUSpeed != 0)
 			return false;
 		// Don't allow builds without version info from git.  They're useless for reporting.
 		if (strcmp(PPSSPP_GIT_VERSION, "unknown") == 0)
@@ -507,18 +504,18 @@ namespace Reporting
 		g_Config.sReportHost = "default";
 	}
 
-	Status GetStatus()
+	ReportStatus GetStatus()
 	{
 		if (!serverWorking)
-			return Status::FAILING;
+			return ReportStatus::FAILING;
 
 		for (int pos = 0; pos < PAYLOAD_BUFFER_SIZE; ++pos)
 		{
 			if (payloadBuffer[pos].type != RequestType::NONE)
-				return Status::BUSY;
+				return ReportStatus::BUSY;
 		}
 
-		return Status::WORKING;
+		return ReportStatus::WORKING;
 	}
 
 	int NextFreePos()

@@ -1,12 +1,14 @@
 #include <functional>
 #include <set>
+#include <mutex>
 
 #include "base/logging.h"
-#include "base/mutex.h"
 #include "base/stringutil.h"
 #include "base/timeutil.h"
 #include "input/keycodes.h"
+#include "math/curves.h"
 #include "ui/ui_context.h"
+#include "ui/ui_tween.h"
 #include "ui/view.h"
 #include "ui/viewgroup.h"
 #include "gfx_es2/draw_buffer.h"
@@ -17,22 +19,9 @@ namespace UI {
 
 const float ITEM_HEIGHT = 64.f;
 
-static recursive_mutex focusLock;
+static std::mutex focusLock;
 static std::vector<int> focusMoves;
 extern bool focusForced;
-bool dragCaptured[MAX_POINTERS];
-
-void CaptureDrag(int id) {
-	dragCaptured[id] = true;
-}
-
-void ReleaseDrag(int id) {
-	dragCaptured[id] = false;
-}
-
-bool IsDragCaptured(int id) {
-	return dragCaptured[id];
-}
 
 void ApplyGravity(const Bounds outer, const Margins &margins, float w, float h, int gravity, Bounds &inner) {
 	inner.w = w;
@@ -57,7 +46,7 @@ ViewGroup::~ViewGroup() {
 }
 
 void ViewGroup::RemoveSubview(View *view) {
-	lock_guard guard(modifyLock_);
+	std::lock_guard<std::mutex> guard(modifyLock_);
 	for (size_t i = 0; i < views_.size(); i++) {
 		if (views_[i] == view) {
 			views_.erase(views_.begin() + i);
@@ -68,7 +57,7 @@ void ViewGroup::RemoveSubview(View *view) {
 }
 
 void ViewGroup::Clear() {
-	lock_guard guard(modifyLock_);
+	std::lock_guard<std::mutex> guard(modifyLock_);
 	for (size_t i = 0; i < views_.size(); i++) {
 		delete views_[i];
 		views_[i] = nullptr;
@@ -77,7 +66,7 @@ void ViewGroup::Clear() {
 }
 
 void ViewGroup::PersistData(PersistStatus status, std::string anonId, PersistMap &storage) {
-	lock_guard guard(modifyLock_);
+	std::lock_guard<std::mutex> guard(modifyLock_);
 
 	std::string tag = Tag();
 	if (tag.empty()) {
@@ -91,7 +80,7 @@ void ViewGroup::PersistData(PersistStatus status, std::string anonId, PersistMap
 }
 
 void ViewGroup::Touch(const TouchInput &input) {
-	lock_guard guard(modifyLock_);
+	std::lock_guard<std::mutex> guard(modifyLock_);
 	for (auto iter = views_.begin(); iter != views_.end(); ++iter) {
 		// TODO: If there is a transformation active, transform input coordinates accordingly.
 		if ((*iter)->GetVisibility() == V_VISIBLE)
@@ -109,7 +98,7 @@ void ViewGroup::Query(float x, float y, std::vector<View *> &list) {
 }
 
 bool ViewGroup::Key(const KeyInput &input) {
-	lock_guard guard(modifyLock_);
+	std::lock_guard<std::mutex> guard(modifyLock_);
 	bool ret = false;
 	for (auto iter = views_.begin(); iter != views_.end(); ++iter) {
 		// TODO: If there is a transformation active, transform input coordinates accordingly.
@@ -120,7 +109,7 @@ bool ViewGroup::Key(const KeyInput &input) {
 }
 
 void ViewGroup::Axis(const AxisInput &input) {
-	lock_guard guard(modifyLock_);
+	std::lock_guard<std::mutex> guard(modifyLock_);
 	for (auto iter = views_.begin(); iter != views_.end(); ++iter) {
 		// TODO: If there is a transformation active, transform input coordinates accordingly.
 		if ((*iter)->GetVisibility() == V_VISIBLE)
@@ -128,14 +117,28 @@ void ViewGroup::Axis(const AxisInput &input) {
 	}
 }
 
+void ViewGroup::DeviceLost() {
+	std::lock_guard<std::mutex> guard(modifyLock_);
+	for (auto iter = views_.begin(); iter != views_.end(); ++iter) {
+		(*iter)->DeviceLost();
+	}
+}
+
+void ViewGroup::DeviceRestored(Draw::DrawContext *draw) {
+	std::lock_guard<std::mutex> guard(modifyLock_);
+	for (auto iter = views_.begin(); iter != views_.end(); ++iter) {
+		(*iter)->DeviceRestored(draw);
+	}
+}
+
 void ViewGroup::Draw(UIContext &dc) {
 	if (hasDropShadow_) {
 		// Darken things behind.
-		dc.FillRect(UI::Drawable(0x60000000), dc.GetBounds());
-		float dropsize = 30;
+		dc.FillRect(UI::Drawable(0x60000000), dc.GetBounds().Expand(dropShadowExpand_));
+		float dropsize = 30.0f;
 		dc.Draw()->DrawImage4Grid(dc.theme->dropShadow4Grid,
 			bounds_.x - dropsize, bounds_.y,
-			bounds_.x2() + dropsize, bounds_.y2()+dropsize*1.5, 0xDF000000, 3.0f);
+			bounds_.x2() + dropsize, bounds_.y2()+dropsize*1.5f, 0xDF000000, 3.0f);
 	}
 
 	if (clip_) {
@@ -143,12 +146,11 @@ void ViewGroup::Draw(UIContext &dc) {
 	}
 
 	dc.FillRect(bg_, bounds_);
-	for (auto iter = views_.begin(); iter != views_.end(); ++iter) {
-		// TODO: If there is a transformation active, transform input coordinates accordingly.
-		if ((*iter)->GetVisibility() == V_VISIBLE) {
+	for (View *view : views_) {
+		if (view->GetVisibility() == V_VISIBLE) {
 			// Check if bounds are in current scissor rectangle.
-			if (dc.GetScissorBounds().Intersects((*iter)->GetBounds()))
-				(*iter)->Draw(dc);
+			if (dc.GetScissorBounds().Intersects(dc.TransformBounds(view->GetBounds())))
+				view->Draw(dc);
 		}
 	}
 	if (clip_) {
@@ -156,16 +158,16 @@ void ViewGroup::Draw(UIContext &dc) {
 	}
 }
 
-void ViewGroup::Update(const InputState &input_state) {
-	for (auto iter = views_.begin(); iter != views_.end(); ++iter) {
-		// TODO: If there is a transformation active, transform input coordinates accordingly.
-		if ((*iter)->GetVisibility() != V_GONE)
-			(*iter)->Update(input_state);
+void ViewGroup::Update() {
+	View::Update();
+	for (View *view : views_) {
+		if (view->GetVisibility() != V_GONE)
+			view->Update();
 	}
 }
 
 bool ViewGroup::SetFocus() {
-	lock_guard guard(modifyLock_);
+	std::lock_guard<std::mutex> guard(modifyLock_);
 	if (!CanBeFocused() && !views_.empty()) {
 		for (size_t i = 0; i < views_.size(); i++) {
 			if (views_[i]->SetFocus())
@@ -425,11 +427,19 @@ void LinearLayout::Measure(const UIContext &dc, MeasureSpec horiz, MeasureSpec v
 			if (v.type == UNSPECIFIED && measuredHeight_ != 0.0f)
 				v = MeasureSpec(AT_MOST, measuredHeight_);
 			view->Measure(dc, MeasureSpec(UNSPECIFIED, measuredWidth_), v - (float)margins.vert());
+			if (horiz.type == AT_MOST && view->GetMeasuredWidth() + margins.horiz() > horiz.size - weightZeroSum) {
+				// Try again, this time with AT_MOST.
+				view->Measure(dc, horiz, v - (float)margins.vert());
+			}
 		} else if (orientation_ == ORIENT_VERTICAL) {
 			MeasureSpec h = horiz;
 			if (h.type == UNSPECIFIED && measuredWidth_ != 0.0f)
 				h = MeasureSpec(AT_MOST, measuredWidth_);
 			view->Measure(dc, h - (float)margins.horiz(), MeasureSpec(UNSPECIFIED, measuredHeight_));
+			if (vert.type == AT_MOST && view->GetMeasuredHeight() + margins.vert() > vert.size - weightZeroSum) {
+				// Try again, this time with AT_MOST.
+				view->Measure(dc, h - (float)margins.horiz(), vert);
+			}
 		}
 
 		float amount;
@@ -465,7 +475,6 @@ void LinearLayout::Measure(const UIContext &dc, MeasureSpec horiz, MeasureSpec v
 			allowedWidth = horiz.size;
 		}
 
-		float unit = (allowedWidth - weightZeroSum) / weightSum;
 		float usedWidth = 0.0f;
 
 		// Redistribute the stretchy ones! and remeasure the children!
@@ -481,6 +490,7 @@ void LinearLayout::Measure(const UIContext &dc, MeasureSpec horiz, MeasureSpec v
 				MeasureSpec v = vert;
 				if (v.type == UNSPECIFIED && measuredHeight_ != 0.0f)
 					v = MeasureSpec(AT_MOST, measuredHeight_);
+				float unit = (allowedWidth - weightZeroSum) / weightSum;
 				MeasureSpec h(AT_MOST, unit * linLayoutParams->weight - margins.horiz());
 				if (horiz.type == EXACTLY) {
 					h.type = EXACTLY;
@@ -506,7 +516,6 @@ void LinearLayout::Measure(const UIContext &dc, MeasureSpec horiz, MeasureSpec v
 			allowedHeight = vert.size;
 		}
 
-		float unit = (allowedHeight - weightZeroSum) / weightSum;
 		float usedHeight = 0.0f;
 
 		// Redistribute the stretchy ones! and remeasure the children!
@@ -522,6 +531,7 @@ void LinearLayout::Measure(const UIContext &dc, MeasureSpec horiz, MeasureSpec v
 				MeasureSpec h = horiz;
 				if (h.type == UNSPECIFIED && measuredWidth_ != 0.0f)
 					h = MeasureSpec(AT_MOST, measuredWidth_);
+				float unit = (allowedHeight - weightZeroSum) / weightSum;
 				MeasureSpec v(AT_MOST, unit * linLayoutParams->weight - margins.vert());
 				if (vert.type == EXACTLY) {
 					v.type = EXACTLY;
@@ -640,14 +650,14 @@ void ScrollView::Measure(const UIContext &dc, MeasureSpec horiz, MeasureSpec ver
 	if (views_.size()) {
 		if (orientation_ == ORIENT_HORIZONTAL) {
 			MeasureSpec v = MeasureSpec(AT_MOST, measuredHeight_ - margins.vert());
-			if (measuredHeight_ == 0.0f && layoutParams_->height == WRAP_CONTENT) {
+			if (measuredHeight_ == 0.0f && (vert.type == UNSPECIFIED || layoutParams_->height == WRAP_CONTENT)) {
 				v.type = UNSPECIFIED;
 			}
 			views_[0]->Measure(dc, MeasureSpec(UNSPECIFIED, measuredWidth_), v);
 			MeasureBySpec(layoutParams_->height, views_[0]->GetMeasuredHeight(), vert, &measuredHeight_);
 		} else {
 			MeasureSpec h = MeasureSpec(AT_MOST, measuredWidth_ - margins.horiz());
-			if (measuredWidth_ == 0.0f && layoutParams_->width == WRAP_CONTENT) {
+			if (measuredWidth_ == 0.0f && (horiz.type == UNSPECIFIED || layoutParams_->width == WRAP_CONTENT)) {
 				h.type = UNSPECIFIED;
 			}
 			views_[0]->Measure(dc, h, MeasureSpec(UNSPECIFIED, measuredHeight_));
@@ -741,25 +751,27 @@ const float friction = 0.92f;
 const float stop_threshold = 0.1f;
 
 void ScrollView::Touch(const TouchInput &input) {
-	if ((input.flags & TOUCH_DOWN) && input.id == 0) {
+	if ((input.flags & TOUCH_DOWN) && scrollTouchId_ == -1) {
 		scrollStart_ = scrollPos_;
 		inertia_ = 0.0f;
+		scrollTouchId_ = input.id;
 	}
 
 	Gesture gesture = orientation_ == ORIENT_VERTICAL ? GESTURE_DRAG_VERTICAL : GESTURE_DRAG_HORIZONTAL;
 
-	if (input.flags & TOUCH_UP) {
+	if ((input.flags & TOUCH_UP) && input.id == scrollTouchId_) {
 		float info[4];
-		if (!IsDragCaptured(input.id) && gesture_.GetGestureInfo(gesture, info)) {
+		if (gesture_.GetGestureInfo(gesture, input.id, info)) {
 			inertia_ = info[1];
 		}
+		scrollTouchId_ = -1;
 	}
 
 	TouchInput input2;
-	if (CanScroll() && !IsDragCaptured(input.id)) {
+	if (CanScroll()) {
 		input2 = gesture_.Update(input, bounds_);
 		float info[4];
-		if (gesture_.GetGestureInfo(gesture, info) && !(input.flags & TOUCH_DOWN)) {
+		if (input.id == scrollTouchId_ && gesture_.GetGestureInfo(gesture, input.id, info) && !(input.flags & TOUCH_DOWN)) {
 			float pos = scrollStart_ - info[0];
 			scrollPos_ = pos;
 			scrollTarget_ = pos;
@@ -895,7 +907,7 @@ float ScrollView::ClampedScrollPos(float pos) {
 
 	Gesture gesture = orientation_ == ORIENT_VERTICAL ? GESTURE_DRAG_VERTICAL : GESTURE_DRAG_HORIZONTAL;
 
-	if (gesture_.IsGestureActive(gesture)) {
+	if (scrollTouchId_ >= 0 && gesture_.IsGestureActive(gesture, scrollTouchId_) && bounds_.h > 0) {
 		float maxPull = bounds_.h * 0.1f;
 		if (pos < 0.0f) {
 			float dist = std::min(-pos * (1.0f / bounds_.h), 1.0f);
@@ -938,11 +950,11 @@ bool ScrollView::CanScroll() const {
 	}
 }
 
-void ScrollView::Update(const InputState &input_state) {
+void ScrollView::Update() {
 	if (visibility_ != V_VISIBLE) {
 		inertia_ = 0.0f;
 	}
-	ViewGroup::Update(input_state);
+	ViewGroup::Update();
 
 	Gesture gesture = orientation_ == ORIENT_VERTICAL ? GESTURE_DRAG_VERTICAL : GESTURE_DRAG_HORIZONTAL;
 	gesture_.UpdateFrame();
@@ -956,14 +968,14 @@ void ScrollView::Update(const InputState &input_state) {
 		} else {
 			scrollPos_ += (target - scrollPos_) * 0.3f;
 		}
-	} else if (inertia_ != 0.0f && !gesture_.IsGestureActive(gesture)) {
+	} else if (inertia_ != 0.0f && !gesture_.IsGestureActive(gesture, scrollTouchId_)) {
 		scrollPos_ -= inertia_;
 		inertia_ *= friction;
 		if (fabsf(inertia_) < stop_threshold)
 			inertia_ = 0.0f;
 	}
 
-	if (!gesture_.IsGestureActive(gesture)) {
+	if (!gesture_.IsGestureActive(gesture, scrollTouchId_)) {
 		scrollPos_ = ClampedScrollPos(scrollPos_);
 
 		pull_ *= friction;
@@ -977,6 +989,19 @@ void AnchorLayout::Measure(const UIContext &dc, MeasureSpec horiz, MeasureSpec v
 	MeasureBySpec(layoutParams_->width, 0.0f, horiz, &measuredWidth_);
 	MeasureBySpec(layoutParams_->height, 0.0f, vert, &measuredHeight_);
 
+	MeasureViews(dc, horiz, vert);
+
+	const bool unspecifiedWidth = layoutParams_->width == WRAP_CONTENT && (overflow_ || horiz.type == UNSPECIFIED);
+	const bool unspecifiedHeight = layoutParams_->height == WRAP_CONTENT && (overflow_ || vert.type == UNSPECIFIED);
+	if (unspecifiedWidth || unspecifiedHeight) {
+		// Give everything another chance to size, given the new measurements.
+		MeasureSpec h = unspecifiedWidth ? MeasureSpec(AT_MOST, measuredWidth_) : horiz;
+		MeasureSpec v = unspecifiedHeight ? MeasureSpec(AT_MOST, measuredHeight_) : vert;
+		MeasureViews(dc, h, v);
+	}
+}
+
+void AnchorLayout::MeasureViews(const UIContext &dc, MeasureSpec horiz, MeasureSpec vert) {
 	for (size_t i = 0; i < views_.size(); i++) {
 		Size width = WRAP_CONTENT;
 		Size height = WRAP_CONTENT;
@@ -999,10 +1024,10 @@ void AnchorLayout::Measure(const UIContext &dc, MeasureSpec horiz, MeasureSpec v
 			height = params->height;
 
 			if (!params->center) {
-				if (params->left >= 0 && params->right >= 0) {
+				if (params->left > NONE && params->right > NONE) {
 					width = measuredWidth_ - params->left - params->right;
 				}
-				if (params->top >= 0 && params->bottom >= 0) {
+				if (params->top > NONE && params->bottom > NONE) {
 					height = measuredHeight_ - params->top - params->bottom;
 				}
 			}
@@ -1015,6 +1040,11 @@ void AnchorLayout::Measure(const UIContext &dc, MeasureSpec horiz, MeasureSpec v
 		}
 
 		views_[i]->Measure(dc, specW, specH);
+
+		if (layoutParams_->width == WRAP_CONTENT)
+			measuredWidth_ = std::max(measuredWidth_, views_[i]->GetMeasuredWidth());
+		if (layoutParams_->height == WRAP_CONTENT)
+			measuredHeight_ = std::max(measuredHeight_, views_[i]->GetMeasuredHeight());
 	}
 }
 
@@ -1039,22 +1069,22 @@ void AnchorLayout::Layout() {
 			center = params->center;
 		}
 
-		if (left >= 0) {
+		if (left > NONE) {
 			vBounds.x = bounds_.x + left;
 			if (center)
 				vBounds.x -= vBounds.w * 0.5f;
-		} else if (right >= 0) {
+		} else if (right > NONE) {
 			vBounds.x = bounds_.x2() - right - vBounds.w;
 			if (center) {
 				vBounds.x += vBounds.w * 0.5f;
 			}
 		}
 
-		if (top >= 0) {
+		if (top > NONE) {
 			vBounds.y = bounds_.y + top;
 			if (center)
 				vBounds.y -= vBounds.h * 0.5f;
-		} else if (bottom >= 0) {
+		} else if (bottom > NONE) {
 			vBounds.y = bounds_.y2() - bottom - vBounds.h;
 			if (center)
 				vBounds.y += vBounds.h * 0.5f;
@@ -1115,10 +1145,7 @@ void GridLayout::Layout() {
 }
 
 TabHolder::TabHolder(Orientation orientation, float stripSize, LayoutParams *layoutParams)
-	: LinearLayout(Opposite(orientation), layoutParams),
-		tabStrip_(nullptr), tabScroll_(nullptr),
-		stripSize_(stripSize),
-		currentTab_(0) {
+	: LinearLayout(Opposite(orientation), layoutParams), stripSize_(stripSize) {
 	SetSpacing(0.0f);
 	if (orientation == ORIENT_HORIZONTAL) {
 		tabStrip_ = new ChoiceStrip(orientation, new LayoutParams(WRAP_CONTENT, WRAP_CONTENT));
@@ -1130,18 +1157,83 @@ TabHolder::TabHolder(Orientation orientation, float stripSize, LayoutParams *lay
 		tabStrip_ = new ChoiceStrip(orientation, new LayoutParams(stripSize, WRAP_CONTENT));
 		tabStrip_->SetTopTabs(true);
 		Add(tabStrip_);
-		tabScroll_ = nullptr;
 	}
 	tabStrip_->OnChoice.Handle(this, &TabHolder::OnTabClick);
+
+	contents_ = new AnchorLayout(new LinearLayoutParams(FILL_PARENT, FILL_PARENT, 1.0f));
+	Add(contents_)->SetClip(true);
+}
+
+void TabHolder::AddTabContents(const std::string &title, View *tabContents) {
+	tabContents->ReplaceLayoutParams(new AnchorLayoutParams(FILL_PARENT, FILL_PARENT));
+	tabs_.push_back(tabContents);
+	tabStrip_->AddChoice(title);
+	contents_->Add(tabContents);
+	if (tabs_.size() > 1)
+		tabContents->SetVisibility(V_GONE);
+
+	// Will be filled in later.
+	tabTweens_.push_back(nullptr);
+}
+
+void TabHolder::SetCurrentTab(int tab, bool skipTween) {
+	if (tab >= (int)tabs_.size()) {
+		// Ignore
+		return;
+	}
+
+	auto setupTween = [&](View *view, AnchorTranslateTween *&tween) {
+		if (tween)
+			return;
+
+		tween = new AnchorTranslateTween(0.15f, bezierEaseInOut);
+		tween->Finish.Add([&](EventParams &e) {
+			e.v->SetVisibility(tabs_[currentTab_] == e.v ? V_VISIBLE : V_GONE);
+			return EVENT_DONE;
+		});
+		view->AddTween(tween)->Persist();
+	};
+
+	if (tab != currentTab_) {
+		Orientation orient = Opposite(orientation_);
+		// Direction from which the new tab will come.
+		float dir = tab < currentTab_ ? -1.0f : 1.0f;
+
+		// First, setup any missing tweens.
+		setupTween(tabs_[currentTab_], tabTweens_[currentTab_]);
+		setupTween(tabs_[tab], tabTweens_[tab]);
+
+		// Currently displayed, so let's reset it.
+		if (skipTween) {
+			tabs_[currentTab_]->SetVisibility(V_GONE);
+			tabTweens_[tab]->Reset(Point(0.0f, 0.0f));
+			tabTweens_[tab]->Apply(tabs_[tab]);
+		} else {
+			tabTweens_[currentTab_]->Reset(Point(0.0f, 0.0f));
+
+			if (orient == ORIENT_HORIZONTAL) {
+				tabTweens_[tab]->Reset(Point(bounds_.w * dir, 0.0f));
+				tabTweens_[currentTab_]->Divert(Point(bounds_.w * -dir, 0.0f));
+			} else {
+				tabTweens_[tab]->Reset(Point(0.0f, bounds_.h * dir));
+				tabTweens_[currentTab_]->Divert(Point(0.0f, bounds_.h * -dir));
+			}
+			// Actually move it to the initial position now, just to avoid any flicker.
+			tabTweens_[tab]->Apply(tabs_[tab]);
+			tabTweens_[tab]->Divert(Point(0.0f, 0.0f));
+		}
+		tabs_[tab]->SetVisibility(V_VISIBLE);
+
+		currentTab_ = tab;
+	}
+	tabStrip_->SetSelection(tab);
 }
 
 EventReturn TabHolder::OnTabClick(EventParams &e) {
 	// We have e.b set when it was an explicit click action.
 	// In that case, we make the view gone and then visible - this scrolls scrollviews to the top.
-	if (currentTab_ != (int)e.a || e.b != 0) {
-		tabs_[currentTab_]->SetVisibility(V_GONE);
-		currentTab_ = e.a;
-		tabs_[currentTab_]->SetVisibility(V_VISIBLE);
+	if (e.b != 0) {
+		SetCurrentTab((int)e.a);
 	}
 	return EVENT_DONE;
 }
@@ -1163,7 +1255,7 @@ void TabHolder::PersistData(PersistStatus status, std::string anonId, PersistMap
 
 	case PERSIST_RESTORE:
 		if (buffer.size() == 1) {
-			SetCurrentTab(buffer[0]);
+			SetCurrentTab(buffer[0], true);
 		}
 		break;
 	}
@@ -1206,7 +1298,7 @@ EventReturn ChoiceStrip::OnChoiceClick(EventParams &e) {
 		}
 	}
 
-	EventParams e2;
+	EventParams e2{};
 	e2.v = views_[selected_];
 	e2.a = selected_;
 	// Set to 1 to indicate an explicit click.
@@ -1226,7 +1318,7 @@ void ChoiceStrip::SetSelection(int sel) {
 		newChoice->Press();
 
 		if (topTabs_ && prevSelected != selected_) {
-			EventParams e;
+			EventParams e{};
 			e.v = views_[selected_];
 			e.a = selected_;
 			// Set to 0 to indicate a selection change (not a click.)
@@ -1285,7 +1377,7 @@ void ListView::CreateAllItems() {
 	// Let's not be clever yet, we'll just create them all up front and add them all in.
 	for (int i = 0; i < adaptor_->GetNumItems(); i++) {
 		if (hidden_.find(i) == hidden_.end()) {
-			View * v = linLayout_->Add(adaptor_->CreateItemView(i));
+			View *v = linLayout_->Add(adaptor_->CreateItemView(i));
 			adaptor_->AddEventCallback(v, std::bind(&ListView::OnItemCallback, this, i, std::placeholders::_1));
 		}
 	}
@@ -1299,15 +1391,12 @@ void ListView::Measure(const UIContext &dc, MeasureSpec horiz, MeasureSpec vert)
 }
 
 EventReturn ListView::OnItemCallback(int num, EventParams &e) {
-	EventParams ev;
-	ev.v = 0;
+	EventParams ev{};
+	ev.v = nullptr;
 	ev.a = num;
 	adaptor_->SetSelected(num);
-	View *focused = GetFocusedView();
 	OnChoice.Trigger(ev);
 	CreateAllItems();
-	if (focused)
-		SetFocusedView(linLayout_->GetViewByIndex(num));
 	return EVENT_DONE;
 }
 
@@ -1394,7 +1483,7 @@ bool KeyEvent(const KeyInput &key, ViewGroup *root) {
 			}
 
 			heldKeys.insert(hk);
-			lock_guard lock(focusLock);
+			std::lock_guard<std::mutex> lock(focusLock);
 			focusMoves.push_back(key.keyCode);
 			retval = true;
 		}
@@ -1440,7 +1529,7 @@ restart:
 			key.flags = KEY_DOWN;
 			KeyEvent(key, root);
 
-			lock_guard lock(focusLock);
+			std::lock_guard<std::mutex> lock(focusLock);
 			focusMoves.push_back(key.keyCode);
 
 			// Cannot modify the current item when looping over a set, so let's do this instead.
@@ -1467,7 +1556,7 @@ bool AxisEvent(const AxisInput &axis, ViewGroup *root) {
 	return true;
 }
 
-void UpdateViewHierarchy(const InputState &input_state, ViewGroup *root) {
+void UpdateViewHierarchy(ViewGroup *root) {
 	ProcessHeldKeys(root);
 	frameCount++;
 
@@ -1477,10 +1566,12 @@ void UpdateViewHierarchy(const InputState &input_state, ViewGroup *root) {
 	}
 
 	if (focusMoves.size()) {
-		lock_guard lock(focusLock);
+		std::lock_guard<std::mutex> lock(focusLock);
 		EnableFocusMovement(true);
 		if (!GetFocusedView()) {
-			if (root->GetDefaultFocusView()) {
+			View *defaultView = root->GetDefaultFocusView();
+			// Can't focus what you can't see.
+			if (defaultView && defaultView->GetVisibility() == V_VISIBLE) {
 				root->GetDefaultFocusView()->SetFocus();
 			} else {
 				root->SetFocus();
@@ -1499,7 +1590,7 @@ void UpdateViewHierarchy(const InputState &input_state, ViewGroup *root) {
 		focusMoves.clear();
 	}
 
-	root->Update(input_state);
+	root->Update();
 	DispatchEvents();
 }
 

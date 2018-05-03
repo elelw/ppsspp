@@ -99,6 +99,8 @@ void HLEDoState(PointerWrap &p)
 	if (!s)
 		return;
 
+	// Can't be inside a syscall, reset this so errors aren't misleading.
+	latestSyscall = nullptr;
 	p.Do(delayedResultEvent);
 	CoreTiming::RestoreRegisterEvent(delayedResultEvent, "HLEDelayedResult", hleDelayResultFinish);
 }
@@ -175,24 +177,18 @@ const char *GetFuncName(const char *moduleName, u32 nib)
 	return temp;
 }
 
-u32 GetSyscallOp(const char *moduleName, u32 nib)
-{
+u32 GetSyscallOp(const char *moduleName, u32 nib) {
 	// Special case to hook up bad imports.
-	if (moduleName == NULL)
-	{
+	if (moduleName == NULL) {
 		return (0x03FFFFCC);	// invalid syscall
 	}
 
 	int modindex = GetModuleIndex(moduleName);
-	if (modindex != -1)
-	{
+	if (modindex != -1) {
 		int funcindex = GetFuncIndex(modindex, nib);
-		if (funcindex != -1)
-		{
+		if (funcindex != -1) {
 			return (0x0000000c | (modindex<<18) | (funcindex<<6));
-		}
-		else
-		{
+		} else {
 			INFO_LOG(HLE, "Syscall (%s, %08x) unknown", moduleName, nib);
 			return (0x0003FFCC | (modindex<<18));  // invalid syscall
 		}
@@ -478,38 +474,37 @@ inline void CallSyscallWithoutFlags(const HLEFunction *info)
 		SetDeadbeefRegs();
 }
 
-const HLEFunction *GetSyscallInfo(MIPSOpcode op)
+const HLEFunction *GetSyscallFuncPointer(MIPSOpcode op)
 {
 	u32 callno = (op >> 6) & 0xFFFFF; //20 bits
 	int funcnum = callno & 0xFFF;
 	int modulenum = (callno & 0xFF000) >> 12;
 	if (funcnum == 0xfff) {
-		ERROR_LOG(HLE, "Unknown syscall: Module: %s", modulenum > (int) moduleDB.size() ? "(unknown)" : moduleDB[modulenum].name); 
+		ERROR_LOG(HLE, "Unknown syscall: Module: %s (module: %d func: %d)", modulenum > (int)moduleDB.size() ? "(unknown)" : moduleDB[modulenum].name, modulenum, funcnum);
 		return NULL;
 	}
 	if (modulenum >= (int)moduleDB.size()) {
-		ERROR_LOG(HLE, "Syscall had bad module number %i - probably executing garbage", modulenum);
+		ERROR_LOG(HLE, "Syscall had bad module number %d - probably executing garbage", modulenum);
 		return NULL;
 	}
 	if (funcnum >= moduleDB[modulenum].numFunctions) {
-		ERROR_LOG(HLE, "Syscall had bad function number %i in module %i - probably executing garbage", funcnum, modulenum);
+		ERROR_LOG(HLE, "Syscall had bad function number %d in module %d - probably executing garbage", funcnum, modulenum);
 		return NULL;
 	}
 	return &moduleDB[modulenum].funcTable[funcnum];
 }
 
-void *GetQuickSyscallFunc(MIPSOpcode op)
-{
-	// TODO: Clear jit cache on g_Config.bShowDebugStats change?
-	if (g_Config.bShowDebugStats)
-		return NULL;
+void *GetQuickSyscallFunc(MIPSOpcode op) {
+	if (coreCollectDebugStats)
+		return nullptr;
 
-	const HLEFunction *info = GetSyscallInfo(op);
+	const HLEFunction *info = GetSyscallFuncPointer(op);
 	if (!info || !info->func)
-		return NULL;
+		return nullptr;
+	DEBUG_LOG(HLE, "Compiling syscall to %s", info->name);
 
 	// TODO: Do this with a flag?
-	if (op == GetSyscallOp("FakeSysCalls", NID_IDLE))
+	if (op == idleOp)
 		return (void *)info->func;
 	if (info->flags != 0)
 		return (void *)&CallSyscallWithFlags;
@@ -525,14 +520,13 @@ void hleSetSteppingTime(double t)
 void CallSyscall(MIPSOpcode op)
 {
 	PROFILE_THIS_SCOPE("syscall");
-	double start = 0.0;  // need to initialize to fix the race condition where g_Config.bShowDebugStats is enabled in the middle of this func.
-	if (g_Config.bShowDebugStats)
-	{
+	double start = 0.0;  // need to initialize to fix the race condition where coreCollectDebugStats is enabled in the middle of this func.
+	if (coreCollectDebugStats) {
 		time_update();
 		start = time_now_d();
 	}
 
-	const HLEFunction *info = GetSyscallInfo(op);
+	const HLEFunction *info = GetSyscallFuncPointer(op);
 	if (!info) {
 		RETURN(SCE_KERNEL_ERROR_LIBRARY_NOT_YET_LINKED);
 		return;
@@ -551,8 +545,7 @@ void CallSyscall(MIPSOpcode op)
 		ERROR_LOG_REPORT(HLE, "Unimplemented HLE function %s", info->name ? info->name : "(\?\?\?)");
 	}
 
-	if (g_Config.bShowDebugStats)
-	{
+	if (coreCollectDebugStats) {
 		time_update();
 		u32 callno = (op >> 6) & 0xFFFFF; //20 bits
 		int funcnum = callno & 0xFFF;
@@ -644,7 +637,7 @@ size_t hleFormatLogArgs(char *message, size_t sz, const char *argmask) {
 		// TODO: Double?  Does it ever happen?
 
 		default:
-			_assert_msg_(HLE, false, "Invalid argmask character: %c", argmask[i]);
+			_dbg_assert_msg_(HLE, false, "Invalid argmask character: %c", argmask[i]);
 			APPEND_FMT(" -- invalid arg format: %c -- %08x", argmask[i], regval);
 			break;
 		}
@@ -665,11 +658,18 @@ size_t hleFormatLogArgs(char *message, size_t sz, const char *argmask) {
 
 void hleDoLogInternal(LogTypes::LOG_TYPE t, LogTypes::LOG_LEVELS level, u64 res, const char *file, int line, const char *reportTag, char retmask, const char *reason, const char *formatted_reason) {
 	char formatted_args[4096];
-	hleFormatLogArgs(formatted_args, sizeof(formatted_args), latestSyscall->argmask);
+	const char *funcName = "?";
+	u32 funcFlags = 0;
+	if (latestSyscall) {
+		hleFormatLogArgs(formatted_args, sizeof(formatted_args), latestSyscall->argmask);
 
-	// This acts as an override (for error returns which are usually hex.)
-	if (retmask == '\0')
-		retmask = latestSyscall->retmask;
+		// This acts as an override (for error returns which are usually hex.)
+		if (retmask == '\0')
+			retmask = latestSyscall->retmask;
+
+		funcName = latestSyscall->name;
+		funcFlags = latestSyscall->flags;
+	}
 
 	const char *fmt;
 	if (retmask == 'x') {
@@ -682,23 +682,23 @@ void hleDoLogInternal(LogTypes::LOG_TYPE t, LogTypes::LOG_LEVELS level, u64 res,
 		// TODO: For now, floats are just shown as bits.
 		fmt = "%s%08x=%s(%s)%s";
 	} else {
-		_assert_msg_(HLE, false, "Invalid return format: %c", retmask);
+		_dbg_assert_msg_(HLE, false, "Invalid return format: %c", retmask);
 		fmt = "%s%08llx=%s(%s)%s";
 	}
 
-	const char *kernelFlag = (latestSyscall->flags & HLE_KERNEL_SYSCALL) != 0 ? "K " : "";
-	GenericLog(level, t, file, line, fmt, kernelFlag, res, latestSyscall->name, formatted_args, formatted_reason);
+	const char *kernelFlag = (funcFlags & HLE_KERNEL_SYSCALL) != 0 ? "K " : "";
+	GenericLog(level, t, file, line, fmt, kernelFlag, res, funcName, formatted_args, formatted_reason);
 
 	if (reportTag != nullptr) {
 		// A blank string means always log, not just once.
 		if (reportTag[0] == '\0' || Reporting::ShouldLogOnce(reportTag)) {
 			// Here we want the original key, so that different args, etc. group together.
-			std::string key = std::string(kernelFlag) + std::string("%08x=") + latestSyscall->name + "(%s)";
+			std::string key = std::string(kernelFlag) + std::string("%08x=") + funcName + "(%s)";
 			if (reason != nullptr)
 				key += std::string(": ") + reason;
 
 			char formatted_message[8192];
-			snprintf(formatted_message, sizeof(formatted_message), fmt, kernelFlag, res, latestSyscall->name, formatted_args, formatted_reason);
+			snprintf(formatted_message, sizeof(formatted_message), fmt, kernelFlag, res, funcName, formatted_args, formatted_reason);
 			Reporting::ReportMessageFormatted(key.c_str(), formatted_message);
 		}
 	}

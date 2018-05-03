@@ -18,11 +18,12 @@
 #include "../Core/Host.h"
 #include "InputDevice.h"
 #include "KeyboardDevice.h"
+#include "Common/CommonWindows.h"
 #include <list>
 #include <memory>
 
-extern float mouseDeltaX;
-extern float mouseDeltaY;
+extern float g_mouseDeltaX;
+extern float g_mouseDeltaY;
 
 class GraphicsContext;
 
@@ -41,7 +42,7 @@ public:
 
 	// If returns false, will return a null context
 	bool InitGraphics(std::string *error_message, GraphicsContext **ctx) override;
-	void PollControllers(InputState &input_state) override;
+	void PollControllers() override;
 	void ShutdownGraphics() override;
 
 	void InitSound() override;
@@ -65,8 +66,7 @@ public:
 	bool CreateDesktopShortcut(std::string argumentPath, std::string title) override;
 
 	void NotifyUserMessage(const std::string &message, float duration = 1.0f, u32 color = 0x00FFFFFF, const char *id = nullptr) override;
-
-	void GoFullscreen(bool) override;
+	void SendUIMessage(const std::string &message, const std::string &value) override;
 
 	std::shared_ptr<KeyboardDevice> keyboard;
 

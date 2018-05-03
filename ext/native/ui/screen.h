@@ -14,17 +14,16 @@
 #pragma once
 
 #include <vector>
+#include <mutex>
 
 #include "base/basictypes.h"
 #include "base/logging.h"
-#include "base/mutex.h"
 #include "base/NativeApp.h"
+#include "input/input_state.h"
 
 namespace UI {
 	class View;
 }
-
-struct InputState;
 
 enum DialogResult {
 	DR_OK,
@@ -36,28 +35,31 @@ enum DialogResult {
 
 class ScreenManager;
 class UIContext;
-class Thin3DContext;
+
+namespace Draw {
+	class DrawContext;
+}
 
 class Screen {
 public:
-	Screen() : screenManager_(0) { }
+	Screen() : screenManager_(nullptr) { }
 	virtual ~Screen() {
-		screenManager_ = 0;
+		screenManager_ = nullptr;
 	}
 
 	virtual void onFinish(DialogResult reason) {}
-	virtual void update(InputState &input) {}
+	virtual void update() {}
 	virtual void preRender() {}
 	virtual void render() {}
 	virtual void postRender() {}
-	virtual void deviceLost() {}
-	virtual void deviceRestore() {}
 	virtual void resized() {}
 	virtual void dialogFinished(const Screen *dialog, DialogResult result) {}
 	virtual bool touch(const TouchInput &touch) { return false;  }
 	virtual bool key(const KeyInput &key) { return false; }
 	virtual bool axis(const AxisInput &touch) { return false; }
 	virtual void sendMessage(const char *msg, const char *value) {}
+	virtual void deviceLost() {}
+	virtual void deviceRestored() {}
 
 	virtual void RecreateViews() {}
 
@@ -72,6 +74,8 @@ public:
 
 	virtual bool isTransparent() const { return false; }
 	virtual bool isTopLevel() const { return false; }
+
+	virtual TouchInput transformTouch(const TouchInput &touch) { return touch; }
 
 private:
 	ScreenManager *screenManager_;
@@ -88,25 +92,33 @@ enum {
 	LAYER_TRANSPARENT = 2,
 };
 
+typedef void(*PostRenderCallback)(UIContext *ui, void *userdata);
+
 class ScreenManager {
 public:
 	ScreenManager();
 	virtual ~ScreenManager();
 
 	void switchScreen(Screen *screen);
-	void update(InputState &input);
+	void update();
 
 	void setUIContext(UIContext *context) { uiContext_ = context; }
 	UIContext *getUIContext() { return uiContext_; }
 
-	void setThin3DContext(Thin3DContext *context) { thin3DContext_ = context; }
-	Thin3DContext *getThin3DContext() { return thin3DContext_; }
+	void setDrawContext(Draw::DrawContext *context) { thin3DContext_ = context; }
+	Draw::DrawContext *getDrawContext() { return thin3DContext_; }
+
+	void setPostRenderCallback(PostRenderCallback cb, void *userdata) {
+		postRenderCb_ = cb;
+		postRenderUserdata_ = userdata;
+	}
 
 	void render();
 	void resized();
-	void deviceLost();
-	void deviceRestore();
 	void shutdown();
+
+	void deviceLost();
+	void deviceRestored();
 
 	// Push a dialog box in front. Currently 1-level only.
 	void push(Screen *screen, int layerFlags = 0);
@@ -116,6 +128,7 @@ public:
 
 	// Pops the dialog away.
 	void finishDialog(Screen *dialog, DialogResult result = DR_OK);
+	Screen *dialogParent(const Screen *dialog) const;
 
 	// Instant touch, separate from the update() mechanism.
 	bool touch(const TouchInput &touch);
@@ -127,7 +140,7 @@ public:
 
 	Screen *topScreen() const;
 
-	recursive_mutex inputLock_;
+	std::recursive_mutex inputLock_;
 
 private:
 	void pop();
@@ -136,7 +149,10 @@ private:
 
 	Screen *nextScreen_;
 	UIContext *uiContext_;
-	Thin3DContext *thin3DContext_;
+	Draw::DrawContext *thin3DContext_;
+
+	PostRenderCallback postRenderCb_ = nullptr;
+	void *postRenderUserdata_ = nullptr;
 
 	const Screen *dialogFinished_;
 	DialogResult dialogResult_;

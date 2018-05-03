@@ -39,7 +39,6 @@ public:
 	virtual ~ArmJit();
 
 	void DoState(PointerWrap &p) override;
-	void DoDummyState(PointerWrap &p) override;
 
 	const JitOptions &GetJitOptions() { return jo; }
 
@@ -169,13 +168,14 @@ public:
 	int Replace_fabsf() override;
 
 	JitBlockCache *GetBlockCache() override { return &blocks; }
+	JitBlockCacheDebugInterface *GetBlockCacheDebugInterface() override { return &blocks; }
 
 	std::vector<u32> SaveAndClearEmuHackOps() override { return blocks.SaveAndClearEmuHackOps(); }
 	void RestoreSavedEmuHackOps(std::vector<u32> saved) override { blocks.RestoreSavedEmuHackOps(saved); }
 
 	void ClearCache() override;
-	void InvalidateCache() override;
 	void InvalidateCacheAt(u32 em_address, int length = 4) override;
+	void UpdateFCR31() override;
 
 	void EatPrefix() override { js.EatPrefix(); }
 
@@ -203,7 +203,7 @@ private:
 	void WriteDownCountR(ArmGen::ARMReg reg);
 	void RestoreRoundingMode(bool force = false);
 	void ApplyRoundingMode(bool force = false);
-	void UpdateRoundingMode();
+	void UpdateRoundingMode(u32 fcr31 = -1);
 	void MovFromPC(ArmGen::ARMReg r);
 	void MovToPC(ArmGen::ARMReg r);
 
@@ -311,7 +311,6 @@ public:
 
 	const u8 *restoreRoundingMode;
 	const u8 *applyRoundingMode;
-	const u8 *updateRoundingMode;
 
 	const u8 *breakpointBailout;
 };

@@ -67,6 +67,9 @@ struct GPUStatistics {
 		numShaderSwitches = 0;
 		numFlushes = 0;
 		numTexturesDecoded = 0;
+		numReadbacks = 0;
+		numUploads = 0;
+		numClears = 0;
 		msProcessingDisplayLists = 0;
 		vertexGPUCycles = 0;
 		otherGPUCycles = 0;
@@ -85,6 +88,9 @@ struct GPUStatistics {
 	int numTextureSwitches;
 	int numShaderSwitches;
 	int numTexturesDecoded;
+	int numReadbacks;
+	int numUploads;
+	int numClears;
 	double msProcessingDisplayLists;
 	int vertexGPUCycles;
 	int otherGPUCycles;
@@ -98,7 +104,10 @@ extern GPUStatistics gpuStats;
 extern GPUInterface *gpu;
 extern GPUDebugInterface *gpuDebug;
 
-class Thin3DContext;
+namespace Draw {
+	class DrawContext;
+}
 
-bool GPU_Init(GraphicsContext *ctx, Thin3DContext *thin3d);
+bool GPU_Init(GraphicsContext *ctx, Draw::DrawContext *thin3d);
+bool GPU_IsReady();
 void GPU_Shutdown();

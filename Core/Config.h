@@ -21,7 +21,7 @@
 #include <map>
 #include <vector>
 
-#include "CommonTypes.h"
+#include "Common/CommonTypes.h"
 
 extern const char *PPSSPP_GIT_VERSION;
 
@@ -31,10 +31,10 @@ const int PSP_DEFAULT_FIRMWARE = 150;
 static const s8 VOLUME_OFF = 0;
 static const s8 VOLUME_MAX = 10;
 
-enum CPUCore {
-	CPU_CORE_INTERPRETER = 0,
-	CPU_CORE_JIT = 1,
-	CPU_CORE_IRJIT = 2,
+enum class CPUCore {
+	INTERPRETER = 0,
+	JIT = 1,
+	IR_JIT = 2,
 };
 
 enum {
@@ -56,12 +56,6 @@ enum class GPUBackend {
 	DIRECT3D9 = 1,
 	DIRECT3D11 = 2,
 	VULKAN = 3,
-};
-enum {
-	GPU_BACKEND_OPENGL = (int)GPUBackend::OPENGL,
-	GPU_BACKEND_DIRECT3D9 = (int)GPUBackend::DIRECT3D9,
-	GPU_BACKEND_DIRECT3D11 = (int)GPUBackend::DIRECT3D11,
-	GPU_BACKEND_VULKAN = (int)GPUBackend::VULKAN,
 };
 
 enum AudioBackendType {
@@ -105,6 +99,7 @@ public:
 	bool bUseFFV1;
 	bool bDumpFrames;
 	bool bDumpAudio;
+	bool bSaveLoadResetsAVdumping;
 	bool bEnableLogging;
 	bool bDumpDecryptedEboot;
 	bool bFullscreenOnDoubleclick;
@@ -113,7 +108,6 @@ public:
 	bool bTopMost;
 	std::string sFont;
 	bool bIgnoreWindowsKey;
-
 	bool bRestartRequired;
 #endif
 
@@ -122,6 +116,7 @@ public:
 #if !defined(MOBILE_DEVICE)
 	bool bPauseExitsEmulator;
 #endif
+	bool bPauseMenuExitsEmulator;
 	bool bPS3Controller;
 
 	// Core
@@ -131,9 +126,9 @@ public:
 	bool bCheckForNewVersion;
 	bool bForceLagSync;
 	bool bFuncReplacements;
+	bool bHideSlowWarnings;
+	bool bPreloadFunctions;
 
-	// Definitely cannot be changed while game is running.
-	bool bSeparateCPUThread;
 	bool bSeparateSASThread;
 	bool bSeparateIOThread;
 	int iIOTimingMethod;
@@ -141,6 +136,11 @@ public:
 	bool bAutoSaveSymbolMap;
 	bool bCacheFullIsoInRam;
 	int iRemoteISOPort;
+	std::string sLastRemoteISOServer;
+	int iLastRemoteISOPort;
+	bool bRemoteISOManual;
+	bool bRemoteShareOnStartup;
+	std::string sRemoteISOSubdir;
 	bool bMemStickInserted;
 
 	int iScreenRotation;  // The rotation angle of the PPSSPP UI. Only supported on Android and possibly other mobile platforms.
@@ -157,7 +157,7 @@ public:
 	bool bHardwareTransform; // only used in the GLES backend
 	bool bSoftwareSkinning;  // may speed up some games
 
-	int iRenderingMode; // 0 = non-buffered rendering 1 = buffered rendering 2 = Read Framebuffer to memory (CPU) 3 = Read Framebuffer to memory (GPU)
+	int iRenderingMode; // 0 = non-buffered rendering 1 = buffered rendering
 	int iTexFiltering; // 1 = off , 2 = nearest , 3 = linear , 4 = linear(CG)
 	int iBufFilter; // 1 = linear, 2 = nearest
 	int iSmallDisplayZoomType;  // Used to fit display into screen 0 = stretch, 1 = partial stretch, 2 = auto scaling, 3 = manual scaling.
@@ -165,6 +165,7 @@ public:
 	float fSmallDisplayOffsetY;
 	float fSmallDisplayZoomLevel; //This is used for zoom values, both in and out.
 	bool bImmersiveMode;  // Mode on Android Kitkat 4.4 that hides the back button etc.
+	bool bSustainedPerformanceMode;  // Android: Slows clocks down to avoid overheating/speed fluctuations.
 	bool bVSync;
 	int iFrameSkip;
 	bool bAutoFrameSkip;
@@ -185,11 +186,11 @@ public:
 	bool bTextureSecondaryCache;
 	bool bVertexDecoderJit;
 	bool bFullScreen;
+	bool bFullScreenMulti;
 	int iInternalResolution;  // 0 = Auto (native), 1 = 1x (480x272), 2 = 2x, 3 = 3x, 4 = 4x and so on.
 	int iAnisotropyLevel;  // 0 - 5, powers of 2: 0 = 1x = no aniso
 	int bHighQualityDepth;
 	bool bTrueColor;
-	bool bMipMap;
 	bool bReplaceTextures;
 	bool bSaveNewTextures;
 	int iTexScalingLevel; // 1 = off, 2 = 2x, ..., 5 = 5x
@@ -200,20 +201,22 @@ public:
 	int iMaxRecent;
 	int iCurrentStateSlot;
 	int iRewindFlipFrequency;
+	bool bEnableStateUndo;
 	bool bEnableAutoLoad;
 	bool bEnableCheats;
 	bool bReloadCheats;
 	int iCwCheatRefreshRate;
 	bool bDisableStencilTest;
-	bool bAlwaysDepthWrite;
 	int iBloomHack; //0 = off, 1 = safe, 2 = balanced, 3 = aggressive
 	bool bTimerHack;
 	bool bBlockTransferGPU;
 	bool bDisableSlowFramebufEffects;
 	bool bFragmentTestCache;
 	int iSplineBezierQuality; // 0 = low , 1 = Intermediate , 2 = High
+	bool bHardwareTessellation;
 	std::string sPostShaderName;  // Off for off.
 	bool bGfxDebugOutput;
+	bool bGfxDebugSplitSubmit;
 
 	// Sound
 	bool bEnableSound;
@@ -229,6 +232,37 @@ public:
 	bool bShowDebuggerOnLoad;
 	int iShowFPSCounter;
 
+	// TODO: Maybe move to a separate theme system.
+	uint32_t uItemStyleFg;
+	uint32_t uItemStyleBg;
+	uint32_t uItemFocusedStyleFg;
+	uint32_t uItemFocusedStyleBg;
+	uint32_t uItemDownStyleFg;
+	uint32_t uItemDownStyleBg;
+	uint32_t uItemDisabledStyleFg;
+	uint32_t uItemDisabledStyleBg;
+	uint32_t uItemHighlightedStyleFg;
+	uint32_t uItemHighlightedStyleBg;
+
+	uint32_t uButtonStyleFg;
+	uint32_t uButtonStyleBg;
+	uint32_t uButtonFocusedStyleFg;
+	uint32_t uButtonFocusedStyleBg;
+	uint32_t uButtonDownStyleFg;
+	uint32_t uButtonDownStyleBg;
+	uint32_t uButtonDisabledStyleFg;
+	uint32_t uButtonDisabledStyleBg;
+	uint32_t uButtonHighlightedStyleFg;
+	uint32_t uButtonHighlightedStyleBg;
+
+	uint32_t uHeaderStyleFg;
+	uint32_t uInfoStyleFg;
+	uint32_t uInfoStyleBg;
+	uint32_t uPopupTitleStyleFg;
+	uint32_t uPopupStyleFg;
+	uint32_t uPopupStyleBg;
+
+	bool bLogFrameDrops;
 	bool bShowDebugStats;
 	bool bShowAudioDebug;
 	bool bAudioResampler;
@@ -341,9 +375,8 @@ public:
 	int iCombokey3;
 	int iCombokey4;
 
-#if !defined(IOS)
+	// Ignored on iOS and other platforms that lack pause.
 	bool bShowTouchPause;
-#endif
 
 	bool bHapticFeedback;
 
@@ -352,23 +385,19 @@ public:
 	float fDInputAnalogInverseDeadzone;
 	float fDInputAnalogSensitivity;
 
+	// We also use the XInput settings as analog settings on other platforms like Android.
 	float fXInputAnalogDeadzone;
 	int iXInputAnalogInverseMode;
 	float fXInputAnalogInverseDeadzone;
 	float fXInputAnalogSensitivity;
 
 	float fAnalogLimiterDeadzone;
-	// GLES backend-specific hacks. Not saved to the ini file, do not add checkboxes. Will be made into
-	// proper options when good enough.
-	// PrescaleUV:
-	//   * Applies UV scale/offset when decoding verts. Get rid of some work in the vertex shader,
-	//     saves a uniform upload and is a prerequisite for future optimized hybrid
-	//     (SW skinning, HW transform) skinning.
-	//   * Still has major problems so off by default - need to store tex scale/offset per DeferredDrawCall,
-	//     which currently isn't done so if texscale/offset isn't static (like in Tekken 6) things go wrong.
-	bool bPrescaleUV;
-	bool bDisableAlphaTest;  // Helps PowerVR immensely, breaks some graphics
-	// End GLES hacks.
+
+	bool bMouseControl;
+	bool bMapMouse; // Workaround for mapping screen:|
+	bool bMouseConfine; // Trap inside the window.
+	float fMouseSensitivity;
+	float fMouseSmoothing;
 
 	// Use the hardware scaler to scale up the image to save fillrate. Similar to Windows' window size, really.
 	int iAndroidHwScale;  // 0 = device resolution. 1 = 480x272 (extended to correct aspect), 2 = 960x544 etc.
@@ -389,6 +418,7 @@ public:
 	int iButtonPreference;
 	int iLockParentalLevel;
 	bool bEncryptSave;
+	bool bSavedataUpgrade;
 
 	// Networking
 	bool bEnableWlan;
@@ -419,6 +449,7 @@ public:
 	bool bDisplayStatusBar;
 	bool bShowBottomTabTitles;
 	bool bShowDeveloperMenu;
+	bool bShowAllocatorDebug;
 	// Double edged sword: much easier debugging, but not accurate.
 	bool bSkipDeadbeefFilling;
 	bool bFuncHashMap;
@@ -486,7 +517,7 @@ private:
 };
 
 std::map<std::string, std::pair<std::string, int>> GetLangValuesMapping();
-const char *CreateRandMAC();
+std::string CreateRandMAC();
 
 // TODO: Find a better place for this.
 extern http::Downloader g_DownloadManager;

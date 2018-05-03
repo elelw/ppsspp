@@ -333,7 +333,6 @@ namespace MIPSComp {
 
 		case 53: // lvl/lvr.q - highly unusual
 		case 61: // svl/svr.q - highly unusual
-			logBlocks = 1;
 			DISABLE;
 			break;
 
@@ -485,7 +484,7 @@ namespace MIPSComp {
 		ApplyPrefixD(dregs, V_Single);
 	}
 
-	static const float MEMORY_ALIGNED16(vavg_table[4]) = { 1.0f, 1.0f / 2.0f, 1.0f / 3.0f, 1.0f / 4.0f };
+	alignas(16) static const float vavg_table[4] = { 1.0f, 1.0f / 2.0f, 1.0f / 3.0f, 1.0f / 4.0f };
 
 	void IRFrontend::Comp_Vhoriz(MIPSOpcode op) {
 		CONDITIONAL_DISABLE;
@@ -618,17 +617,16 @@ namespace MIPSComp {
 		GetVectorRegsPrefixD(dregs, sz, _VD);
 
 		u8 tempregs[4];
-		bool usingTemps = false;
 		for (int i = 0; i < n; i++) {
 			if (!IsOverlapSafe(dregs[i], n, sregs, n, tregs)) {
 				tempregs[i] = IRVTEMP_0 + i;
-				usingTemps = true;
 			} else {
 				tempregs[i] = dregs[i];
 			}
 		}
 
-		if (allowSIMD && sz == V_Quad && !usingTemps && IsConsecutive4(dregs) && IsConsecutive4(sregs) && IsConsecutive4(tregs)) {
+		// If all three are consecutive 4, we're safe regardless of if we use temps so we should not check that here.
+		if (allowSIMD && sz == V_Quad && IsConsecutive4(dregs) && IsConsecutive4(sregs) && IsConsecutive4(tregs)) {
 			IROp opFunc = IROp::Nop;
 			switch (op >> 26) {
 			case 24: //VFPU0
@@ -833,6 +831,8 @@ namespace MIPSComp {
 				ir.Write(IROp::FNeg, tempregs[i], tempregs[i]);
 				break;
 			case 28: // d[i] = 1.0f / expf(s[i] * (float)M_LOG2E); break; // vrexp2
+				DISABLE;
+				break;
 			default:
 				INVALIDOP;
 			}
@@ -1276,7 +1276,7 @@ namespace MIPSComp {
 		}
 		// Otherwise, n should already be ins + 1.
 		else if (n != ins + 1) {
-			DISABLE;
+			INVALIDOP;
 		}
 
 		u8 sregs[16], dregs[4], tregs[4];
@@ -1641,7 +1641,7 @@ namespace MIPSComp {
 		GetVectorRegsPrefixS(sregs, sz, _VS);
 		GetVectorRegsPrefixT(tregs, sz, _VT);
 
-		VCondition cond = (VCondition)(op & 0xF);
+		int cond = op & 0xF;
 		int mask = 0;
 		for (int i = 0; i < n; i++) {
 			ir.Write(IROp::FCmpVfpuBit, cond | (i << 4), sregs[i], tregs[i]);
@@ -1895,7 +1895,7 @@ namespace MIPSComp {
 		int n = GetNumVectorElements(sz);
 		if (n != 2 && n != 4) {
 			// Bad instructions
-			DISABLE;
+			INVALIDOP;
 		}
 
 		u8 sregs[4], dregs[4];
@@ -1927,7 +1927,7 @@ namespace MIPSComp {
 				ir.Write(IROp::FSub, tempregs[3], sregs[2], sregs[3]);
 			}
 		} else {
-			DISABLE;
+			INVALIDOP;
 		}
 
 		for (int i = 0; i < n; ++i) {

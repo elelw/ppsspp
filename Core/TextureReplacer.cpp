@@ -33,9 +33,9 @@
 static const std::string INI_FILENAME = "textures.ini";
 static const std::string NEW_TEXTURE_DIR = "new/";
 static const int VERSION = 1;
-static const int MAX_MIP_LEVELS = 64;
+static const int MAX_MIP_LEVELS = 12;  // 12 should be plenty, 8 is the max mip levels supported by the PSP.
 
-TextureReplacer::TextureReplacer() : enabled_(false), allowVideo_(false), hash_(ReplacedTextureHash::QUICK) {
+TextureReplacer::TextureReplacer() {
 	none_.alphaStatus_ = ReplacedTextureAlpha::UNKNOWN;
 }
 
@@ -47,9 +47,9 @@ void TextureReplacer::Init() {
 }
 
 void TextureReplacer::NotifyConfigChanged() {
-	gameID_ = g_paramSFO.GetValueString("DISC_ID");
+	gameID_ = g_paramSFO.GetDiscID();
 
-	enabled_ = !gameID_.empty() && (g_Config.bReplaceTextures || g_Config.bSaveNewTextures);
+	enabled_ = g_Config.bReplaceTextures || g_Config.bSaveNewTextures;
 	if (enabled_) {
 		basePath_ = GetSysDirectory(DIRECTORY_TEXTURES) + gameID_ + "/";
 
@@ -82,12 +82,27 @@ bool TextureReplacer::LoadIni() {
 		// TODO: crc32c.
 		if (strcasecmp(hash.c_str(), "quick") == 0) {
 			hash_ = ReplacedTextureHash::QUICK;
+		} else if (strcasecmp(hash.c_str(), "xxh32") == 0) {
+			hash_ = ReplacedTextureHash::XXH32;
+		} else if (strcasecmp(hash.c_str(), "xxh64") == 0) {
+			hash_ = ReplacedTextureHash::XXH64;
 		} else {
 			ERROR_LOG(G3D, "Unsupported hash type: %s", hash.c_str());
 			return false;
 		}
 
 		options->Get("video", &allowVideo_, false);
+		options->Get("ignoreAddress", &ignoreAddress_, false);
+		options->Get("reduceHash", &reduceHash_, false); // Multiplies sizeInRAM/bytesPerLine in XXHASH by 0.5
+		if (reduceHash_ && hash_ == ReplacedTextureHash::QUICK) {
+			reduceHash_ = false;
+			ERROR_LOG(G3D, "Texture Replacement: reduceHash option requires safer hash, use xxh32 or xxh64 instead.");
+		}
+
+		if (ignoreAddress_ && hash_ == ReplacedTextureHash::QUICK) {
+			ignoreAddress_ = false;
+			ERROR_LOG(G3D, "Texture Replacement: ignoreAddress option requires safer hash, use xxh32 or xxh64 instead.");
+		}
 
 		int version = 0;
 		if (options->Get("version", &version, 0) && version > VERSION) {
@@ -156,7 +171,7 @@ void TextureReplacer::ParseHashRange(const std::string &key, const std::string &
 		return;
 	}
 
-	const u64 rangeKey = ((u64)addr << 32) | (fromW << 16) | fromH;
+	const u64 rangeKey = ((u64)addr << 32) | ((u64)fromW << 16) | fromH;
 	hashranges_[rangeKey] = WidthHeightPair(toW, toH);
 }
 
@@ -171,20 +186,27 @@ u32 TextureReplacer::ComputeHash(u32 addr, int bufw, int w, int h, GETextureForm
 	}
 
 	const u8 *checkp = Memory::GetPointer(addr);
+	float reduceHashSize = 1.0;
+	if (reduceHash_)
+		reduceHashSize = 0.5;
 	if (bufw <= w) {
 		// We can assume the data is contiguous.  These are the total used pixels.
 		const u32 totalPixels = bufw * h + (w - bufw);
-		const u32 sizeInRAM = (textureBitsPerPixel[fmt] * totalPixels) / 8;
+		const u32 sizeInRAM = (textureBitsPerPixel[fmt] * totalPixels) / 8 * reduceHashSize;
 
 		switch (hash_) {
 		case ReplacedTextureHash::QUICK:
 			return StableQuickTexHash(checkp, sizeInRAM);
+		case ReplacedTextureHash::XXH32:
+			return DoReliableHash32(checkp, sizeInRAM, 0xBACD7814);
+		case ReplacedTextureHash::XXH64:
+			return DoReliableHash64(checkp, sizeInRAM, 0xBACD7814);
 		default:
 			return 0;
 		}
 	} else {
 		// We have gaps.  Let's hash each row and sum.
-		const u32 bytesPerLine = (textureBitsPerPixel[fmt] * w) / 8;
+		const u32 bytesPerLine = (textureBitsPerPixel[fmt] * w) / 8 * reduceHashSize;
 		const u32 stride = (textureBitsPerPixel[fmt] * bufw) / 8;
 
 		u32 result = 0;
@@ -192,6 +214,22 @@ u32 TextureReplacer::ComputeHash(u32 addr, int bufw, int w, int h, GETextureForm
 		case ReplacedTextureHash::QUICK:
 			for (int y = 0; y < h; ++y) {
 				u32 rowHash = StableQuickTexHash(checkp, bytesPerLine);
+				result = (result * 11) ^ rowHash;
+				checkp += stride;
+			}
+			break;
+
+		case ReplacedTextureHash::XXH32:
+			for (int y = 0; y < h; ++y) {
+				u32 rowHash = DoReliableHash32(checkp, bytesPerLine, 0xBACD7814);
+				result = (result * 11) ^ rowHash;
+				checkp += stride;
+			}
+			break;
+
+		case ReplacedTextureHash::XXH64:
+			for (int y = 0; y < h; ++y) {
+				u32 rowHash = DoReliableHash64(checkp, bytesPerLine, 0xBACD7814);
 				result = (result * 11) ^ rowHash;
 				checkp += stride;
 			}
@@ -229,6 +267,10 @@ void TextureReplacer::PopulateReplacement(ReplacedTexture *result, u64 cachekey,
 	int newH = h;
 	LookupHashRange(cachekey >> 32, newW, newH);
 
+	if (ignoreAddress_) {
+		cachekey = cachekey & 0xFFFFFFFFULL;
+	}
+
 	for (int i = 0; i < MAX_MIP_LEVELS; ++i) {
 		const std::string hashfile = LookupHashFile(cachekey, hash, i);
 		const std::string filename = basePath_ + hashfile;
@@ -247,18 +289,28 @@ void TextureReplacer::PopulateReplacement(ReplacedTexture *result, u64 cachekey,
 		png_image png = {};
 		png.version = PNG_IMAGE_VERSION;
 		FILE *fp = File::OpenCFile(filename, "rb");
+		bool bad = false;
 		if (png_image_begin_read_from_stdio(&png, fp)) {
 			// We pad files that have been hashrange'd so they are the same texture size.
 			level.w = (png.width * w) / newW;
 			level.h = (png.height * h) / newH;
-
-			result->levels_.push_back(level);
+			if (i != 0) {
+				// Check that the mipmap size is correct. Can't load mips of the wrong size.
+				if (level.w != (result->levels_[0].w >> i) || level.h != (result->levels_[0].h >> i)) {
+					WARN_LOG(G3D, "Replacement mipmap invalid: size=%dx%d, expected=%dx%d (level %d, '%s')", level.w, level.h, result->levels_[0].w >> i, result->levels_[0].h >> i, i, filename.c_str());
+					bad = true;
+				}
+			}
+			if (!bad)
+				result->levels_.push_back(level);
 		} else {
 			ERROR_LOG(G3D, "Could not load texture replacement info: %s - %s", filename.c_str(), png.message);
 		}
 		fclose(fp);
 
 		png_image_free(&png);
+		if (bad)
+			break;  // Don't try to load any more mips.
 #endif
 	}
 
@@ -269,18 +321,18 @@ void TextureReplacer::PopulateReplacement(ReplacedTexture *result, u64 cachekey,
 static bool WriteTextureToPNG(png_imagep image, const std::string &filename, int convert_to_8bit, const void *buffer, png_int_32 row_stride, const void *colormap) {
 	FILE *fp = File::OpenCFile(filename, "wb");
 	if (!fp) {
-		ERROR_LOG(COMMON, "Unable to open texture file for writing.");
+		ERROR_LOG(SYSTEM, "Unable to open texture file for writing.");
 		return false;
 	}
 
 	if (png_image_write_to_stdio(image, fp, convert_to_8bit, buffer, row_stride, colormap)) {
 		if (fclose(fp) != 0) {
-			ERROR_LOG(COMMON, "Texture file write failed.");
+			ERROR_LOG(SYSTEM, "Texture file write failed.");
 			return false;
 		}
 		return true;
 	} else {
-		ERROR_LOG(COMMON, "Texture PNG encode failed.");
+		ERROR_LOG(SYSTEM, "Texture PNG encode failed.");
 		fclose(fp);
 		remove(filename.c_str());
 		return false;
@@ -294,15 +346,19 @@ void TextureReplacer::NotifyTextureDecoded(const ReplacedTextureDecodeInfo &repl
 		// Ignore.
 		return;
 	}
-	if (replacedInfo.addr > 0x05000000 && replacedInfo.addr < 0x08800000) {
+	if (replacedInfo.addr > 0x05000000 && replacedInfo.addr < PSP_GetKernelMemoryEnd()) {
 		// Don't save the PPGe texture.
 		return;
 	}
 	if (replacedInfo.isVideo && !allowVideo_) {
 		return;
 	}
+	u64 cachekey = replacedInfo.cachekey;
+	if (ignoreAddress_) {
+		cachekey = cachekey & 0xFFFFFFFFULL;
+	}
 
-	std::string hashfile = LookupHashFile(replacedInfo.cachekey, replacedInfo.hash, level);
+	std::string hashfile = LookupHashFile(cachekey, replacedInfo.hash, level);
 	const std::string filename = basePath_ + hashfile;
 	const std::string saveFilename = basePath_ + NEW_TEXTURE_DIR + hashfile;
 
@@ -312,7 +368,7 @@ void TextureReplacer::NotifyTextureDecoded(const ReplacedTextureDecodeInfo &repl
 		return;
 	}
 
-	ReplacementCacheKey replacementKey(replacedInfo.cachekey, replacedInfo.hash);
+	ReplacementCacheKey replacementKey(cachekey, replacedInfo.hash);
 	auto it = savedCache_.find(replacementKey);
 	if (it != savedCache_.end() && File::Exists(saveFilename)) {
 		// We've already saved this texture.  Let's only save if it's bigger (e.g. scaled now.)
@@ -411,9 +467,17 @@ std::string TextureReplacer::LookupHashFile(u64 cachekey, u32 hash, int level) {
 	auto alias = aliases_.find(key);
 	if (alias == aliases_.end()) {
 		// Also check for a few more aliases with zeroed portions:
-		// No data hash.
+		// Only clut hash (very dangerous in theory, in practice not more than missing "just" data hash)
+		key.cachekey = cachekey & 0xFFFFFFFFULL;
 		key.hash = 0;
 		alias = aliases_.find(key);
+
+		if (!ignoreAddress_ && alias == aliases_.end()) {
+			// No data hash.
+			key.cachekey = cachekey;
+			key.hash = 0;
+			alias = aliases_.find(key);
+		}
 
 		if (alias == aliases_.end()) {
 			// No address.
@@ -422,7 +486,7 @@ std::string TextureReplacer::LookupHashFile(u64 cachekey, u32 hash, int level) {
 			alias = aliases_.find(key);
 		}
 
-		if (alias == aliases_.end()) {
+		if (!ignoreAddress_ && alias == aliases_.end()) {
 			// Address, but not clut hash (in case of garbage clut data.)
 			key.cachekey = cachekey & ~0xFFFFFFFFULL;
 			key.hash = hash;
@@ -457,7 +521,7 @@ std::string TextureReplacer::HashName(u64 cachekey, u32 hash, int level) {
 }
 
 bool TextureReplacer::LookupHashRange(u32 addr, int &w, int &h) {
-	const u64 rangeKey = ((u64)addr << 32) | (w << 16) | h;
+	const u64 rangeKey = ((u64)addr << 32) | ((u64)w << 16) | h;
 	auto range = hashranges_.find(rangeKey);
 	if (range != hashranges_.end()) {
 		const WidthHeightPair &wh = range->second;
@@ -506,8 +570,6 @@ void ReplacedTexture::Load(int level, void *out, int rowPitch) {
 		// This will only check the hashed bits.
 		CheckAlphaResult res = CheckAlphaRGBA8888Basic((u32 *)out, rowPitch / sizeof(u32), png.width, png.height);
 		if (res == CHECKALPHA_ANY || level == 0) {
-			alphaStatus_ = ReplacedTextureAlpha(res);
-		} else if (res == CHECKALPHA_ZERO && alphaStatus_ == ReplacedTextureAlpha::FULL) {
 			alphaStatus_ = ReplacedTextureAlpha(res);
 		}
 	}

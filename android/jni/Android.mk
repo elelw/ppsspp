@@ -28,7 +28,8 @@ ARCH_FILES := \
   $(SRC)/Core/MIPS/x86/JitSafeMem.cpp \
   $(SRC)/Core/MIPS/x86/RegCache.cpp \
   $(SRC)/Core/MIPS/x86/RegCacheFPU.cpp \
-  $(SRC)/GPU/Common/VertexDecoderX86.cpp
+  $(SRC)/GPU/Common/VertexDecoderX86.cpp \
+  $(SRC)/GPU/Software/SamplerX86.cpp
 endif
 
 ifeq ($(TARGET_ARCH_ABI),x86_64)
@@ -48,7 +49,8 @@ ARCH_FILES := \
   $(SRC)/Core/MIPS/x86/JitSafeMem.cpp \
   $(SRC)/Core/MIPS/x86/RegCache.cpp \
   $(SRC)/Core/MIPS/x86/RegCacheFPU.cpp \
-  $(SRC)/GPU/Common/VertexDecoderX86.cpp
+  $(SRC)/GPU/Common/VertexDecoderX86.cpp \
+  $(SRC)/GPU/Software/SamplerX86.cpp
 endif
 
 ifeq ($(findstring armeabi-v7a,$(TARGET_ARCH_ABI)),armeabi-v7a)
@@ -125,6 +127,7 @@ EGL_FILES := \
 VULKAN_FILES := \
   $(SRC)/Common/Vulkan/VulkanLoader.cpp \
   $(SRC)/Common/Vulkan/VulkanContext.cpp \
+  $(SRC)/Common/Vulkan/VulkanDebug.cpp \
   $(SRC)/Common/Vulkan/VulkanImage.cpp \
   $(SRC)/Common/Vulkan/VulkanMemory.cpp \
   $(SRC)/GPU/Vulkan/FragmentShaderGeneratorVulkan.cpp \
@@ -134,17 +137,25 @@ VULKAN_FILES := \
   $(SRC)/GPU/Vulkan/PipelineManagerVulkan.cpp \
   $(SRC)/GPU/Vulkan/ShaderManagerVulkan.cpp \
   $(SRC)/GPU/Vulkan/StateMappingVulkan.cpp \
+  $(SRC)/GPU/Vulkan/StencilBufferVulkan.cpp \
   $(SRC)/GPU/Vulkan/TextureCacheVulkan.cpp \
   $(SRC)/GPU/Vulkan/TextureScalerVulkan.cpp \
   $(SRC)/GPU/Vulkan/DepalettizeShaderVulkan.cpp \
   $(SRC)/GPU/Vulkan/VertexShaderGeneratorVulkan.cpp \
-  $(SRC)/GPU/Vulkan/VulkanUtil.cpp
+  $(SRC)/GPU/Vulkan/VulkanUtil.cpp \
+  $(SRC)/GPU/Vulkan/DebugVisVulkan.cpp
 #endif
+
+SPIRV_CROSS_FILES := \
+  $(SRC)/ext/SPIRV-Cross/spirv_cfg.cpp \
+  $(SRC)/ext/SPIRV-Cross/spirv_cross.cpp \
+  $(SRC)/ext/SPIRV-Cross/spirv_glsl.cpp
 
 EXEC_AND_LIB_FILES := \
   $(ARCH_FILES) \
   $(EGL_FILES) \
   $(VULKAN_FILES) \
+  $(SPIRV_CROSS_FILES) \
   TestRunner.cpp \
   $(SRC)/Core/MIPS/MIPS.cpp.arm \
   $(SRC)/Core/MIPS/MIPSAnalyst.cpp \
@@ -193,7 +204,10 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Common/ColorConv.cpp \
   $(SRC)/Common/KeyMap.cpp \
   $(SRC)/Common/LogManager.cpp \
-  $(SRC)/Common/MemArena.cpp \
+  $(SRC)/Common/MemArenaAndroid.cpp \
+  $(SRC)/Common/MemArenaDarwin.cpp \
+  $(SRC)/Common/MemArenaWin32.cpp \
+  $(SRC)/Common/MemArenaPosix.cpp \
   $(SRC)/Common/MemoryUtil.cpp \
   $(SRC)/Common/MsgHandler.cpp \
   $(SRC)/Common/FileUtil.cpp \
@@ -216,31 +230,35 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/GPU/Common/VertexDecoderCommon.cpp.arm \
   $(SRC)/GPU/Common/TextureCacheCommon.cpp.arm \
   $(SRC)/GPU/Common/TextureScalerCommon.cpp.arm \
+  $(SRC)/GPU/Common/ShaderCommon.cpp \
+  $(SRC)/GPU/Common/ShaderTranslation.cpp \
+  $(SRC)/GPU/Common/StencilCommon.cpp \
   $(SRC)/GPU/Common/SplineCommon.cpp.arm \
   $(SRC)/GPU/Common/DrawEngineCommon.cpp.arm \
   $(SRC)/GPU/Common/TransformCommon.cpp.arm \
   $(SRC)/GPU/Common/TextureDecoder.cpp \
   $(SRC)/GPU/Common/PostShader.cpp \
+  $(SRC)/GPU/Common/ShaderUniforms.cpp \
   $(SRC)/GPU/Debugger/Breakpoints.cpp \
+  $(SRC)/GPU/Debugger/Record.cpp \
   $(SRC)/GPU/Debugger/Stepping.cpp \
-  $(SRC)/GPU/GLES/Framebuffer.cpp \
-  $(SRC)/GPU/GLES/DepalettizeShader.cpp \
+  $(SRC)/GPU/GLES/FramebufferManagerGLES.cpp \
+  $(SRC)/GPU/GLES/DepalettizeShaderGLES.cpp \
   $(SRC)/GPU/GLES/GPU_GLES.cpp.arm \
-  $(SRC)/GPU/GLES/GLStateCache.cpp.arm \
-  $(SRC)/GPU/GLES/FBO.cpp \
-  $(SRC)/GPU/GLES/StencilBuffer.cpp.arm \
-  $(SRC)/GPU/GLES/TextureCache.cpp.arm \
+  $(SRC)/GPU/GLES/StencilBufferGLES.cpp.arm \
+  $(SRC)/GPU/GLES/TextureCacheGLES.cpp.arm \
   $(SRC)/GPU/GLES/DrawEngineGLES.cpp.arm \
-  $(SRC)/GPU/GLES/StateMapping.cpp.arm \
-  $(SRC)/GPU/GLES/ShaderManager.cpp.arm \
-  $(SRC)/GPU/GLES/VertexShaderGenerator.cpp.arm \
-  $(SRC)/GPU/GLES/FragmentShaderGenerator.cpp.arm \
-  $(SRC)/GPU/GLES/FragmentTestCache.cpp.arm \
-  $(SRC)/GPU/GLES/TextureScaler.cpp \
+  $(SRC)/GPU/GLES/StateMappingGLES.cpp.arm \
+  $(SRC)/GPU/GLES/ShaderManagerGLES.cpp.arm \
+  $(SRC)/GPU/GLES/VertexShaderGeneratorGLES.cpp.arm \
+  $(SRC)/GPU/GLES/FragmentShaderGeneratorGLES.cpp.arm \
+  $(SRC)/GPU/GLES/FragmentTestCacheGLES.cpp.arm \
+  $(SRC)/GPU/GLES/TextureScalerGLES.cpp \
   $(SRC)/GPU/Null/NullGpu.cpp \
   $(SRC)/GPU/Software/Clipper.cpp \
   $(SRC)/GPU/Software/Lighting.cpp \
   $(SRC)/GPU/Software/Rasterizer.cpp.arm \
+  $(SRC)/GPU/Software/Sampler.cpp \
   $(SRC)/GPU/Software/SoftGpu.cpp \
   $(SRC)/GPU/Software/TransformUnit.cpp \
   $(SRC)/Core/ELF/ElfReader.cpp \
@@ -273,6 +291,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/MemMap.cpp \
   $(SRC)/Core/MemMapFunctions.cpp \
   $(SRC)/Core/Reporting.cpp \
+  $(SRC)/Core/Replay.cpp \
   $(SRC)/Core/SaveState.cpp \
   $(SRC)/Core/Screenshot.cpp \
   $(SRC)/Core/System.cpp \
@@ -350,6 +369,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/HLE/sceSsl.cpp \
   $(SRC)/Core/HLE/sceUmd.cpp \
   $(SRC)/Core/HLE/sceUsb.cpp \
+  $(SRC)/Core/HLE/sceUsbCam.cpp \
   $(SRC)/Core/HLE/sceUsbGps.cpp \
   $(SRC)/Core/HLE/sceUtility.cpp \
   $(SRC)/Core/HLE/sceVaudio.cpp \
@@ -357,6 +377,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/HLE/sceGameUpdate.cpp \
   $(SRC)/Core/HLE/sceNp.cpp \
   $(SRC)/Core/HLE/scePauth.cpp \
+  $(SRC)/Core/FileSystems/BlobFileSystem.cpp \
   $(SRC)/Core/FileSystems/BlockDevices.cpp \
   $(SRC)/Core/FileSystems/ISOFileSystem.cpp \
   $(SRC)/Core/FileSystems/FileSystem.cpp \
@@ -387,6 +408,9 @@ LOCAL_STATIC_LIBRARIES += ppsspp_core
 LOCAL_MODULE := ppsspp_jni
 LOCAL_SRC_FILES := \
   $(SRC)/android/jni/app-android.cpp \
+  $(SRC)/android/jni/AndroidEGLContext.cpp \
+  $(SRC)/android/jni/AndroidJavaGLContext.cpp \
+  $(SRC)/android/jni/AndroidVulkanContext.cpp \
   $(SRC)/android/jni/native_audio.cpp \
   $(SRC)/android/jni/native-audio-so.cpp \
   $(SRC)/UI/BackgroundAudio.cpp \
@@ -415,6 +439,7 @@ LOCAL_SRC_FILES := \
   $(SRC)/UI/OnScreenDisplay.cpp \
   $(SRC)/UI/ProfilerDraw.cpp \
   $(SRC)/UI/NativeApp.cpp \
+  $(SRC)/UI/TextureUtil.cpp \
   $(SRC)/UI/ComboKeyMappingScreen.cpp
 
 ifneq ($(SKIPAPP),1)
@@ -434,6 +459,7 @@ ifeq ($(HEADLESS),1)
   LOCAL_MODULE := ppsspp_headless
   LOCAL_SRC_FILES := \
     $(SRC)/headless/Headless.cpp \
+    $(SRC)/headless/StubHost.cpp \
     $(SRC)/headless/Compare.cpp
 
   include $(BUILD_EXECUTABLE)
@@ -525,7 +551,7 @@ endif
 
 $(call import-module,libzip)
 $(call import-module,native)
-$(call import-module,glslang)
+$(call import-module,glslang-build)
 
 ifeq ($(ANDROID_NDK_PROFILER),1)
   $(call import-module,android-ndk-profiler)

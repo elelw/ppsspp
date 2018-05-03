@@ -74,7 +74,12 @@ public:
 	bool LoadIni(const std::string &languageID, const std::string &overridePath = ""); // NOT the filename!
 	void SaveIni(const std::string &languageID);
 
+	std::string LanguageID();
+
 	I18NCategory *GetCategory(const char *categoryName);
+	bool HasCategory(const char *categoryName) const {
+		return cats_.find(categoryName) != cats_.end();
+	}
 	const char *T(const char *category, const char *key, const char *def = 0);
 
 private:
@@ -84,6 +89,7 @@ private:
 	void SaveSection(IniFile &ini, IniFile::Section *section, I18NCategory *cat);
 
 	std::map<std::string, I18NCategory *> cats_;
+	std::string languageID_;
 
 	DISALLOW_COPY_AND_ASSIGN(I18NRepo);
 };
@@ -96,6 +102,10 @@ inline I18NCategory *GetI18NCategory(const char *categoryName) {
 	if (!categoryName)
 		return nullptr;
 	return i18nrepo.GetCategory(categoryName);
+}
+
+inline bool I18NCategoryLoaded(const char *categoryName) {
+	return i18nrepo.HasCategory(categoryName);
 }
 
 inline const char *T(const char *category, const char *key, const char *def = 0) {

@@ -75,13 +75,14 @@ std::string WordWrapper::Wrapped() {
 }
 
 void WordWrapper::WrapBeforeWord() {
-	if (x_ + wordWidth_ > maxW_) {
+	if (x_ + wordWidth_ > maxW_ && out_.size() > 0) {
 		if (IsShy(out_[out_.size() - 1])) {
 			// Soft hyphen, replace it with a real hyphen since we wrapped at it.
 			// TODO: There's an edge case here where the hyphen might not fit.
 			out_[out_.size() - 1] = '-';
 		}
 		out_ += "\n";
+		lastLineStart_ = (int)out_.size();
 		x_ = 0.0f;
 		forceEarlyWrap_ = false;
 	}
@@ -93,6 +94,13 @@ void WordWrapper::AppendWord(int endIndex, bool addNewline) {
 	out_ += std::string(str_ + lastIndex_, endIndex - lastIndex_);
 	if (addNewline) {
 		out_ += "\n";
+		lastLineStart_ = (int)out_.size();
+	} else {
+		// We may have appended a newline - check.
+		size_t pos = out_.substr(lastLineStart_).find_last_of("\n");
+		if (pos != out_.npos) {
+			lastLineStart_ += (int)pos;
+		}
 	}
 	lastIndex_ = endIndex;
 }
@@ -124,20 +132,14 @@ void WordWrapper::Wrap() {
 			continue;
 		}
 
-		float newWordWidth = 0.0f;
-		if (c == '\n') {
-			newWordWidth = wordWidth_;
-		} else {
-			// Measure the entire word for kerning purposes.  May not be 100% perfect.
-			newWordWidth = MeasureWidth(str_ + lastIndex_, afterIndex - lastIndex_);
-		}
+		// Measure the entire word for kerning purposes.  May not be 100% perfect.
+		float newWordWidth = MeasureWidth(str_ + lastIndex_, afterIndex - lastIndex_);
 
 		// Is this the end of a word (space)?
 		if (wordWidth_ > 0.0f && IsSpace(c)) {
 			AppendWord(afterIndex, false);
-			// We include the space in the x increase.
-			// If the space takes it over, we'll wrap on the next word.
-			x_ += newWordWidth;
+			// To account for kerning around spaces, we recalculate the entire line width.
+			x_ = MeasureWidth(out_.c_str() + lastLineStart_, out_.size() - lastLineStart_);
 			wordWidth_ = 0.0f;
 			continue;
 		}

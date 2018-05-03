@@ -28,6 +28,8 @@
 struct ShaderInfo;
 
 extern std::string boot_filename;
+void UIBackgroundInit(UIContext &dc);
+void UIBackgroundShutdown();
 
 inline void NoOpVoidBool(bool) {}
 
@@ -37,7 +39,6 @@ public:
 protected:
 	void DrawBackground(UIContext &dc) override;
 	void sendMessage(const char *message, const char *value) override;
-	UI::EventReturn OnLanguageChange(UI::EventParams &e);
 };
 
 class UIScreenWithGameBackground : public UIScreenWithBackground {
@@ -56,7 +57,6 @@ public:
 protected:
 	void DrawBackground(UIContext &dc) override;
 	void sendMessage(const char *message, const char *value) override;
-	UI::EventReturn OnLanguageChange(UI::EventParams &e);
 
 	void AddStandardBack(UI::ViewGroup *parent);
 };
@@ -77,6 +77,8 @@ public:
 		std::function<void(bool)> callback = &NoOpVoidBool);
 
 	void CreateViews() override;
+
+	void TriggerFinish(DialogResult result) override;
 
 private:
 	UI::EventReturn OnYes(UI::EventParams &e);
@@ -115,7 +117,8 @@ public:
 	LogoScreen()
 		: frames_(0), switched_(false) {}
 	bool key(const KeyInput &key) override;
-	void update(InputState &input) override;
+	bool touch(const TouchInput &touch) override;
+	void update() override;
 	void render() override;
 	void sendMessage(const char *message, const char *value) override;
 	void CreateViews() override {}
@@ -129,7 +132,7 @@ private:
 class CreditsScreen : public UIDialogScreenWithBackground {
 public:
 	CreditsScreen() : frames_(0) {}
-	void update(InputState &input) override;
+	void update() override;
 	void render() override;
 
 	void CreateViews() override;
@@ -139,14 +142,10 @@ private:
 
 	UI::EventReturn OnSupport(UI::EventParams &e);
 	UI::EventReturn OnPPSSPPOrg(UI::EventParams &e);
+	UI::EventReturn OnPrivacy(UI::EventParams &e);
 	UI::EventReturn OnForums(UI::EventParams &e);
-	UI::EventReturn OnChineseForum(UI::EventParams &e);
 	UI::EventReturn OnShare(UI::EventParams &e);
 	UI::EventReturn OnTwitter(UI::EventParams &e);
 
 	int frames_;
 };
-
-
-// Utility functions that create various popup screens
-ListPopupScreen *CreateLanguageScreen();

@@ -2,15 +2,14 @@
 
 // "Immediate mode"-lookalike buffered drawing. Very fast way to draw 2D.
 
+#include <vector>
+
 #include "base/basictypes.h"
 #include "base/colorutil.h"
-#include "gfx/gl_lost_manager.h"
 #include "gfx/texture_atlas.h"
 #include "math/geom2d.h"
 #include "math/lin/matrix4x4.h"
 #include "thin3d/thin3d.h"
-
-#undef DrawText
 
 struct Atlas;
 
@@ -42,7 +41,9 @@ enum {
 	FLAG_WRAP_TEXT = 8192,
 };
 
-class Thin3DShaderSet;
+namespace Draw {
+	class Pipeline;
+}
 
 enum DrawBufferPrimitiveMode {
 	DBMODE_NORMAL = 0,
@@ -61,12 +62,15 @@ public:
 	DrawBuffer();
 	~DrawBuffer();
 
-	void Begin(Thin3DShaderSet *shaders, DrawBufferPrimitiveMode mode = DBMODE_NORMAL);
+	void Begin(Draw::Pipeline *pipeline);
 	void End();
 
 	// TODO: Enforce these. Now Init is autocalled and shutdown not called.
-	void Init(Thin3DContext *t3d);
+	void Init(Draw::DrawContext *t3d, Draw::Pipeline *pipeline);
 	void Shutdown();
+
+	// So that callers can create appropriate pipelines.
+	Draw::InputLayout *CreateInputLayout(Draw::DrawContext *t3d);
 
 	int Count() const { return count_; }
 
@@ -110,7 +114,7 @@ public:
 	void MeasureImage(ImageID atlas_image, float *w, float *h);
 	void DrawImage(ImageID atlas_image, float x, float y, float scale, Color color = COLOR(0xFFFFFF), int align = ALIGN_TOPLEFT);
 	void DrawImageStretch(ImageID atlas_image, float x1, float y1, float x2, float y2, Color color = COLOR(0xFFFFFF));
-	void DrawImageStretch(int atlas_image, const Bounds &bounds, Color color = COLOR(0xFFFFFF)) {
+	void DrawImageStretch(ImageID atlas_image, const Bounds &bounds, Color color = COLOR(0xFFFFFF)) {
 		DrawImageStretch(atlas_image, bounds.x, bounds.y, bounds.x2(), bounds.y2(), color);
 	}
 	void DrawImageRotated(ImageID atlas_image, float x, float y, float scale, float angle, Color color = COLOR(0xFFFFFF), bool mirror_h = false);	// Always centers
@@ -133,8 +137,6 @@ public:
 	void DrawText(int font, const char *text, float x, float y, Color color = 0xFFFFFFFF, int align = 0);
 	void DrawTextShadow(int font, const char *text, float x, float y, Color color = 0xFFFFFFFF, int align = 0);
 
-	void RotateSprite(ImageID atlas_image, float x, float y, float angle, float scale, Color color);
-
 	void SetFontScale(float xs, float ys) {
 		fontscalex = xs;
 		fontscaley = ys;
@@ -142,8 +144,28 @@ public:
 
 	static void DoAlign(int flags, float *x, float *y, float *w, float *h);
 
-	void SetDrawMatrix(const Matrix4x4 &m) {
+	void PushDrawMatrix(const Matrix4x4 &m) {
+		drawMatrixStack_.push_back(drawMatrix_);
 		drawMatrix_ = m;
+	}
+
+	void PopDrawMatrix() {
+		drawMatrix_ = drawMatrixStack_.back();
+		drawMatrixStack_.pop_back();
+	}
+
+	Matrix4x4 GetDrawMatrix() {
+		return drawMatrix_;
+	}
+
+	void PushAlpha(float a) {
+		alphaStack_.push_back(alpha_);
+		alpha_ *= a;
+	}
+
+	void PopAlpha() {
+		alpha_ = alphaStack_.back();
+		alphaStack_.pop_back();
 	}
 
 private:
@@ -154,11 +176,14 @@ private:
 	};
 
 	Matrix4x4 drawMatrix_;
+	std::vector<Matrix4x4> drawMatrixStack_;
 
-	Thin3DContext *t3d_;
-	Thin3DBuffer *vbuf_;
-	Thin3DVertexFormat *vformat_;
-	Thin3DShaderSet *shaderSet_;
+	float alpha_ = 1.0f;
+	std::vector<float> alphaStack_;
+
+	Draw::DrawContext *draw_;
+	Draw::Buffer *vbuf_;
+	Draw::Pipeline *pipeline_;
 
 	Vertex *verts_;
 	int count_;

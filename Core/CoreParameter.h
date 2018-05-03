@@ -34,7 +34,11 @@ enum GPUCore {
 class FileLoader;
 
 class GraphicsContext;
-class Thin3DContext;
+namespace Draw {
+	class DrawContext;
+}
+
+enum class CPUCore;
 
 // PSP_CoreParameter()
 struct CoreParameter {
@@ -44,7 +48,7 @@ struct CoreParameter {
 	GPUCore gpuCore;
 
 	GraphicsContext *graphicsContext;  // TODO: Find a better place.
-	Thin3DContext *thin3d;
+	Draw::DrawContext *thin3d;
 	bool enableSound;  // there aren't multiple sound cores.
 
 	std::string fileToStart;

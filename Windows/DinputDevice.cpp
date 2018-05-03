@@ -15,8 +15,10 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include "stdafx.h"
 #include <limits.h>
 #include <algorithm>
+#include <mmsystem.h>
 
 #include "Core/HLE/sceCtrl.h"
 #include "DinputDevice.h"
@@ -221,7 +223,7 @@ inline float LinearMaps(short val, short a0, short a1, short b0, short b1) {
 	return b0 + (((val - a0) * (b1 - b0)) / (a1 - a0));
 }
 
-int DinputDevice::UpdateState(InputState &input_state) {
+int DinputDevice::UpdateState() {
 	if (!pJoystick) return -1;
 
 	DIJOYSTATE2 js;
@@ -234,7 +236,7 @@ int DinputDevice::UpdateState(InputState &input_state) {
 	if(FAILED(pJoystick->GetDeviceState(sizeof(DIJOYSTATE2), &js)))
 		return -1;
 
-	ApplyButtons(js, input_state);
+	ApplyButtons(js);
 
 	if (analog)	{
 		AxisInput axis;
@@ -308,7 +310,7 @@ int DinputDevice::UpdateState(InputState &input_state) {
 	return -1;
 }
 
-void DinputDevice::ApplyButtons(DIJOYSTATE2 &state, InputState &input_state) {
+void DinputDevice::ApplyButtons(DIJOYSTATE2 &state) {
 	BYTE *buttons = state.rgbButtons;
 	u32 downMask = 0x80;
 

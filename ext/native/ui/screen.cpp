@@ -25,7 +25,9 @@ void ScreenManager::switchScreen(Screen *screen) {
 	// until that switch.
 	// TODO: is this still true?
 	if (nextScreen_ != 0) {
-		FLOG("Already had a nextScreen_");
+		ELOG("Already had a nextScreen_! Asynchronous open while doing something? Deleting the new screen.");
+		delete screen;
+		return;
 	}
 	if (screen == 0) {
 		WLOG("Swiching to a zero screen, this can't be good");
@@ -36,18 +38,19 @@ void ScreenManager::switchScreen(Screen *screen) {
 	}
 }
 
-void ScreenManager::update(InputState &input) {
+void ScreenManager::update() {
+	std::lock_guard<std::recursive_mutex> guard(inputLock_);
 	if (nextScreen_) {
 		switchToNext();
 	}
 
 	if (stack_.size()) {
-		stack_.back().screen->update(input);
+		stack_.back().screen->update();
 	}
 }
 
 void ScreenManager::switchToNext() {
-	lock_guard guard(inputLock_);
+	std::lock_guard<std::recursive_mutex> guard(inputLock_);
 	if (!nextScreen_) {
 		ELOG("switchToNext: No nextScreen_!");
 	}
@@ -67,16 +70,17 @@ void ScreenManager::switchToNext() {
 }
 
 bool ScreenManager::touch(const TouchInput &touch) {
-	lock_guard guard(inputLock_);
+	std::lock_guard<std::recursive_mutex> guard(inputLock_);
 	if (!stack_.empty()) {
-		return stack_.back().screen->touch(touch);
+		Screen *screen = stack_.back().screen;
+		return screen->touch(screen->transformTouch(touch));
 	} else {
 		return false;
 	}
 }
 
 bool ScreenManager::key(const KeyInput &key) {
-	lock_guard guard(inputLock_);
+	std::lock_guard<std::recursive_mutex> guard(inputLock_);
 	if (!stack_.empty()) {
 		return stack_.back().screen->key(key);
 	} else {
@@ -85,7 +89,7 @@ bool ScreenManager::key(const KeyInput &key) {
 }
 
 bool ScreenManager::axis(const AxisInput &axis) {
-	lock_guard guard(inputLock_);
+	std::lock_guard<std::recursive_mutex> guard(inputLock_);
 	if (!stack_.empty()) {
 		return stack_.back().screen->axis(axis);
 	} else {
@@ -93,8 +97,18 @@ bool ScreenManager::axis(const AxisInput &axis) {
 	}
 }
 
+void ScreenManager::deviceLost() {
+	for (auto &iter : stack_)
+		iter.screen->deviceLost();
+}
+
+void ScreenManager::deviceRestored() {
+	for (auto &iter : stack_)
+		iter.screen->deviceRestored();
+}
+
 void ScreenManager::resized() {
-	lock_guard guard(inputLock_);
+	std::lock_guard<std::recursive_mutex> guard(inputLock_);
 	// Have to notify the whole stack, otherwise there will be problems when going back
 	// to non-top screens.
 	for (auto iter = stack_.begin(); iter != stack_.end(); ++iter) {
@@ -121,12 +135,16 @@ void ScreenManager::render() {
 				backback.screen->preRender();
 				backback.screen->render();
 				stack_.back().screen->render();
-				stack_.back().screen->postRender();
+				if (postRenderCb_)
+					postRenderCb_(getUIContext(), postRenderUserdata_);
+				backback.screen->postRender();
 				break;
 			}
 		default:
 			stack_.back().screen->preRender();
 			stack_.back().screen->render();
+			if (postRenderCb_)
+				postRenderCb_(getUIContext(), postRenderUserdata_);
 			stack_.back().screen->postRender();
 			break;
 		}
@@ -144,22 +162,6 @@ void ScreenManager::sendMessage(const char *msg, const char *value) {
 		stack_.back().screen->sendMessage(msg, value);
 }
 
-void ScreenManager::deviceLost() {
-	for (size_t i = 0; i < stack_.size(); i++) {
-		stack_[i].screen->deviceLost();
-	}
-	// Dialogs too? Nah, they should only use the standard UI texture anyway.
-	// TODO: Change this when it becomes necessary.
-}
-
-void ScreenManager::deviceRestore() {
-	for (size_t i = 0; i < stack_.size(); i++) {
-		stack_[i].screen->deviceRestore();
-	}
-	// Dialogs too? Nah, they should only use the standard UI texture anyway.
-	// TODO: Change this when it becomes necessary.
-}
-
 Screen *ScreenManager::topScreen() const {
 	if (!stack_.empty())
 		return stack_.back().screen;
@@ -168,16 +170,16 @@ Screen *ScreenManager::topScreen() const {
 }
 
 void ScreenManager::shutdown() {
-	lock_guard guard(inputLock_);
+	std::lock_guard<std::recursive_mutex> guard(inputLock_);
 	for (auto x = stack_.begin(); x != stack_.end(); x++)
 		delete x->screen;
 	stack_.clear();
 	delete nextScreen_;
-	nextScreen_ = 0;
+	nextScreen_ = nullptr;
 }
 
 void ScreenManager::push(Screen *screen, int layerFlags) {
-	lock_guard guard(inputLock_);
+	std::lock_guard<std::recursive_mutex> guard(inputLock_);
 	if (nextScreen_ && stack_.empty()) {
 		// we're during init, this is OK
 		switchToNext();
@@ -192,7 +194,7 @@ void ScreenManager::push(Screen *screen, int layerFlags) {
 }
 
 void ScreenManager::pop() {
-	lock_guard guard(inputLock_);
+	std::lock_guard<std::recursive_mutex> guard(inputLock_);
 	if (stack_.size()) {
 		delete stack_.back().screen;
 		stack_.pop_back();
@@ -221,20 +223,25 @@ void ScreenManager::finishDialog(Screen *dialog, DialogResult result) {
 	dialogResult_ = result;
 }
 
+Screen *ScreenManager::dialogParent(const Screen *dialog) const {
+	for (size_t i = 1; i < stack_.size(); ++i) {
+		if (stack_[i].screen == dialog) {
+			// The previous screen was the caller (not necessarily the topmost.)
+			return stack_[i - 1].screen;
+		}
+	}
+
+	return nullptr;
+}
+
 void ScreenManager::processFinishDialog() {
 	if (dialogFinished_) {
-		lock_guard guard(inputLock_);
+		std::lock_guard<std::recursive_mutex> guard(inputLock_);
 		// Another dialog may have been pushed before the render, so search for it.
-		Screen *caller = 0;
+		Screen *caller = dialogParent(dialogFinished_);
 		for (size_t i = 0; i < stack_.size(); ++i) {
-			if (stack_[i].screen != dialogFinished_) {
-				continue;
-			}
-
-			stack_.erase(stack_.begin() + i);
-			// The previous screen was the caller (not necessarily the topmost.)
-			if (i > 0) {
-				caller = stack_[i - 1].screen;
+			if (stack_[i].screen == dialogFinished_) {
+				stack_.erase(stack_.begin() + i);
 			}
 		}
 
@@ -247,6 +254,6 @@ void ScreenManager::processFinishDialog() {
 			caller->dialogFinished(dialogFinished_, dialogResult_);
 		}
 		delete dialogFinished_;
-		dialogFinished_ = 0;
+		dialogFinished_ = nullptr;
 	}
 }

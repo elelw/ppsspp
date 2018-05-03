@@ -19,8 +19,10 @@
 
 #include <vector>
 #include <map>
-#include "base/mutex.h"
+#include <mutex>
+
 #include "Common/Common.h"
+#include "Common/Swap.h"
 #include "Core/Loaders.h"
 
 class DiskCachingFileLoaderCache;
@@ -30,23 +32,19 @@ public:
 	DiskCachingFileLoader(FileLoader *backend);
 	~DiskCachingFileLoader() override;
 
+	bool IsRemote() override;
 	bool Exists() override;
 	bool ExistsFast() override;
 	bool IsDirectory() override;
 	s64 FileSize() override;
 	std::string Path() const override;
 
-	void Seek(s64 absolutePos) override;
-	size_t Read(size_t bytes, size_t count, void *data, Flags flags = Flags::NONE) override {
-		return ReadAt(filepos_, bytes, count, data, flags);
-	}
-	size_t Read(size_t bytes, void *data, Flags flags = Flags::NONE) override {
-		return ReadAt(filepos_, bytes, data, flags);
-	}
 	size_t ReadAt(s64 absolutePos, size_t bytes, size_t count, void *data, Flags flags = Flags::NONE) override {
 		return ReadAt(absolutePos, bytes * count, data, flags) / bytes;
 	}
 	size_t ReadAt(s64 absolutePos, size_t bytes, void *data, Flags flags = Flags::NONE) override;
+
+	void Cancel() override;
 
 	static std::vector<std::string> GetCachedPathsInUse();
 
@@ -55,16 +53,15 @@ private:
 	void InitCache();
 	void ShutdownCache();
 
-	bool prepared_;
-	s64 filesize_;
-	s64 filepos_;
+	std::once_flag preparedFlag_;
+	s64 filesize_ = 0;
 	FileLoader *backend_;
-	DiskCachingFileLoaderCache *cache_;
+	DiskCachingFileLoaderCache *cache_ = nullptr;
 
 	// We don't support concurrent disk cache access (we use memory cached indexes.)
 	// So we have to ensure there's only one of these per.
 	static std::map<std::string, DiskCachingFileLoaderCache *> caches_;
-	static recursive_mutex cachesMutex_;
+	static std::mutex cachesMutex_;
 };
 
 class DiskCachingFileLoaderCache {
@@ -145,7 +142,7 @@ private:
 		INVALID_INDEX = 0xFFFFFFFF,
 	};
 
-	int refCount_;
+	int refCount_ = 0;
 	s64 filesize_;
 	u32 blockSize_;
 	u16 generation_;
@@ -154,7 +151,7 @@ private:
 	u32 flags_;
 	size_t cacheSize_;
 	size_t indexCount_;
-	recursive_mutex lock_;
+	std::mutex lock_;
 	std::string origPath_;
 
 	struct FileHeader {
@@ -182,8 +179,8 @@ private:
 	std::vector<BlockInfo> index_;
 	std::vector<u32> blockIndexLookup_;
 
-	FILE *f_;
-	int fd_;
+	FILE *f_ = nullptr;
+	int fd_ = 0;
 
 	static std::string cacheDir_;
 };

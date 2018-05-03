@@ -1,13 +1,20 @@
+#include "ppsspp_config.h"
+
 #include <cstring>
 
 #include "base/logging.h"
 #include "base/stringutil.h"
-#include "gfx/gl_common.h"
-#include "gfx_es2/gpu_features.h"
 
-#ifdef _WIN32
+#if !PPSSPP_PLATFORM(UWP)
+#include "gfx/gl_common.h"
+
+#if defined(_WIN32)
 #include "GL/wglew.h"
 #endif
+#endif
+
+#include "gfx_es2/gpu_features.h"
+
 
 #if defined(USING_GLES2)
 #if defined(__ANDROID__)
@@ -57,7 +64,7 @@ void ProcessGPUFeatures() {
 		gl_extensions.bugs |= BUG_FBO_UNUSABLE;
 	}
 
-	if (gl_extensions.gpuVendor == GPU_VENDOR_POWERVR) {
+	if (gl_extensions.gpuVendor == GPU_VENDOR_IMGTEC) {
 		if (!strcmp(gl_extensions.model, "PowerVR SGX 543") ||
 			  !strcmp(gl_extensions.model, "PowerVR SGX 540") ||
 			  !strcmp(gl_extensions.model, "PowerVR SGX 530") ||
@@ -70,11 +77,20 @@ void ProcessGPUFeatures() {
 		}
 		gl_extensions.bugs |= BUG_PVR_GENMIPMAP_HEIGHT_GREATER;
 	}
+
+	// TODO: Make this check more lenient. Disabled for all right now
+	// because it murders performance on Mali.
+	if (gl_extensions.gpuVendor != GPU_VENDOR_NVIDIA) {
+		gl_extensions.bugs |= BUG_ANY_MAP_BUFFER_RANGE_SLOW;
+	}
 }
 
 // http://stackoverflow.com/questions/16147700/opengl-es-using-tegra-specific-extensions-gl-ext-texture-array
 
 void CheckGLExtensions() {
+
+#if !PPSSPP_PLATFORM(UWP)
+
 	// Make sure to only do this once. It's okay to call CheckGLExtensions from wherever.
 	if (extensionsDone)
 		return;
@@ -110,9 +126,9 @@ void CheckGLExtensions() {
 		} else if (vendor == "ARM") {
 			gl_extensions.gpuVendor = GPU_VENDOR_ARM;
 		} else if (vendor == "Imagination Technologies") {
-			gl_extensions.gpuVendor = GPU_VENDOR_POWERVR;
+			gl_extensions.gpuVendor = GPU_VENDOR_IMGTEC;
 		} else if (vendor == "Qualcomm") {
-			gl_extensions.gpuVendor = GPU_VENDOR_ADRENO;
+			gl_extensions.gpuVendor = GPU_VENDOR_QUALCOMM;
 		} else if (vendor == "Broadcom") {
 			gl_extensions.gpuVendor = GPU_VENDOR_BROADCOM;
 			// Just for reference: Galaxy Y has renderer == "VideoCore IV HW"
@@ -129,26 +145,39 @@ void CheckGLExtensions() {
 		strncpy(gl_extensions.model, renderer, sizeof(gl_extensions.model));
 		gl_extensions.model[sizeof(gl_extensions.model) - 1] = 0;
 	}
-
-	if (!gl_extensions.IsGLES) {
-		// For desktop GL, grab the version and attempt to parse.
-		char buffer[64] = { 0 };
+	
+	// Start by assuming we're at 2.0.
+	int parsed[2] = {2, 0};
+	{ // Grab the version and attempt to parse.		
+		char buffer[128] = { 0 };
 		if (versionStr) {
-			strncpy(buffer, versionStr, 63);
+			strncpy(buffer, versionStr, sizeof(buffer) - 1);
 		}
-		const char *lastNumStart = buffer;
-		int numVer = 0;
+	
 		int len = (int)strlen(buffer);
-		for (int i = 0; i < len && numVer < 3; i++) {
-			if (buffer[i] == '.') {
-				buffer[i] = 0;
-				gl_extensions.ver[numVer++] = strtol(lastNumStart, NULL, 10);
-				i++;
-				lastNumStart = buffer + i;
+		bool beforeDot = true;
+		int lastDigit = 0;
+		for (int i = 0; i < len; i++) {
+			if (buffer[i] >= '0' && buffer[i] <= '9') {
+				lastDigit = buffer[i] - '0';
+				if (!beforeDot) {
+					parsed[1] = lastDigit;
+					break;
+				}
+			}
+			if (beforeDot && buffer[i] == '.' && lastDigit) {
+				parsed[0] = lastDigit;
+				beforeDot = false;
 			}
 		}
-		if (numVer < 3)
-			gl_extensions.ver[numVer++] = strtol(lastNumStart, NULL, 10);
+		if (beforeDot && lastDigit) {
+			parsed[0] = lastDigit;
+		}
+	}
+
+	if (!gl_extensions.IsGLES) { // For desktop GL
+		gl_extensions.ver[0] = parsed[0];
+		gl_extensions.ver[1] = parsed[1];
 
 		// If the GL version >= 4.3, we know it's a true superset of OpenGL ES 3.0 and can thus enable
 		// all the same modern paths.
@@ -171,6 +200,13 @@ void CheckGLExtensions() {
 			// They weren't, reset to GLES 2.0.
 			gl_extensions.ver[0] = 2;
 			gl_extensions.ver[1] = 0;
+		} else if (parsed[0] && (gl_extensions.ver[0] != parsed[0] || gl_extensions.ver[1] != parsed[1])) {
+			// Something going wrong. Possible bug in GL ES drivers. See #9688
+			ILOG("GL ES version mismatch. Version string '%s' parsed as %d.%d but API return %d.%d. Fallback to GL ES 2.0.", 
+				versionStr ? versionStr : "N/A", parsed[0], parsed[1], gl_extensions.ver[0], gl_extensions.ver[1]);
+			
+			gl_extensions.ver[0] = 2;
+			gl_extensions.ver[1] = 0;
 		}
 #endif
 
@@ -179,8 +215,8 @@ void CheckGLExtensions() {
 			// Try to load GLES 3.0 only if "3.0" found in version
 			// This simple heuristic avoids issues on older devices where you can only call eglGetProcAddress a limited
 			// number of times. Make sure to check for 3.0 in the shader version too to avoid false positives, see #5584.
-			bool gl_3_0_in_string = strstr(versionStr, "3.0") && strstr(glslVersionStr, "3.0");
-			bool gl_3_1_in_string = strstr(versionStr, "3.1") && strstr(glslVersionStr, "3.1");  // intentionally left out .1
+			bool gl_3_0_in_string = strstr(versionStr, "3.0") && (glslVersionStr && strstr(glslVersionStr, "3.0"));
+			bool gl_3_1_in_string = strstr(versionStr, "3.1") && (glslVersionStr && strstr(glslVersionStr, "3.1"));  // intentionally left out .1
 			if ((gl_3_0_in_string || gl_3_1_in_string) && gl3stubInit()) {
 				gl_extensions.ver[0] = 3;
 				if (gl_3_1_in_string) {
@@ -251,8 +287,10 @@ void CheckGLExtensions() {
 
 	// Check the desktop extension instead of the OES one. They are very similar.
 	// Also explicitly check those ATI devices that claims to support npot
-	gl_extensions.OES_texture_npot = strstr(extString, "GL_ARB_texture_non_power_of_two") != 0
-		&& !(((strncmp(renderer, "ATI RADEON X", 12) == 0) || (strncmp(renderer, "ATI MOBILITY RADEON X", 21) == 0)));
+	if (renderer) {
+		gl_extensions.OES_texture_npot = strstr(extString, "GL_ARB_texture_non_power_of_two") != 0
+			&& !(((strncmp(renderer, "ATI RADEON X", 12) == 0) || (strncmp(renderer, "ATI MOBILITY RADEON X", 21) == 0)));
+	}
 
 	gl_extensions.ARB_blend_func_extended = strstr(extString, "GL_ARB_blend_func_extended") != 0;
 	gl_extensions.EXT_blend_func_extended = strstr(extString, "GL_EXT_blend_func_extended") != 0;
@@ -265,10 +303,15 @@ void CheckGLExtensions() {
 	gl_extensions.OES_copy_image = strstr(extString, "GL_OES_copy_image") != 0;
 	gl_extensions.EXT_copy_image = strstr(extString, "GL_EXT_copy_image") != 0;
 	gl_extensions.ARB_copy_image = strstr(extString, "GL_ARB_copy_image") != 0;
+	gl_extensions.ARB_buffer_storage = strstr(extString, "GL_ARB_buffer_storage") != 0;
 	gl_extensions.ARB_vertex_array_object = strstr(extString, "GL_ARB_vertex_array_object") != 0;
+	gl_extensions.ARB_texture_float = strstr(extString, "GL_ARB_texture_float") != 0;
+	gl_extensions.EXT_texture_filter_anisotropic = strstr(extString, "GL_EXT_texture_filter_anisotropic") != 0;
+	gl_extensions.EXT_draw_instanced = strstr(extString, "GL_EXT_draw_instanced") != 0;
+	gl_extensions.ARB_draw_instanced = strstr(extString, "GL_ARB_draw_instanced") != 0;
 
 	if (gl_extensions.IsGLES) {
-		gl_extensions.OES_texture_npot = strstr(extString, "OES_texture_npot") != 0;
+		gl_extensions.OES_texture_npot = strstr(extString, "GL_OES_texture_npot") != 0;
 		gl_extensions.OES_packed_depth_stencil = (strstr(extString, "GL_OES_packed_depth_stencil") != 0) || gl_extensions.GLES3;
 		gl_extensions.OES_depth24 = strstr(extString, "GL_OES_depth24") != 0;
 		gl_extensions.OES_depth_texture = strstr(extString, "GL_OES_depth_texture") != 0;
@@ -278,6 +321,8 @@ void CheckGLExtensions() {
 		gl_extensions.EXT_shader_framebuffer_fetch = strstr(extString, "GL_EXT_shader_framebuffer_fetch") != 0;
 		gl_extensions.NV_shader_framebuffer_fetch = strstr(extString, "GL_NV_shader_framebuffer_fetch") != 0;
 		gl_extensions.ARM_shader_framebuffer_fetch = strstr(extString, "GL_ARM_shader_framebuffer_fetch") != 0;
+		gl_extensions.OES_texture_float = strstr(extString, "GL_OES_texture_float") != 0;
+		gl_extensions.EXT_buffer_storage = strstr(extString, "GL_EXT_buffer_storage") != 0;
 
 #if defined(__ANDROID__)
 		// On Android, incredibly, this is not consistently non-zero! It does seem to have the same value though.
@@ -326,6 +371,7 @@ void CheckGLExtensions() {
 
 	// GLES 3 subsumes many ES2 extensions.
 	if (gl_extensions.GLES3) {
+		gl_extensions.EXT_blend_minmax = true;
 		gl_extensions.EXT_unpack_subimage = true;
 	}
 
@@ -353,8 +399,10 @@ void CheckGLExtensions() {
 	}
 #endif
 
+	glGetIntegerv(GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS, &gl_extensions.maxVertexTextureUnits);
+
 	// This is probably a waste of time, implementations lie.
-	if (gl_extensions.IsGLES || strstr(extString, "GL_ARB_ES2_compatibility")) {
+	if (gl_extensions.IsGLES || strstr(extString, "GL_ARB_ES2_compatibility") || gl_extensions.VersionGEThan(4, 1)) {
 		const GLint precisions[6] = {
 			GL_LOW_FLOAT, GL_MEDIUM_FLOAT, GL_HIGH_FLOAT,
 			GL_LOW_INT, GL_MEDIUM_INT, GL_HIGH_INT
@@ -379,6 +427,47 @@ void CheckGLExtensions() {
 		gl_extensions.ARB_vertex_array_object = true;
 		gl_extensions.ARB_framebuffer_object = true;
 	}
+
+	// Add any extensions that are included in core.  May be elided.
+	if (!gl_extensions.IsGLES) {
+		if (gl_extensions.VersionGEThan(3, 0)) {
+			gl_extensions.ARB_texture_float = true;
+		}
+		if (gl_extensions.VersionGEThan(3, 1)) {
+			gl_extensions.ARB_draw_instanced = true;
+			// ARB_uniform_buffer_object = true;
+		}
+		if (gl_extensions.VersionGEThan(3, 2)) {
+			// ARB_depth_clamp = true;
+		}
+		if (gl_extensions.VersionGEThan(3, 3)) {
+			gl_extensions.ARB_blend_func_extended = true;
+			// ARB_explicit_attrib_location = true;
+		}
+		if (gl_extensions.VersionGEThan(4, 0)) {
+			// ARB_gpu_shader5 = true;
+		}
+		if (gl_extensions.VersionGEThan(4, 1)) {
+			// ARB_get_program_binary = true;
+			// ARB_separate_shader_objects = true;
+			// ARB_shader_precision = true;
+			// ARB_viewport_array = true;
+		}
+		if (gl_extensions.VersionGEThan(4, 2)) {
+			// ARB_texture_storage = true;
+		}
+		if (gl_extensions.VersionGEThan(4, 3)) {
+			gl_extensions.ARB_copy_image = true;
+			// ARB_explicit_uniform_location = true;
+			// ARB_stencil_texturing = true;
+			// ARB_texture_view = true;
+			// ARB_vertex_attrib_binding = true;
+		}
+		if (gl_extensions.VersionGEThan(4, 4)) {
+			gl_extensions.ARB_buffer_storage = true;
+		}
+	}
+
 #ifdef __APPLE__
 	if (!gl_extensions.IsGLES && !gl_extensions.IsCoreContext) {
 		// Apple doesn't allow OpenGL 3.x+ in compatibility contexts.
@@ -391,6 +480,9 @@ void CheckGLExtensions() {
 	int error = glGetError();
 	if (error)
 		ELOG("GL error in init: %i", error);
+
+#endif
+
 }
 
 void SetGLCoreContext(bool flag) {
@@ -400,4 +492,36 @@ void SetGLCoreContext(bool flag) {
 	useCoreContext = flag;
 	// For convenience, it'll get reset later.
 	gl_extensions.IsCoreContext = useCoreContext;
+}
+
+static const char *glsl_fragment_prelude =
+"#ifdef GL_ES\n"
+"precision mediump float;\n"
+"#endif\n";
+
+std::string ApplyGLSLPrelude(const std::string &source, uint32_t stage) {
+#if !PPSSPP_PLATFORM(UWP)
+	std::string temp;
+	std::string version = "";
+	if (!gl_extensions.IsGLES && gl_extensions.IsCoreContext) {
+		// We need to add a corresponding #version.  Apple drives fail without an exact match.
+		if (gl_extensions.VersionGEThan(3, 3)) {
+			version = StringFromFormat("#version %d%d0\n", gl_extensions.ver[0], gl_extensions.ver[1]);
+		} else if (gl_extensions.VersionGEThan(3, 2)) {
+			version = "#version 150\n";
+		} else if (gl_extensions.VersionGEThan(3, 1)) {
+			version = "#version 140\n";
+		} else {
+			version = "#version 130\n";
+		}
+	}
+	if (stage == GL_FRAGMENT_SHADER) {
+		temp = version + glsl_fragment_prelude + source;
+	} else if (stage == GL_VERTEX_SHADER) {
+		temp = version + source;
+	}
+	return temp;
+#else
+	return source;
+#endif
 }

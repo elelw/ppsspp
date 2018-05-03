@@ -20,11 +20,14 @@
 #include <cstring>
 #include "ppsspp_config.h"
 #include "base/basictypes.h"
+#include "Common/Hashmaps.h"
 #include "Common/Log.h"
 #include "Common/CommonTypes.h"
 #include "Core/Reporting.h"
 #include "GPU/ge_constants.h"
 #include "GPU/Common/ShaderCommon.h"
+#include "GPU/GPUCommon.h"
+
 #if PPSSPP_ARCH(ARM)
 #include "Common/ArmEmitter.h"
 #elif PPSSPP_ARCH(ARM64)
@@ -36,13 +39,13 @@
 #else
 #include "Common/FakeEmitter.h"
 #endif
-#include "Globals.h"
 
 // DecVtxFormat - vertex formats for PC
 // Kind of like a D3D VertexDeclaration.
 // Can write code to easily bind these using OpenGL, or read these manually.
 // No morph support, that is taken care of by the VertexDecoder.
 
+// Keep this in 4 bits.
 enum {
 	DEC_NONE,
 	DEC_FLOAT_1,
@@ -59,8 +62,6 @@ enum {
 	DEC_U16_2,
 	DEC_U16_3,
 	DEC_U16_4,
-	DEC_U8A_2,
-	DEC_U16A_2,
 };
 
 int DecFmtSize(u8 fmt);
@@ -73,31 +74,11 @@ struct DecVtxFormat {
 	u8 c1fmt; u8 c1off;
 	u8 nrmfmt; u8 nrmoff;
 	u8 posfmt; u8 posoff;
-	short stride;
-};
+	u8 stride;
 
-struct TransformedVertex
-{
-	union {
-		struct {
-			float x, y, z, fog;     // in case of morph, preblend during decode
-		};
-		float pos[4];
-	};
-	union {
-		struct {
-			float u; float v; float w;   // scaled by uscale, vscale, if there
-		};
-		float uv[3];
-	};
-	union {
-		u8 color0[4];   // prelit
-		u32 color0_32;
-	};
-	union {
-		u8 color1[4];   // prelit
-		u32 color1_32;
-	};
+	uint32_t id;
+	void ComputeID();
+	void InitializeFromID(uint32_t id);
 };
 
 void GetIndexBounds(const void *inds, int count, u32 vertType, u16 *indexLowerBound, u16 *indexUpperBound);
@@ -105,6 +86,35 @@ void GetIndexBounds(const void *inds, int count, u32 vertType, u16 *indexLowerBo
 inline int RoundUp4(int x) {
 	return (x + 3) & ~3;
 }
+
+class IndexConverter {
+private:
+	union {
+		const void *indices;
+		const u8 *indices8;
+		const u16 *indices16;
+		const u32 *indices32;
+	};
+	u32 indexType;
+
+public:
+	IndexConverter(u32 vertType, const void *indices)
+		: indices(indices), indexType(vertType & GE_VTYPE_IDX_MASK) {
+	}
+
+	inline u32 convert(u32 index) const {
+		switch (indexType) {
+		case GE_VTYPE_IDX_8BIT:
+			return indices8[index];
+		case GE_VTYPE_IDX_16BIT:
+			return indices16[index];
+		case GE_VTYPE_IDX_32BIT:
+			return indices32[index];
+		default:
+			return index;
+		}
+	}
+};
 
 // Reads decoded vertex formats in a convenient way. For software transform and debugging.
 class VertexReader {
@@ -268,21 +278,6 @@ public:
 			}
 			break;
 
-		case DEC_U8A_2:
-			{
-				const u8 *b = (const u8 *)(data_ + decFmt_.uvoff);
-				uv[0] = (float)b[0];
-				uv[1] = (float)b[1];
-			}
-			break;
-
-		case DEC_U16A_2:
-			{
-				const u16 *p = (const u16 *)(data_ + decFmt_.uvoff);
-				uv[0] = (float)p[0];
-				uv[1] = (float)p[1];
-			}
-			break;
 		default:
 			ERROR_LOG_REPORT_ONCE(fmtuv, G3D, "Reader: Unsupported UV Format %d", decFmt_.uvfmt);
 			memset(uv, 0, sizeof(float) * 2);
@@ -443,7 +438,6 @@ int TranslateNumBones(int bones);
 typedef void(*JittedVertexDecoder)(const u8 *src, u8 *dst, int count);
 
 struct VertexDecoderOptions {
-	bool expandAllUVtoFloat;
 	bool expandAllWeightsToFloat;
 	bool expand8BitNormalsToFloat;
 };
@@ -452,8 +446,8 @@ class VertexDecoder {
 public:
 	VertexDecoder();
 
-	// A jit cache is not mandatory, we don't use it in the sw renderer
-	void SetVertexType(u32 vtype, const VertexDecoderOptions &options, VertexDecoderJitCache *jitCache = 0);
+	// A jit cache is not mandatory.
+	void SetVertexType(u32 vtype, const VertexDecoderOptions &options, VertexDecoderJitCache *jitCache = nullptr);
 
 	u32 VertexType() const { return fmt_; }
 
@@ -473,12 +467,12 @@ public:
 	void Step_WeightsU16ToFloat() const;
 	void Step_WeightsFloat() const;
 
+	void ComputeSkinMatrix(const float weights[8]) const;
+
 	void Step_WeightsU8Skin() const;
 	void Step_WeightsU16Skin() const;
 	void Step_WeightsFloatSkin() const;
 
-	void Step_TcU8() const;
-	void Step_TcU16() const;
 	void Step_TcU8ToFloat() const;
 	void Step_TcU16ToFloat() const;
 	void Step_TcFloat() const;
@@ -488,17 +482,11 @@ public:
 	void Step_TcU16DoublePrescale() const;
 	void Step_TcFloatPrescale() const;
 
-	void Step_TcU16Double() const;
-	void Step_TcU16Through() const;
-	void Step_TcU16ThroughDouble() const;
 	void Step_TcU16DoubleToFloat() const;
 	void Step_TcU16ThroughToFloat() const;
 	void Step_TcU16ThroughDoubleToFloat() const;
 	void Step_TcFloatThrough() const;
 
-	void Step_TcU8Morph() const;
-	void Step_TcU16Morph() const;
-	void Step_TcU16DoubleMorph() const;
 	void Step_TcU8MorphToFloat() const;
 	void Step_TcU16MorphToFloat() const;
 	void Step_TcU16DoubleMorphToFloat() const;
@@ -532,6 +520,10 @@ public:
 	void Step_NormalS16Morph() const;
 	void Step_NormalFloatMorph() const;
 
+	void Step_NormalS8MorphSkin() const;
+	void Step_NormalS16MorphSkin() const;
+	void Step_NormalFloatMorphSkin() const;
+
 	void Step_PosS8() const;
 	void Step_PosS16() const;
 	void Step_PosFloat() const;
@@ -543,6 +535,10 @@ public:
 	void Step_PosS8Morph() const;
 	void Step_PosS16Morph() const;
 	void Step_PosFloatMorph() const;
+
+	void Step_PosS8MorphSkin() const;
+	void Step_PosS16MorphSkin() const;
+	void Step_PosFloatMorphSkin() const;
 
 	void Step_PosS8Through() const;
 	void Step_PosS16Through() const;
@@ -633,9 +629,7 @@ public:
 	void Jit_WeightsU16Skin();
 	void Jit_WeightsFloatSkin();
 
-	void Jit_TcU8();
 	void Jit_TcU8ToFloat();
-	void Jit_TcU16();
 	void Jit_TcU16ToFloat();
 	void Jit_TcFloat();
 
@@ -651,10 +645,6 @@ public:
 	void Jit_TcU16PrescaleMorph();
 	void Jit_TcFloatPrescaleMorph();
 
-	void Jit_TcU16Double();
-	void Jit_TcU16ThroughDouble();
-
-	void Jit_TcU16Through();
 	void Jit_TcU16ThroughToFloat();
 	void Jit_TcFloatThrough();
 

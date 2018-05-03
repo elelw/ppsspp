@@ -66,6 +66,11 @@ using namespace Arm64Gen;
 using namespace Arm64JitConstants;
 
 Arm64Jit::Arm64Jit(MIPSState *mips) : blocks(mips, this), gpr(mips, &js, &jo), fpr(mips, &js, &jo), mips_(mips), fp(this) { 
+	// Automatically disable incompatible options.
+	if (((intptr_t)Memory::base & 0x00000000FFFFFFFFUL) != 0) {
+		jo.enablePointerify = false;
+	}
+
 	logBlocks = 0;
 	dontLogBlocks = 0;
 	blocks.Init();
@@ -74,7 +79,7 @@ Arm64Jit::Arm64Jit(MIPSState *mips) : blocks(mips, this), gpr(mips, &js, &jo), f
 	AllocCodeSpace(1024 * 1024 * 16);  // 32MB is the absolute max because that's what an ARM branch instruction can reach, backwards and forwards.
 	GenerateFixedCode(jo);
 	js.startDefaultPrefix = mips_->HasDefaultPrefix();
-	js.currentRoundingFunc = convertS0ToSCRATCH1[0];
+	js.currentRoundingFunc = convertS0ToSCRATCH1[mips_->fcr31 & 3];
 }
 
 Arm64Jit::~Arm64Jit() {
@@ -93,27 +98,14 @@ void Arm64Jit::DoState(PointerWrap &p) {
 		js.hasSetRounding = 1;
 	}
 
-	if (p.GetMode() == PointerWrap::MODE_READ) {
-		js.currentRoundingFunc = convertS0ToSCRATCH1[(mips_->fcr31) & 3];
-	}
+	// Note: we can't update the currentRoundingFunc here because fcr31 wasn't loaded yet.
 }
 
-// This is here so the savestate matches between jit and non-jit.
-void Arm64Jit::DoDummyState(PointerWrap &p) {
-	auto s = p.Section("Jit", 1, 2);
-	if (!s)
-		return;
-
-	bool dummy = false;
-	p.Do(dummy);
-	if (s >= 2) {
-		dummy = true;
-		p.Do(dummy);
-	}
+void Arm64Jit::UpdateFCR31() {
+	js.currentRoundingFunc = convertS0ToSCRATCH1[mips_->fcr31 & 3];
 }
 
-void Arm64Jit::FlushAll()
-{
+void Arm64Jit::FlushAll() {
 	gpr.FlushAll();
 	fpr.FlushAll();
 	FlushPrefixV();
@@ -142,12 +134,8 @@ void Arm64Jit::FlushPrefixV() {
 void Arm64Jit::ClearCache() {
 	ILOG("ARM64Jit: Clearing the cache!");
 	blocks.Clear();
-	ClearCodeSpace();
-	GenerateFixedCode(jo);
-}
-
-void Arm64Jit::InvalidateCache() {
-	blocks.Clear();
+	ClearCodeSpace(jitStartOffset);
+	FlushIcacheSection(region + jitStartOffset, region + region_size - jitStartOffset);
 }
 
 void Arm64Jit::InvalidateCacheAt(u32 em_address, int length) {
@@ -190,11 +178,11 @@ void Arm64Jit::CompileDelaySlot(int flags) {
 void Arm64Jit::Compile(u32 em_address) {
 	PROFILE_THIS_SCOPE("jitc");
 	if (GetSpaceLeft() < 0x10000 || blocks.IsFull()) {
-		INFO_LOG(JIT, "Space left: %i", GetSpaceLeft());
+		INFO_LOG(JIT, "Space left: %d", (int)GetSpaceLeft());
 		ClearCache();
 	}
 
-	BeginWrite();
+	BeginWrite(4);
 
 	int block_num = blocks.AllocateBlock(em_address);
 	JitBlock *b = blocks.GetBlock(block_num);
@@ -202,6 +190,9 @@ void Arm64Jit::Compile(u32 em_address) {
 	blocks.FinalizeBlock(block_num, jo.enableBlocklink);
 
 	EndWrite();
+
+	// Don't forget to zap the newly written instructions in the instruction cache!
+	FlushIcache();
 
 	bool cleanSlate = false;
 
@@ -214,7 +205,7 @@ void Arm64Jit::Compile(u32 em_address) {
 
 	// Drat.  The VFPU hit an uneaten prefix at the end of a block.
 	if (js.startDefaultPrefix && js.MayHavePrefix()) {
-		WARN_LOG(JIT, "An uneaten prefix at end of block: %08x", GetCompilerPC() - 4);
+		WARN_LOG_REPORT(JIT, "An uneaten prefix at end of block: %08x", GetCompilerPC() - 4);
 		js.LogPrefix();
 
 		// Let's try that one more time.  We won't get back here because we toggled the value.
@@ -336,9 +327,6 @@ const u8 *Arm64Jit::DoJit(u32 em_address, JitBlock *b) {
 	if (dontLogBlocks > 0)
 		dontLogBlocks--;
 
-	// Don't forget to zap the newly written instructions in the instruction cache!
-	FlushIcache();
-
 	if (js.lastContinuedPC == 0) {
 		b->originalSize = js.numInstructions;
 	} else {
@@ -406,7 +394,7 @@ void Arm64Jit::LinkBlock(u8 *exitPoint, const u8 *checkedEntry) {
 	}
 	ARM64XEmitter emit(exitPoint);
 	emit.B(checkedEntry);
-	// TODO: Write stuff after.
+	// TODO: Write stuff after, convering up the now-unused instructions.
 	emit.FlushIcache();
 	if (PlatformIsWXExclusive()) {
 		ProtectMemoryPages(exitPoint, 32, MEM_PROT_READ | MEM_PROT_EXEC);
@@ -614,7 +602,12 @@ void Arm64Jit::ApplyRoundingMode(bool force) {
 }
 
 // Destroys SCRATCH1 and SCRATCH2
-void Arm64Jit::UpdateRoundingMode() {
+void Arm64Jit::UpdateRoundingMode(u32 fcr31) {
+	// We must set js.hasSetRounding at compile time, or this block will use the wrong rounding mode.
+	// The fcr31 parameter is -1 when not known at compile time, so we just assume it was changed.
+	if (fcr31 & 0x01000003) {
+		js.hasSetRounding = true;
+	}
 	QuickCallFunction(SCRATCH2_64, updateRoundingMode);
 }
 

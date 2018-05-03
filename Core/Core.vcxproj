@@ -1,5 +1,5 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<Project DefaultTargets="Build" ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
       <Configuration>Debug</Configuration>
@@ -21,32 +21,34 @@
   <PropertyGroup Label="Globals">
     <ProjectGuid>{533F1D30-D04D-47CC-AD71-20F658907E36}</ProjectGuid>
     <RootNamespace>Core</RootNamespace>
+    <WindowsTargetPlatformVersion>
+    </WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <CharacterSet>Unicode</CharacterSet>
-    <PlatformToolset>v140_xp</PlatformToolset>
+    <PlatformToolset>$(DefaultPlatformToolset)_xp</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <CharacterSet>Unicode</CharacterSet>
-    <PlatformToolset>v140_xp</PlatformToolset>
+    <PlatformToolset>$(DefaultPlatformToolset)_xp</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <WholeProgramOptimization>false</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
-    <PlatformToolset>v140_xp</PlatformToolset>
+    <PlatformToolset>$(DefaultPlatformToolset)_xp</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <CharacterSet>Unicode</CharacterSet>
-    <PlatformToolset>v140_xp</PlatformToolset>
+    <PlatformToolset>$(DefaultPlatformToolset)_xp</PlatformToolset>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
@@ -68,7 +70,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
-      <AdditionalIncludeDirectories>..\ffmpeg\WindowsInclude;..\ffmpeg\Windows\x86\include;../common;..;../ext/native;../ext/native/ext/glew;../ext/zlib;../ext/native/ext</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\ffmpeg\WindowsInclude;..\ffmpeg\Windows\x86\include;../common;..;../ext/native;../ext/glew;../ext/snappy;../ext/zlib;../ext/native/ext</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_CRTDBG_MAP_ALLOC;USING_WIN_UI;_CRT_SECURE_NO_WARNINGS;USE_FFMPEG;WIN32;_ARCH_32=1;_M_IX86=1;_DEBUG;_LIB;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
       <FloatingPointModel>Fast</FloatingPointModel>
@@ -90,7 +92,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
-      <AdditionalIncludeDirectories>..\ffmpeg\WindowsInclude;..\ffmpeg\Windows\x86_64\include;../common;..;../ext/native;../ext/native/ext/glew;../ext/zlib;../ext/native/ext</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\ffmpeg\WindowsInclude;..\ffmpeg\Windows\x86_64\include;../common;..;../ext/native;../ext/glew;../ext/snappy;../ext/zlib;../ext/native/ext</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_CRTDBG_MAP_ALLOC;USING_WIN_UI;_CRT_SECURE_NO_WARNINGS;USE_FFMPEG;WIN32;_ARCH_64=1;_M_X64=1;_DEBUG;_LIB;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <EnableEnhancedInstructionSet>NotSet</EnableEnhancedInstructionSet>
       <FloatingPointModel>Fast</FloatingPointModel>
@@ -116,7 +118,7 @@
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <AdditionalIncludeDirectories>..\ffmpeg\WindowsInclude;..\ffmpeg\Windows\x86\include;../common;..;../ext/native;../ext/native/ext/glew;../ext/zlib;../ext/native/ext</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\ffmpeg\WindowsInclude;..\ffmpeg\Windows\x86\include;../common;..;../ext/native;../ext/glew;../ext/snappy;../ext/zlib;../ext/native/ext</AdditionalIncludeDirectories>
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
       <FloatingPointModel>Fast</FloatingPointModel>
@@ -146,7 +148,7 @@
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <AdditionalIncludeDirectories>..\ffmpeg\WindowsInclude;..\ffmpeg\Windows\x86_64\include;../common;..;../ext/native;../ext/native/ext/glew;../ext/zlib;../ext/native/ext</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\ffmpeg\WindowsInclude;..\ffmpeg\Windows\x86_64\include;../common;..;../ext/native;../ext/glew;../ext/snappy;../ext/zlib;../ext/native/ext</AdditionalIncludeDirectories>
       <EnableEnhancedInstructionSet>NotSet</EnableEnhancedInstructionSet>
       <FloatingPointModel>Fast</FloatingPointModel>
       <BufferSecurityCheck>false</BufferSecurityCheck>
@@ -182,7 +184,9 @@
     <ClCompile Include="..\ext\udis86\syn.c" />
     <ClCompile Include="..\ext\udis86\udis86.c" />
     <ClCompile Include="AVIDump.cpp" />
+    <ClCompile Include="FileSystems\BlobFileSystem.cpp" />
     <ClCompile Include="HLE\KUBridge.cpp" />
+    <ClCompile Include="HLE\sceUsbCam.cpp" />
     <ClCompile Include="MIPS\IR\IRAsm.cpp" />
     <ClCompile Include="MIPS\IR\IRCompALU.cpp" />
     <ClCompile Include="MIPS\IR\IRCompBranch.cpp" />
@@ -195,6 +199,7 @@
     <ClCompile Include="MIPS\IR\IRJit.cpp" />
     <ClCompile Include="MIPS\IR\IRPassSimplify.cpp" />
     <ClCompile Include="MIPS\IR\IRRegCache.cpp" />
+    <ClCompile Include="Replay.cpp" />
     <ClCompile Include="TextureReplacer.cpp" />
     <ClCompile Include="Compatibility.cpp" />
     <ClCompile Include="Config.cpp" />
@@ -232,7 +237,10 @@
     <ClCompile Include="FileSystems\VirtualDiscFileSystem.cpp" />
     <ClCompile Include="Font\PGF.cpp" />
     <ClCompile Include="HDRemaster.cpp" />
-    <ClCompile Include="HLE\HLE.cpp" />
+    <ClCompile Include="HLE\HLE.cpp">
+      <Optimization Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">MaxSpeed</Optimization>
+      <BasicRuntimeChecks Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Default</BasicRuntimeChecks>
+    </ClCompile>
     <ClCompile Include="HLE\HLEHelperThread.cpp" />
     <ClCompile Include="HLE\HLETables.cpp" />
     <ClCompile Include="HLE\proAdhoc.cpp" />
@@ -523,13 +531,16 @@
     <ClInclude Include="..\ext\udis86\udint.h" />
     <ClInclude Include="..\ext\udis86\udis86.h" />
     <ClInclude Include="AVIDump.h" />
+    <ClInclude Include="FileSystems\BlobFileSystem.h" />
     <ClInclude Include="HLE\KUBridge.h" />
+    <ClInclude Include="HLE\sceUsbCam.h" />
     <ClInclude Include="MIPS\IR\IRFrontend.h" />
     <ClInclude Include="MIPS\IR\IRInst.h" />
     <ClInclude Include="MIPS\IR\IRInterpreter.h" />
     <ClInclude Include="MIPS\IR\IRJit.h" />
     <ClInclude Include="MIPS\IR\IRPassSimplify.h" />
     <ClInclude Include="MIPS\IR\IRRegCache.h" />
+    <ClInclude Include="Replay.h" />
     <ClInclude Include="TextureReplacer.h" />
     <ClInclude Include="Compatibility.h" />
     <ClInclude Include="Config.h" />
