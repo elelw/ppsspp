@@ -88,7 +88,7 @@ static GraphicsContext *graphicsContext;
 
 @property (nonatomic, strong) EAGLContext* context;
 @property (nonatomic, strong) NSMutableArray<NSDictionary *>* touches;
-//@property (nonatomic) iCadeReaderView* iCadeView;
+@property (nonatomic) iCadeReaderView* iCadeView;
 #if __IPHONE_OS_VERSION_MAX_ALLOWED > __IPHONE_6_1
 @property (nonatomic) GCController *gameController __attribute__((weak_import));
 #endif
@@ -214,10 +214,10 @@ static GraphicsContext *graphicsContext;
 	dp_xscale = (float)dp_xres / (float)pixel_xres;
 	dp_yscale = (float)dp_yres / (float)pixel_yres;
 	
-	/*self.iCadeView = [[iCadeReaderView alloc] init];
+	self.iCadeView = [[iCadeReaderView alloc] init];
 	[self.view addSubview:self.iCadeView];
 	self.iCadeView.delegate = self;
-	self.iCadeView.active = YES;*/
+	self.iCadeView.active = YES;
 	
 #if __IPHONE_OS_VERSION_MAX_ALLOWED > __IPHONE_6_1
 	if ([GCController class]) {

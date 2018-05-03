@@ -8,7 +8,7 @@
 #import <AudioToolbox/AudioToolbox.h>
 
 #import "AppDelegate.h"
-#import "PPSSPPUIApplication.h"
+#import <AudioToolbox/AudioToolbox.h>
 #import "ViewController.h"
 
 #include "base/NativeApp.h"
@@ -123,27 +123,13 @@ BOOL SupportsTaptic()
 }
 
 void Vibrate(int mode) {
-    
-    if(SupportsTaptic())
-    {
-        PPSSPPUIApplication* app = (PPSSPPUIApplication*)[UIApplication sharedApplication];
-        if(app.feedbackGenerator == nil)
-        {
-            app.feedbackGenerator = [[UISelectionFeedbackGenerator alloc] init];
-            [app.feedbackGenerator prepare];
-        }
-        [app.feedbackGenerator selectionChanged];
-    }
-    else
-    {
-        NSMutableDictionary *dictionary = [NSMutableDictionary dictionary];
-        NSArray *pattern = @[@YES, @30, @NO, @2];
+    NSMutableDictionary *dictionary = [NSMutableDictionary dictionary];
+    NSArray *pattern = @[@YES, @30, @NO, @2];
         
-        dictionary[@"VibePattern"] = pattern;
-        dictionary[@"Intensity"] = @2;
+    dictionary[@"VibePattern"] = pattern;
+    dictionary[@"Intensity"] = @2;
         
-        AudioServicesPlaySystemSoundWithVibration(kSystemSoundID_Vibrate, nil, dictionary);
-    }
+    AudioServicesPlaySystemSoundWithVibration(kSystemSoundID_Vibrate, nil, dictionary);
 }
 
 int main(int argc, char *argv[])
@@ -159,6 +145,6 @@ int main(int argc, char *argv[])
 		
 		NativeInit(argc, (const char**)argv, documentsPath.UTF8String, bundlePath.UTF8String, NULL);
 		
-		return UIApplicationMain(argc, argv, NSStringFromClass([PPSSPPUIApplication class]), NSStringFromClass([AppDelegate class]));
+		return UIApplicationMain(argc, argv, nil, NSStringFromClass([AppDelegate class]));
 	}
 }

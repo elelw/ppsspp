@@ -718,10 +718,6 @@ elseif(IOS)
 		ios/ViewController.h
 		ios/iOSCoreAudio.mm
 		ios/iOSCoreAudio.h
-		ios/PPSSPPUIApplication.h
-		ios/PPSSPPUIApplication.mm
-		ios/SmartKeyboardMap.cpp
-		ios/SmartKeyboardMap.hpp
 		ios/SubtleVolume.h
 		ios/SubtleVolume.mm
 		ios/iCade/iCadeReaderView.h
@@ -739,7 +735,6 @@ elseif(IOS)
 	set_source_files_properties(ios/AppDelegate.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
 	set_source_files_properties(ios/ViewController.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
 	set_source_files_properties(ios/iOSCoreAudio.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
-	set_source_files_properties(ios/PPSSPPUIApplication.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
 	set_source_files_properties(ios/iCade/iCadeReaderView.m PROPERTIES COMPILE_FLAGS -fobjc-arc)
 	set_source_files_properties(ios/main.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
 
