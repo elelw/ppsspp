@@ -21,7 +21,6 @@
 #include <map>
 #include <cassert>
 
-#include "Common/Vulkan/SPIRVDisasm.h"
 #include "Core/Config.h"
 
 #include "base/logging.h"
@@ -261,7 +260,7 @@ public:
 
 	// Returns the binding offset, and the VkBuffer to bind.
 	size_t PushUBO(VulkanPushBuffer *buf, VulkanContext *vulkan, VkBuffer *vkbuf) {
-		return buf->PushAligned(ubo_, uboSize_, vulkan->GetPhysicalDeviceProperties().limits.minUniformBufferOffsetAlignment, vkbuf);
+		return buf->PushAligned(ubo_, uboSize_, vulkan->GetPhysicalDeviceProperties().properties.limits.minUniformBufferOffsetAlignment, vkbuf);
 	}
 
 	int GetUniformLoc(const char *name);
@@ -275,6 +274,10 @@ public:
 	VkPipeline vkpipeline;
 	int stride[4]{};
 	int dynamicUniformSize = 0;
+
+	bool usesStencil = false;
+	uint8_t stencilWriteMask = 0xFF;
+	uint8_t stencilTestMask = 0xFF;
 
 private:
 	VulkanContext *vulkan_;
@@ -301,24 +304,25 @@ struct DescriptorSetKey {
 
 class VKTexture : public Texture {
 public:
-	VKTexture(VulkanContext *vulkan, VkCommandBuffer cmd, VulkanPushBuffer *pushBuffer, const TextureDesc &desc, VulkanDeviceAllocator *alloc)
-		: vulkan_(vulkan), mipLevels_(desc.mipLevels), format_(desc.format) {
-		bool result = Create(cmd, pushBuffer, desc, alloc);
-		_assert_(result);
-	}
+	VKTexture(VulkanContext *vulkan, VkCommandBuffer cmd, VulkanPushBuffer *pushBuffer, const TextureDesc &desc)
+		: vulkan_(vulkan), mipLevels_(desc.mipLevels), format_(desc.format) {}
+	bool Create(VkCommandBuffer cmd, VulkanPushBuffer *pushBuffer, const TextureDesc &desc, VulkanDeviceAllocator *alloc);
 
 	~VKTexture() {
 		Destroy();
 	}
 
 	VkImageView GetImageView() {
-		vkTex_->Touch();
-		return vkTex_->GetImageView();
+		if (vkTex_) {
+			vkTex_->Touch();
+			return vkTex_->GetImageView();
+		} else {
+			// This would be bad.
+			return VK_NULL_HANDLE;
+		}
 	}
 
 private:
-	bool Create(VkCommandBuffer cmd, VulkanPushBuffer *pushBuffer, const TextureDesc &desc, VulkanDeviceAllocator *alloc);
-
 	void Destroy() {
 		if (vkTex_) {
 			vkTex_->Destroy();
@@ -330,9 +334,9 @@ private:
 	VulkanContext *vulkan_;
 	VulkanTexture *vkTex_ = nullptr;
 
-	int mipLevels_;
+	int mipLevels_ = 0;
 
-	DataFormat format_;
+	DataFormat format_ = DataFormat::UNDEFINED;
 };
 
 class VKFramebuffer;
@@ -345,8 +349,15 @@ public:
 	const DeviceCaps &GetDeviceCaps() const override {
 		return caps_;
 	}
+	std::vector<std::string> GetDeviceList() const override {
+		std::vector<std::string> list;
+		for (int i = 0; i < vulkan_->GetNumPhysicalDevices(); i++) {
+			list.push_back(vulkan_->GetPhysicalDeviceProperties(i).properties.deviceName);
+		}
+		return list;
+	}
 	uint32_t GetSupportedShaderLanguages() const override {
-		return (uint32_t)ShaderLanguage::GLSL_VULKAN | (uint32_t)ShaderLanguage::SPIRV_VULKAN;
+		return (uint32_t)ShaderLanguage::GLSL_VULKAN;
 	}
 	uint32_t GetDataFormatSupport(DataFormat fmt) const override;
 
@@ -367,6 +378,7 @@ public:
 	void CopyFramebufferImage(Framebuffer *src, int level, int x, int y, int z, Framebuffer *dst, int dstLevel, int dstX, int dstY, int dstZ, int width, int height, int depth, int channelBits) override;
 	bool BlitFramebuffer(Framebuffer *src, int srcX1, int srcY1, int srcX2, int srcY2, Framebuffer *dst, int dstX1, int dstY1, int dstX2, int dstY2, int channelBits, FBBlitFilter filter) override;
 	bool CopyFramebufferToMemorySync(Framebuffer *src, int channelBits, int x, int y, int w, int h, Draw::DataFormat format, void *pixels, int pixelStride) override;
+	DataFormat PreferredFramebufferReadbackFormat(Framebuffer *src) override;
 
 	// These functions should be self explanatory.
 	void BindFramebufferAsRenderTarget(Framebuffer *fbo, const RenderPassInfo &rp) override;
@@ -380,6 +392,7 @@ public:
 	void SetScissorRect(int left, int top, int width, int height) override;
 	void SetViewports(int count, Viewport *viewports) override;
 	void SetBlendFactor(float color[4]) override;
+	void SetStencilRef(uint8_t stencilRef) override;
 
 	void BindSamplerStates(int start, int count, SamplerState **state) override;
 	void BindTextures(int start, int count, Texture **textures) override;
@@ -406,19 +419,19 @@ public:
 	void DrawIndexed(int vertexCount, int offset) override;
 	void DrawUP(const void *vdata, int vertexCount) override;
 
+	void ApplyDynamicState();
+
 	void Clear(int mask, uint32_t colorval, float depthVal, int stencilVal) override;
 
 	void BeginFrame() override;
 	void EndFrame() override;
 	void WipeQueue() override;
 
-	void FlushState() override {
-	}
-	void WaitRenderCompletion(Framebuffer *fbo) override;
+	void FlushState() override {}
 
 	// From Sascha's code
 	static std::string FormatDriverVersion(const VkPhysicalDeviceProperties &props) {
-		if (props.vendorID == 4318) {
+		if (props.vendorID == VULKAN_VENDOR_NVIDIA) {
 			// 10 bits = major version (up to r1023)
 			// 8 bits = minor version (up to 255)
 			// 8 bits = secondary branch version/build version (up to 255)
@@ -428,6 +441,9 @@ public:
 			uint32_t secondaryBranch = (props.driverVersion >> 6) & 0x0ff;
 			uint32_t tertiaryBranch = (props.driverVersion) & 0x003f;
 			return StringFromFormat("%d.%d.%d.%d (%08x)", major, minor, secondaryBranch, tertiaryBranch, props.driverVersion);
+		} else if (props.vendorID == VULKAN_VENDOR_ARM) {
+			// ARM just puts a hash here, let's just output it as is.
+			return StringFromFormat("%08x", props.driverVersion);
 		} else {
 			// Standard scheme, use the standard macros.
 			uint32_t major = VK_VERSION_MAJOR(props.driverVersion);
@@ -441,13 +457,13 @@ public:
 		// TODO: Make these actually query the right information
 		switch (info) {
 		case APINAME: return "Vulkan";
-		case VENDORSTRING: return vulkan_->GetPhysicalDeviceProperties().deviceName;
-		case VENDOR: return VulkanVendorString(vulkan_->GetPhysicalDeviceProperties().vendorID);
-		case DRIVER: return FormatDriverVersion(vulkan_->GetPhysicalDeviceProperties());
+		case VENDORSTRING: return vulkan_->GetPhysicalDeviceProperties().properties.deviceName;
+		case VENDOR: return VulkanVendorString(vulkan_->GetPhysicalDeviceProperties().properties.vendorID);
+		case DRIVER: return FormatDriverVersion(vulkan_->GetPhysicalDeviceProperties().properties);
 		case SHADELANGVERSION: return "N/A";;
 		case APIVERSION: 
 		{
-			uint32_t ver = vulkan_->GetPhysicalDeviceProperties().apiVersion;
+			uint32_t ver = vulkan_->GetPhysicalDeviceProperties().properties.apiVersion;
 			return StringFromFormat("%d.%d.%d", ver >> 22, (ver >> 12) & 0x3ff, ver & 0xfff);
 		}
 		default: return "?";
@@ -476,6 +492,8 @@ public:
 			return (uintptr_t)boundImageView_[1];
 		case NativeObject::RENDER_MANAGER:
 			return (uintptr_t)&renderManager_;
+		case NativeObject::NULL_IMAGEVIEW:
+			return (uintptr_t)GetNullTexture()->GetImageView();
 		default:
 			Crash();
 			return 0;
@@ -485,11 +503,14 @@ public:
 	void HandleEvent(Event ev, int width, int height, void *param1, void *param2) override;
 
 private:
+	VulkanTexture *GetNullTexture();
 	VulkanContext *vulkan_ = nullptr;
 
 	VulkanRenderManager renderManager_;
 
 	VulkanDeviceAllocator *allocator_ = nullptr;
+
+	VulkanTexture *nullTexture_ = nullptr;
 
 	VKPipeline *curPipeline_ = nullptr;
 	VKBuffer *curVBuffers_[4]{};
@@ -528,6 +549,8 @@ private:
 	VulkanPushBuffer *push_ = nullptr;
 
 	DeviceCaps caps_{};
+
+	uint8_t stencilRef_ = 0;
 };
 
 static int GetBpp(VkFormat format) {
@@ -604,6 +627,32 @@ static inline VkSamplerAddressMode AddressModeToVulkan(Draw::TextureAddressMode 
 	}
 }
 
+VulkanTexture *VKContext::GetNullTexture() {
+	if (!nullTexture_) {
+		VkCommandBuffer cmdInit = renderManager_.GetInitCmd();
+		nullTexture_ = new VulkanTexture(vulkan_, allocator_);
+		nullTexture_->SetTag("Null");
+		int w = 8;
+		int h = 8;
+		nullTexture_->CreateDirect(cmdInit, w, h, 1, VK_FORMAT_A8B8G8R8_UNORM_PACK32, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+		uint32_t bindOffset;
+		VkBuffer bindBuf;
+		uint32_t *data = (uint32_t *)push_->Push(w * h * 4, &bindOffset, &bindBuf);
+		for (int y = 0; y < h; y++) {
+			for (int x = 0; x < w; x++) {
+				// data[y*w + x] = ((x ^ y) & 1) ? 0xFF808080 : 0xFF000000;   // gray/black checkerboard
+				data[y*w + x] = 0;  // black
+			}
+		}
+		nullTexture_->UploadMip(cmdInit, 0, w, h, bindBuf, bindOffset, w);
+		nullTexture_->EndCreate(cmdInit);
+	} else {
+		nullTexture_->Touch();
+	}
+	return nullTexture_;
+}
+
 class VKSamplerState : public SamplerState {
 public:
 	VKSamplerState(VulkanContext *vulkan, const SamplerStateDesc &desc) : vulkan_(vulkan) {
@@ -617,7 +666,7 @@ public:
 		s.mipmapMode = desc.mipFilter == TextureFilter::LINEAR ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
 		s.maxLod = desc.maxLod;
 		VkResult res = vkCreateSampler(vulkan_->GetDevice(), &s, nullptr, &sampler_);
-		assert(VK_SUCCESS == res);
+		_assert_(VK_SUCCESS == res);
 	}
 	~VKSamplerState() {
 		vulkan_->Delete().QueueDeleteSampler(sampler_);
@@ -654,6 +703,10 @@ enum class TextureState {
 bool VKTexture::Create(VkCommandBuffer cmd, VulkanPushBuffer *push, const TextureDesc &desc, VulkanDeviceAllocator *alloc) {
 	// Zero-sized textures not allowed.
 	_assert_(desc.width * desc.height * desc.depth > 0);  // remember to set depth to 1!
+	if (desc.width * desc.height * desc.depth <= 0) {
+		ELOG("Bad texture dimensions %dx%dx%d", desc.width, desc.height, desc.depth);
+		return false;
+	}
 	_assert_(push);
 	format_ = desc.format;
 	mipLevels_ = desc.mipLevels;
@@ -663,7 +716,6 @@ bool VKTexture::Create(VkCommandBuffer cmd, VulkanPushBuffer *push, const Textur
 	vkTex_ = new VulkanTexture(vulkan_, alloc);
 	vkTex_->SetTag(desc.tag);
 	VkFormat vulkanFormat = DataFormatToVulkan(format_);
-	int stride = desc.width * (int)DataFormatSizeInBytes(format_);
 	int bpp = GetBpp(vulkanFormat);
 	int bytesPerPixel = bpp / 8;
 	int usageBits = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -699,18 +751,20 @@ bool VKTexture::Create(VkCommandBuffer cmd, VulkanPushBuffer *push, const Textur
 
 VKContext::VKContext(VulkanContext *vulkan, bool splitSubmit)
 	: vulkan_(vulkan), caps_{}, renderManager_(vulkan) {
-	caps_.anisoSupported = vulkan->GetFeaturesAvailable().samplerAnisotropy != 0;
-	caps_.geometryShaderSupported = vulkan->GetFeaturesAvailable().geometryShader != 0;
-	caps_.tesselationShaderSupported = vulkan->GetFeaturesAvailable().tessellationShader != 0;
-	caps_.multiViewport = vulkan->GetFeaturesAvailable().multiViewport != 0;
-	caps_.dualSourceBlend = vulkan->GetFeaturesAvailable().dualSrcBlend != 0;
+	caps_.anisoSupported = vulkan->GetDeviceFeatures().enabled.samplerAnisotropy != 0;
+	caps_.geometryShaderSupported = vulkan->GetDeviceFeatures().enabled.geometryShader != 0;
+	caps_.tesselationShaderSupported = vulkan->GetDeviceFeatures().enabled.tessellationShader != 0;
+	caps_.multiViewport = vulkan->GetDeviceFeatures().enabled.multiViewport != 0;
+	caps_.dualSourceBlend = vulkan->GetDeviceFeatures().enabled.dualSrcBlend != 0;
+	caps_.depthClampSupported = vulkan->GetDeviceFeatures().enabled.depthClamp != 0;
 	caps_.framebufferBlitSupported = true;
 	caps_.framebufferCopySupported = true;
 	caps_.framebufferDepthBlitSupported = false;  // Can be checked for.
 	caps_.framebufferDepthCopySupported = true;   // Will pretty much always be the case.
 	caps_.preferredDepthBufferFormat = DataFormat::D24_S8;  // TODO: Ask vulkan.
 
-	switch (vulkan->GetPhysicalDeviceProperties().vendorID) {
+	auto deviceProps = vulkan->GetPhysicalDeviceProperties(vulkan_->GetCurrentPhysicalDevice()).properties;
+	switch (deviceProps.vendorID) {
 	case VULKAN_VENDOR_AMD: caps_.vendor = GPUVendor::VENDOR_AMD; break;
 	case VULKAN_VENDOR_ARM: caps_.vendor = GPUVendor::VENDOR_ARM; break;
 	case VULKAN_VENDOR_IMGTEC: caps_.vendor = GPUVendor::VENDOR_IMGTEC; break;
@@ -721,11 +775,27 @@ VKContext::VKContext(VulkanContext *vulkan, bool splitSubmit)
 		caps_.vendor = GPUVendor::VENDOR_UNKNOWN;
 	}
 
+	if (caps_.vendor == GPUVendor::VENDOR_QUALCOMM) {
+		// Adreno 5xx devices, all known driver versions, fail to discard stencil when depth write is off.
+		// See: https://github.com/hrydgard/ppsspp/pull/11684
+		if (deviceProps.deviceID >= 0x05000000 && deviceProps.deviceID < 0x06000000) {
+			bugs_.Infest(Bugs::NO_DEPTH_CANNOT_DISCARD_STENCIL);
+		}
+	} else if (caps_.vendor == GPUVendor::VENDOR_AMD) {
+		// See issue #10074, and also #10065 (AMD) and #10109 for the choice of the driver version to check for.
+		if (deviceProps.driverVersion < 0x00407000) {
+			bugs_.Infest(Bugs::DUAL_SOURCE_BLENDING_BROKEN);
+		}
+	} else if (caps_.vendor == GPUVendor::VENDOR_INTEL) {
+		// Workaround for Intel driver bug. TODO: Re-enable after some driver version
+		bugs_.Infest(Bugs::DUAL_SOURCE_BLENDING_BROKEN);
+	}
+
+	caps_.deviceID = deviceProps.deviceID;
 	device_ = vulkan->GetDevice();
 
 	queue_ = vulkan->GetGraphicsQueue();
 	queueFamilyIndex_ = vulkan->GetGraphicsQueueFamilyIndex();
-	memset(boundTextures_, 0, sizeof(boundTextures_));
 
 	VkDescriptorPoolSize dpTypes[2];
 	dpTypes[0].descriptorCount = 200;
@@ -746,7 +816,7 @@ VKContext::VKContext(VulkanContext *vulkan, bool splitSubmit)
 	for (int i = 0; i < VulkanContext::MAX_INFLIGHT_FRAMES; i++) {
 		frame_[i].pushBuffer = new VulkanPushBuffer(vulkan_, 1024 * 1024);
 		VkResult res = vkCreateDescriptorPool(device_, &dp, nullptr, &frame_[i].descriptorPool);
-		assert(res == VK_SUCCESS);
+		_assert_(res == VK_SUCCESS);
 	}
 
 	// binding 0 - uniform data
@@ -787,6 +857,7 @@ VKContext::VKContext(VulkanContext *vulkan, bool splitSubmit)
 }
 
 VKContext::~VKContext() {
+	delete nullTexture_;
 	allocator_->Destroy();
 	// We have to delete on queue, so this can free its queued deletions.
 	vulkan_->Delete().QueueCallback([](void *ptr) {
@@ -819,11 +890,7 @@ void VKContext::BeginFrame() {
 
 	frame.descSets_.clear();
 	VkResult result = vkResetDescriptorPool(device_, frame.descriptorPool, 0);
-	assert(result == VK_SUCCESS);
-}
-
-void VKContext::WaitRenderCompletion(Framebuffer *fbo) {
-	// TODO
+	_assert_(result == VK_SUCCESS);
 }
 
 void VKContext::EndFrame() {
@@ -860,7 +927,7 @@ VkDescriptorSet VKContext::GetOrCreateDescriptorSet(VkBuffer buf) {
 	alloc.pSetLayouts = &descriptorSetLayout_;
 	alloc.descriptorSetCount = 1;
 	VkResult res = vkAllocateDescriptorSets(device_, &alloc, &descSet);
-	assert(VK_SUCCESS == res);
+	_assert_(VK_SUCCESS == res);
 
 	VkDescriptorBufferInfo bufferDesc;
 	bufferDesc.buffer = buf;
@@ -868,8 +935,8 @@ VkDescriptorSet VKContext::GetOrCreateDescriptorSet(VkBuffer buf) {
 	bufferDesc.range = curPipeline_->GetUBOSize();
 
 	VkDescriptorImageInfo imageDesc;
-	imageDesc.imageView = boundTextures_[0]->GetImageView();
-	imageDesc.sampler = boundSamplers_[0]->GetSampler();
+	imageDesc.imageView = boundTextures_[0] ? boundTextures_[0]->GetImageView() : VK_NULL_HANDLE;
+	imageDesc.sampler = boundSamplers_[0] ? boundSamplers_[0]->GetSampler() : VK_NULL_HANDLE;
 #ifdef VULKAN_USE_GENERAL_LAYOUT_FOR_COLOR
 	imageDesc.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 #else
@@ -936,18 +1003,17 @@ Pipeline *VKContext::CreateGraphicsPipeline(const PipelineDesc &desc) {
 	inputAssembly.topology = primToVK[(int)desc.prim];
 	inputAssembly.primitiveRestartEnable = false;
 
-	VkDynamicState dynamics[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+	// We treat the three stencil states as a unit in other places, so let's do that here too.
+	VkDynamicState dynamics[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_REFERENCE, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK };
 	VkPipelineDynamicStateCreateInfo dynamicInfo = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
-	dynamicInfo.dynamicStateCount = ARRAY_SIZE(dynamics);
+	dynamicInfo.dynamicStateCount = depth->info.stencilTestEnable ? ARRAY_SIZE(dynamics) : 2;
 	dynamicInfo.pDynamicStates = dynamics;
 
-	VkPipelineMultisampleStateCreateInfo ms = { VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
-	ms.pNext = nullptr;
+	VkPipelineMultisampleStateCreateInfo ms{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
 	ms.pSampleMask = nullptr;
 	ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
-	VkPipelineViewportStateCreateInfo vs = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
-	vs.pNext = nullptr;
+	VkPipelineViewportStateCreateInfo vs{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
 	vs.viewportCount = 1;
 	vs.scissorCount = 1;
 	vs.pViewports = nullptr;  // dynamic
@@ -956,8 +1022,7 @@ Pipeline *VKContext::CreateGraphicsPipeline(const PipelineDesc &desc) {
 	VkPipelineRasterizationStateCreateInfo rs{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
 	raster->ToVulkan(&rs);
 
-	VkGraphicsPipelineCreateInfo info = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
-	info.pNext = nullptr;
+	VkGraphicsPipelineCreateInfo info{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
 	info.flags = 0;
 	info.stageCount = (uint32_t)stages.size();
 	info.pStages = stages.data();
@@ -984,7 +1049,11 @@ Pipeline *VKContext::CreateGraphicsPipeline(const PipelineDesc &desc) {
 	if (desc.uniformDesc) {
 		pipeline->dynamicUniformSize = (int)desc.uniformDesc->uniformBufferSize;
 	}
-
+	if (depth->info.stencilTestEnable) {
+		pipeline->usesStencil = true;
+		pipeline->stencilTestMask = depth->info.front.compareMask;
+		pipeline->stencilWriteMask = depth->info.front.writeMask;
+	}
 	return pipeline;
 }
 
@@ -1008,6 +1077,12 @@ void VKContext::SetViewports(int count, Viewport *viewports) {
 
 void VKContext::SetBlendFactor(float color[4]) {
 	renderManager_.SetBlendFactor(color);
+}
+
+void VKContext::SetStencilRef(uint8_t stencilRef) {
+	if (curPipeline_->usesStencil)
+		renderManager_.SetStencilParams(curPipeline_->stencilWriteMask, curPipeline_->stencilTestMask, stencilRef);
+	stencilRef_ = stencilRef;
 }
 
 InputLayout *VKContext::CreateInputLayout(const InputLayoutDesc &desc) {
@@ -1035,18 +1110,24 @@ InputLayout *VKContext::CreateInputLayout(const InputLayoutDesc &desc) {
 }
 
 Texture *VKContext::CreateTexture(const TextureDesc &desc) {
-	if (!push_) {
+	VkCommandBuffer initCmd = renderManager_.GetInitCmd();
+	if (!push_ || !initCmd) {
 		// Too early! Fail.
 		ELOG("Can't create textures before the first frame has started.");
 		return nullptr;
 	}
-	_assert_(renderManager_.GetInitCmd());
-	return new VKTexture(vulkan_, renderManager_.GetInitCmd(), push_, desc, allocator_);
+	VKTexture *tex = new VKTexture(vulkan_, initCmd, push_, desc);
+	if (tex->Create(initCmd, push_, desc, allocator_)) {
+		return tex;
+	} else {
+		ELOG("Failed to create texture");
+		delete tex;
+		return nullptr;
+	}
 }
 
 static inline void CopySide(VkStencilOpState &dest, const StencilSide &src) {
 	dest.compareMask = src.compareMask;
-	dest.reference = src.reference;
 	dest.writeMask = src.writeMask;
 	dest.compareOp = compToVK[(int)src.compareOp];
 	dest.failOp = stencilOpToVK[(int)src.failOp];
@@ -1059,7 +1140,7 @@ DepthStencilState *VKContext::CreateDepthStencilState(const DepthStencilStateDes
 	ds->info.depthCompareOp = compToVK[(int)desc.depthCompare];
 	ds->info.depthTestEnable = desc.depthTestEnabled;
 	ds->info.depthWriteEnable = desc.depthWriteEnabled;
-	ds->info.stencilTestEnable = false;
+	ds->info.stencilTestEnable = desc.stencilEnabled;
 	ds->info.depthBoundsTestEnable = false;
 	if (ds->info.stencilTestEnable) {
 		CopySide(ds->info.front, desc.front);
@@ -1117,7 +1198,7 @@ void VKContext::UpdateBuffer(Buffer *buffer, const uint8_t *data, size_t offset,
 void VKContext::BindTextures(int start, int count, Texture **textures) {
 	for (int i = start; i < start + count; i++) {
 		boundTextures_[i] = static_cast<VKTexture *>(textures[i]);
-		boundImageView_[i] = boundTextures_[i]->GetImageView();
+		boundImageView_[i] = boundTextures_[i] ? boundTextures_[i]->GetImageView() : GetNullTexture()->GetImageView();
 	}
 }
 
@@ -1147,6 +1228,13 @@ void VKContext::UpdateDynamicUniformBuffer(const void *ub, size_t size) {
 	curPipeline_->SetDynamicUniformData(ub, size);
 }
 
+void VKContext::ApplyDynamicState() {
+	// TODO: blend constants, stencil, viewports should be here, after bindpipeline..
+	if (curPipeline_->usesStencil) {
+		renderManager_.SetStencilParams(curPipeline_->stencilWriteMask, curPipeline_->stencilTestMask, stencilRef_);
+	}
+}
+
 void VKContext::Draw(int vertexCount, int offset) {
 	VKBuffer *vbuf = curVBuffers_[0];
 
@@ -1158,7 +1246,7 @@ void VKContext::Draw(int vertexCount, int offset) {
 	VkDescriptorSet descSet = GetOrCreateDescriptorSet(vulkanUBObuf);
 
 	renderManager_.BindPipeline(curPipeline_->vkpipeline);
-	// TODO: blend constants, stencil, viewports should be here, after bindpipeline..
+	ApplyDynamicState();
 	renderManager_.Draw(pipelineLayout_, descSet, 1, &ubo_offset, vulkanVbuf, (int)vbBindOffset, vertexCount);
 }
 
@@ -1174,7 +1262,7 @@ void VKContext::DrawIndexed(int vertexCount, int offset) {
 	VkDescriptorSet descSet = GetOrCreateDescriptorSet(vulkanUBObuf);
 
 	renderManager_.BindPipeline(curPipeline_->vkpipeline);
-	// TODO: blend constants, stencil, viewports should be here, after bindpipeline..
+	ApplyDynamicState();
 	renderManager_.DrawIndexed(pipelineLayout_, descSet, 1, &ubo_offset, vulkanVbuf, (int)vbBindOffset, vulkanIbuf, (int)ibBindOffset, vertexCount, 1, VK_INDEX_TYPE_UINT32);
 }
 
@@ -1186,7 +1274,7 @@ void VKContext::DrawUP(const void *vdata, int vertexCount) {
 	VkDescriptorSet descSet = GetOrCreateDescriptorSet(vulkanUBObuf);
 
 	renderManager_.BindPipeline(curPipeline_->vkpipeline);
-	// TODO: blend constants, stencil, viewports should be here, after bindpipeline..
+	ApplyDynamicState();
 	renderManager_.Draw(pipelineLayout_, descSet, 1, &ubo_offset, vulkanVbuf, (int)vbBindOffset, vertexCount);
 }
 
@@ -1226,8 +1314,8 @@ static const char *VulkanFormatToString(VkFormat fmt) {
 }
 
 std::vector<std::string> VKContext::GetFeatureList() const {
-	const VkPhysicalDeviceFeatures &available = vulkan_->GetFeaturesAvailable();
-	const VkPhysicalDeviceFeatures &enabled = vulkan_->GetFeaturesEnabled();
+	const VkPhysicalDeviceFeatures &available = vulkan_->GetDeviceFeatures().available;
+	const VkPhysicalDeviceFeatures &enabled = vulkan_->GetDeviceFeatures().enabled;
 
 	std::vector<std::string> features;
 	AddFeature(features, "dualSrcBlend", available.dualSrcBlend, enabled.dualSrcBlend);
@@ -1362,6 +1450,17 @@ bool VKContext::CopyFramebufferToMemorySync(Framebuffer *srcfb, int channelBits,
 	if (channelBits & FBChannel::FB_STENCIL_BIT) aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
 
 	return renderManager_.CopyFramebufferToMemorySync(src ? src->GetFB() : nullptr, aspectMask, x, y, w, h, format, (uint8_t *)pixels, pixelStride);
+}
+
+DataFormat VKContext::PreferredFramebufferReadbackFormat(Framebuffer *src) {
+	if (src) {
+		return DrawContext::PreferredFramebufferReadbackFormat(src);
+	}
+
+	if (vulkan_->GetSwapchainFormat() == VK_FORMAT_B8G8R8A8_UNORM) {
+		return Draw::DataFormat::B8G8R8A8_UNORM;
+	}
+	return DrawContext::PreferredFramebufferReadbackFormat(src);
 }
 
 void VKContext::BindFramebufferAsRenderTarget(Framebuffer *fbo, const RenderPassInfo &rp) {

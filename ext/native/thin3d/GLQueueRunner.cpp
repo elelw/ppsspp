@@ -24,6 +24,7 @@ extern void bindDefaultFBO();
 GLuint g_defaultFBO = 0;
 
 void GLQueueRunner::CreateDeviceObjects() {
+	CHECK_GL_ERROR_IF_DEBUG();
 	if (gl_extensions.EXT_texture_filter_anisotropic) {
 		glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &maxAnisotropyLevel_);
 	} else {
@@ -52,9 +53,11 @@ void GLQueueRunner::CreateDeviceObjects() {
 	if (!gl_extensions.IsCoreContext) {  // Not OK to query this in core profile!
 		populate(GL_EXTENSIONS);
 	}
+	CHECK_GL_ERROR_IF_DEBUG();
 }
 
 void GLQueueRunner::DestroyDeviceObjects() {
+	CHECK_GL_ERROR_IF_DEBUG();
 	if (!nameCache_.empty()) {
 		glDeleteTextures((GLsizei)nameCache_.size(), &nameCache_[0]);
 		nameCache_.clear();
@@ -63,12 +66,71 @@ void GLQueueRunner::DestroyDeviceObjects() {
 		glDeleteVertexArrays(1, &globalVAO_);
 	}
 	delete[] readbackBuffer_;
+	readbackBuffer_ = nullptr;
 	readbackBufferSize_ = 0;
 	delete[] tempBuffer_;
+	tempBuffer_ = nullptr;
 	tempBufferSize_ = 0;
+	CHECK_GL_ERROR_IF_DEBUG();
 }
 
-void GLQueueRunner::RunInitSteps(const std::vector<GLRInitStep> &steps) {
+template <typename Getiv, typename GetLog>
+static std::string GetInfoLog(GLuint name, Getiv getiv, GetLog getLog) {
+	GLint bufLength = 0;
+	getiv(name, GL_INFO_LOG_LENGTH, &bufLength);
+	if (bufLength <= 0)
+		bufLength = 2048;
+
+	std::string infoLog;
+	infoLog.resize(bufLength);
+	GLsizei len = 0;
+	getLog(name, (GLsizei)infoLog.size(), &len, &infoLog[0]);
+	if (len <= 0)
+		return "(unknown reason)";
+
+	infoLog.resize(len);
+	return infoLog;
+}
+
+void GLQueueRunner::RunInitSteps(const std::vector<GLRInitStep> &steps, bool skipGLCalls) {
+	if (skipGLCalls) {
+		// Some bookkeeping still needs to be done.
+		for (size_t i = 0; i < steps.size(); i++) {
+			const GLRInitStep &step = steps[i];
+			switch (step.stepType) {
+			case GLRInitStepType::BUFFER_SUBDATA:
+			{
+				if (step.buffer_subdata.deleteData)
+					delete[] step.buffer_subdata.data;
+				break;
+			}
+			case GLRInitStepType::TEXTURE_IMAGE:
+			{
+				GLRTexture *tex = step.texture_image.texture;
+				if (step.texture_image.allocType == GLRAllocType::ALIGNED) {
+					FreeAlignedMemory(step.texture_image.data);
+				} else if (step.texture_image.allocType == GLRAllocType::NEW) {
+					delete[] step.texture_image.data;
+				}
+				break;
+			}
+			case GLRInitStepType::CREATE_PROGRAM:
+			{
+				WARN_LOG(G3D, "CREATE_PROGRAM found with skipGLCalls, not good");
+				break;
+			}
+			case GLRInitStepType::CREATE_SHADER:
+			{
+				WARN_LOG(G3D, "CREATE_SHADER found with skipGLCalls, not good");
+				break;
+			}
+			default:
+				break;
+			}
+		}
+		return;
+	}
+
 	CHECK_GL_ERROR_IF_DEBUG();
 	glActiveTexture(GL_TEXTURE0);
 	GLuint boundTexture = (GLuint)-1;
@@ -83,23 +145,26 @@ void GLQueueRunner::RunInitSteps(const std::vector<GLRInitStep> &steps) {
 			glGenTextures(1, &tex->texture);
 			glBindTexture(tex->target, tex->texture);
 			boundTexture = tex->texture;
+			CHECK_GL_ERROR_IF_DEBUG();
 			break;
 		}
 		case GLRInitStepType::CREATE_BUFFER:
 		{
 			GLRBuffer *buffer = step.create_buffer.buffer;
-			glGenBuffers(1, &buffer->buffer);
-			glBindBuffer(buffer->target_, buffer->buffer);
+			glGenBuffers(1, &buffer->buffer_);
+			glBindBuffer(buffer->target_, buffer->buffer_);
 			glBufferData(buffer->target_, step.create_buffer.size, nullptr, step.create_buffer.usage);
+			CHECK_GL_ERROR_IF_DEBUG();
 			break;
 		}
 		case GLRInitStepType::BUFFER_SUBDATA:
 		{
 			GLRBuffer *buffer = step.buffer_subdata.buffer;
-			glBindBuffer(GL_ARRAY_BUFFER, buffer->buffer);
+			glBindBuffer(GL_ARRAY_BUFFER, buffer->buffer_);
 			glBufferSubData(GL_ARRAY_BUFFER, step.buffer_subdata.offset, step.buffer_subdata.size, step.buffer_subdata.data);
 			if (step.buffer_subdata.deleteData)
 				delete[] step.buffer_subdata.data;
+			CHECK_GL_ERROR_IF_DEBUG();
 			break;
 		}
 		case GLRInitStepType::CREATE_PROGRAM:
@@ -108,8 +173,10 @@ void GLQueueRunner::RunInitSteps(const std::vector<GLRInitStep> &steps) {
 			GLRProgram *program = step.create_program.program;
 			program->program = glCreateProgram();
 			_assert_msg_(G3D, step.create_program.num_shaders > 0, "Can't create a program with zero shaders");
+			bool anyFailed = false;
 			for (int j = 0; j < step.create_program.num_shaders; j++) {
 				_dbg_assert_msg_(G3D, step.create_program.shaders[j]->shader, "Can't create a program with a null shader");
+				anyFailed = anyFailed || step.create_program.shaders[j]->failed;
 				glAttachShader(program->program, step.create_program.shaders[j]->shader);
 			}
 
@@ -136,36 +203,31 @@ void GLQueueRunner::RunInitSteps(const std::vector<GLRInitStep> &steps) {
 			GLint linkStatus = GL_FALSE;
 			glGetProgramiv(program->program, GL_LINK_STATUS, &linkStatus);
 			if (linkStatus != GL_TRUE) {
-				GLint bufLength = 0;
-				glGetProgramiv(program->program, GL_INFO_LOG_LENGTH, &bufLength);
-				if (bufLength) {
-					char *buf = new char[bufLength];
-					glGetProgramInfoLog(program->program, bufLength, nullptr, buf);
+				std::string infoLog = GetInfoLog(program->program, glGetProgramiv, glGetProgramInfoLog);
 
-					// TODO: Could be other than vs/fs.  Also, we're assuming order here...
-					const char *vsDesc = step.create_program.shaders[0]->desc.c_str();
-					const char *fsDesc = step.create_program.num_shaders > 1 ? step.create_program.shaders[1]->desc.c_str() : nullptr;
-					const char *vsCode = step.create_program.shaders[0]->code.c_str();
-					const char *fsCode = step.create_program.num_shaders > 1 ? step.create_program.shaders[1]->code.c_str() : nullptr;
-					Reporting::ReportMessage("Error in shader program link: info: %s\nfs: %s\n%s\nvs: %s\n%s", buf, fsDesc, fsCode, vsDesc, vsCode);
+				// TODO: Could be other than vs/fs.  Also, we're assuming order here...
+				GLRShader *vs = step.create_program.shaders[0];
+				GLRShader *fs = step.create_program.num_shaders > 1 ? step.create_program.shaders[1] : nullptr;
+				std::string vsDesc = vs->desc + (vs->failed ? " (failed)" : "");
+				std::string fsDesc = fs ? (fs->desc + (fs->failed ? " (failed)" : "")) : "(none)";
+				const char *vsCode = vs->code.c_str();
+				const char *fsCode = fs ? fs->code.c_str() : "(none)";
+				if (!anyFailed)
+					Reporting::ReportMessage("Error in shader program link: info: %s\nfs: %s\n%s\nvs: %s\n%s", infoLog.c_str(), fsDesc.c_str(), fsCode, vsDesc.c_str(), vsCode);
 
-					ELOG("Could not link program:\n %s", buf);
-					ERROR_LOG(G3D, "VS desc:\n%s", vsDesc);
-					ERROR_LOG(G3D, "FS desc:\n%s", fsDesc);
-					ERROR_LOG(G3D, "VS:\n%s\n", vsCode);
-					ERROR_LOG(G3D, "FS:\n%s\n", fsCode);
+				ELOG("Could not link program:\n %s", infoLog.c_str());
+				ERROR_LOG(G3D, "VS desc:\n%s", vsDesc.c_str());
+				ERROR_LOG(G3D, "FS desc:\n%s", fsDesc.c_str());
+				ERROR_LOG(G3D, "VS:\n%s\n", vsCode);
+				ERROR_LOG(G3D, "FS:\n%s\n", fsCode);
 
 #ifdef _WIN32
-					OutputDebugStringUTF8(buf);
-					if (vsCode)
-						OutputDebugStringUTF8(LineNumberString(vsCode).c_str());
-					if (fsCode)
-						OutputDebugStringUTF8(LineNumberString(fsCode).c_str());
+				OutputDebugStringUTF8(infoLog.c_str());
+				if (vsCode)
+					OutputDebugStringUTF8(LineNumberString(vsCode).c_str());
+				if (fsCode)
+					OutputDebugStringUTF8(LineNumberString(fsCode).c_str());
 #endif
-					delete[] buf;
-				} else {
-					ELOG("Could not link program with %d shaders for unknown reason:", step.create_program.num_shaders);
-				}
 				CHECK_GL_ERROR_IF_DEBUG();
 				break;
 			}
@@ -187,6 +249,7 @@ void GLQueueRunner::RunInitSteps(const std::vector<GLRInitStep> &steps) {
 					switch (init.type) {
 					case 0:
 						glUniform1i(uniform, init.value);
+						break;
 					}
 				}
 			}
@@ -204,23 +267,18 @@ void GLQueueRunner::RunInitSteps(const std::vector<GLRInitStep> &steps) {
 			GLint success = 0;
 			glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
 			if (!success) {
-#define MAX_INFO_LOG_SIZE 2048
-				GLchar infoLog[MAX_INFO_LOG_SIZE];
-				GLsizei len = 0;
-				glGetShaderInfoLog(shader, MAX_INFO_LOG_SIZE, &len, infoLog);
-				infoLog[len] = '\0';
+				std::string infoLog = GetInfoLog(shader, glGetShaderiv, glGetShaderInfoLog);
 #ifdef __ANDROID__
-				ELOG("Error in shader compilation! %s\n", infoLog);
+				ELOG("Error in shader compilation! %s\n", infoLog.c_str());
 				ELOG("Shader source:\n%s\n", (const char *)code);
 #endif
 				ERROR_LOG(G3D, "Error in shader compilation for: %s", step.create_shader.shader->desc.c_str());
-				ERROR_LOG(G3D, "Info log: %s", infoLog);
+				ERROR_LOG(G3D, "Info log: %s", infoLog.c_str());
 				ERROR_LOG(G3D, "Shader source:\n%s\n", (const char *)code);
-				Reporting::ReportMessage("Error in shader compilation: info: %s\n%s\n%s", infoLog, step.create_shader.shader->desc.c_str(), (const char *)code);
+				Reporting::ReportMessage("Error in shader compilation: info: %s\n%s\n%s", infoLog.c_str(), step.create_shader.shader->desc.c_str(), (const char *)code);
 #ifdef SHADERLOG
-				OutputDebugStringUTF8(infoLog);
+				OutputDebugStringUTF8(infoLog.c_str());
 #endif
-				step.create_shader.shader->valid = false;
 				step.create_shader.shader->failed = true;
 				step.create_shader.shader->error = infoLog;
 			}
@@ -233,7 +291,7 @@ void GLQueueRunner::RunInitSteps(const std::vector<GLRInitStep> &steps) {
 		}
 		case GLRInitStepType::CREATE_INPUT_LAYOUT:
 		{
-			GLRInputLayout *layout = step.create_input_layout.inputLayout;
+			// GLRInputLayout *layout = step.create_input_layout.inputLayout;
 			// Nothing to do unless we want to create vertexbuffer objects (GL 4.5)
 			break;
 		}
@@ -254,14 +312,14 @@ void GLQueueRunner::RunInitSteps(const std::vector<GLRInitStep> &steps) {
 				glBindTexture(tex->target, tex->texture);
 				boundTexture = tex->texture;
 			}
-			if (!step.texture_image.data)
+			if (!step.texture_image.data && step.texture_image.allocType != GLRAllocType::NONE)
 				Crash();
 			// For things to show in RenderDoc, need to split into glTexImage2D(..., nullptr) and glTexSubImage.
 			glTexImage2D(tex->target, step.texture_image.level, step.texture_image.internalFormat, step.texture_image.width, step.texture_image.height, 0, step.texture_image.format, step.texture_image.type, step.texture_image.data);
 			allocatedTextures = true;
 			if (step.texture_image.allocType == GLRAllocType::ALIGNED) {
 				FreeAlignedMemory(step.texture_image.data);
-			} else {
+			} else if (step.texture_image.allocType == GLRAllocType::NEW) {
 				delete[] step.texture_image.data;
 			}
 			CHECK_GL_ERROR_IF_DEBUG();
@@ -324,38 +382,76 @@ void GLQueueRunner::InitCreateFramebuffer(const GLRInitStep &step) {
 #ifndef USING_GLES2
 	if (!gl_extensions.ARB_framebuffer_object && gl_extensions.EXT_framebuffer_object) {
 		fbo_ext_create(step);
-	} else if (!gl_extensions.ARB_framebuffer_object) {
+	} else if (!gl_extensions.ARB_framebuffer_object && !gl_extensions.IsGLES) {
 		return;
 	}
 	// If GLES2, we have basic FBO support and can just proceed.
 #endif
 	CHECK_GL_ERROR_IF_DEBUG();
 
+	auto initFBOTexture = [&](GLRTexture &tex, GLint internalFormat, GLenum format, GLenum type, bool linear) {
+		glGenTextures(1, &tex.texture);
+		tex.target = GL_TEXTURE_2D;
+		tex.maxLod = 0.0f;
+
+		// Create the surfaces.
+		glBindTexture(GL_TEXTURE_2D, tex.texture);
+		glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, fbo->width, fbo->height, 0, format, type, nullptr);
+
+		tex.wrapS = GL_CLAMP_TO_EDGE;
+		tex.wrapT = GL_CLAMP_TO_EDGE;
+		tex.magFilter = linear ? GL_LINEAR : GL_NEAREST;
+		tex.minFilter = linear ? GL_LINEAR : GL_NEAREST;
+		tex.canWrap = isPowerOf2(fbo->width) && isPowerOf2(fbo->height);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, tex.wrapS);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, tex.wrapT);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, tex.magFilter);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, tex.minFilter);
+		if (!gl_extensions.IsGLES || gl_extensions.GLES3) {
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+		}
+	};
+
 	// Color texture is same everywhere
 	glGenFramebuffers(1, &fbo->handle);
-	glGenTextures(1, &fbo->color_texture.texture);
-	fbo->color_texture.target = GL_TEXTURE_2D;
-	fbo->color_texture.maxLod = 0.0f;
+	initFBOTexture(fbo->color_texture, GL_RGBA, GL_RGBA, GL_UNSIGNED_BYTE, true);
 
-	// Create the surfaces.
-	glBindTexture(GL_TEXTURE_2D, fbo->color_texture.texture);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fbo->width, fbo->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+retry_depth:
+	if (!fbo->z_stencil_) {
+		ILOG("Creating %i x %i FBO using no depth", fbo->width, fbo->height);
 
-	fbo->color_texture.wrapS = GL_CLAMP_TO_EDGE;
-	fbo->color_texture.wrapT = GL_CLAMP_TO_EDGE;
-	fbo->color_texture.magFilter = GL_LINEAR;
-	fbo->color_texture.minFilter = GL_LINEAR;
-	fbo->color_texture.canWrap = isPowerOf2(fbo->width) && isPowerOf2(fbo->height);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, fbo->color_texture.wrapS);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, fbo->color_texture.wrapT);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, fbo->color_texture.magFilter);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, fbo->color_texture.minFilter);
-	if (!gl_extensions.IsGLES || gl_extensions.GLES3) {
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
-	}
+		fbo->z_stencil_buffer = 0;
+		fbo->stencil_buffer = 0;
+		fbo->z_buffer = 0;
 
-	if (gl_extensions.IsGLES) {
-		if (gl_extensions.OES_packed_depth_stencil) {
+		// Bind it all together
+		glBindFramebuffer(GL_FRAMEBUFFER, fbo->handle);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->color_texture.texture, 0);
+		glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, 0);
+		glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, 0);
+	} else if (gl_extensions.IsGLES) {
+		if (gl_extensions.OES_packed_depth_stencil && (gl_extensions.OES_depth_texture || gl_extensions.GLES3)) {
+			ILOG("Creating %i x %i FBO using DEPTH24_STENCIL8 texture", fbo->width, fbo->height);
+			fbo->z_stencil_buffer = 0;
+			fbo->stencil_buffer = 0;
+			fbo->z_buffer = 0;
+
+			if (gl_extensions.GLES3) {
+				initFBOTexture(fbo->z_stencil_texture, GL_DEPTH24_STENCIL8, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, false);
+			} else {
+				initFBOTexture(fbo->z_stencil_texture, GL_DEPTH_STENCIL, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, false);
+			}
+
+			// Bind it all together
+			glBindFramebuffer(GL_FRAMEBUFFER, fbo->handle);
+			glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->color_texture.texture, 0);
+			if (gl_extensions.GLES3) {
+				glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, fbo->z_stencil_texture.texture, 0);
+			} else {
+				glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, fbo->z_stencil_texture.texture, 0);
+				glFramebufferTexture2D(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_TEXTURE_2D, fbo->z_stencil_texture.texture, 0);
+			}
+		} else if (gl_extensions.OES_packed_depth_stencil) {
 			ILOG("Creating %i x %i FBO using DEPTH24_STENCIL8", fbo->width, fbo->height);
 			// Standard method
 			fbo->stencil_buffer = 0;
@@ -391,6 +487,18 @@ void GLQueueRunner::InitCreateFramebuffer(const GLRInitStep &step) {
 			glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, fbo->z_buffer);
 			glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, fbo->stencil_buffer);
 		}
+	} else if (gl_extensions.VersionGEThan(3, 0)) {
+		ILOG("Creating %i x %i FBO using DEPTH24_STENCIL8 texture", fbo->width, fbo->height);
+		fbo->z_stencil_buffer = 0;
+		fbo->stencil_buffer = 0;
+		fbo->z_buffer = 0;
+
+		initFBOTexture(fbo->z_stencil_texture, GL_DEPTH24_STENCIL8, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, false);
+
+		// Bind it all together
+		glBindFramebuffer(GL_FRAMEBUFFER, fbo->handle);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->color_texture.texture, 0);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, fbo->z_stencil_texture.texture, 0);
 	} else {
 		fbo->stencil_buffer = 0;
 		fbo->z_buffer = 0;
@@ -407,6 +515,13 @@ void GLQueueRunner::InitCreateFramebuffer(const GLRInitStep &step) {
 	}
 
 	GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+	if (status != GL_FRAMEBUFFER_COMPLETE && !fbo->z_buffer) {
+		CHECK_GL_ERROR_IF_DEBUG();
+		// Uh oh, maybe we need a z/stencil.  Platforms sometimes, right?
+		fbo->z_stencil_ = true;
+		goto retry_depth;
+	}
+
 	switch (status) {
 	case GL_FRAMEBUFFER_COMPLETE:
 		// ILOG("Framebuffer verified complete.");
@@ -415,7 +530,7 @@ void GLQueueRunner::InitCreateFramebuffer(const GLRInitStep &step) {
 		ELOG("GL_FRAMEBUFFER_UNSUPPORTED");
 		break;
 	case GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT:
-		ELOG("GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT ");
+		ELOG("GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT");
 		break;
 	default:
 		FLOG("Other framebuffer error: %i", status);
@@ -431,7 +546,34 @@ void GLQueueRunner::InitCreateFramebuffer(const GLRInitStep &step) {
 	currentReadHandle_ = fbo->handle;
 }
 
-void GLQueueRunner::RunSteps(const std::vector<GLRStep *> &steps) {
+void GLQueueRunner::RunSteps(const std::vector<GLRStep *> &steps, bool skipGLCalls) {
+	if (skipGLCalls) {
+		// Dry run
+		for (size_t i = 0; i < steps.size(); i++) {
+			const GLRStep &step = *steps[i];
+			switch (step.stepType) {
+			case GLRStepType::RENDER:
+				for (const auto &c : step.commands) {
+					switch (c.cmd) {
+					case GLRRenderCommand::TEXTURE_SUBIMAGE:
+						if (c.texture_subimage.data) {
+							if (c.texture_subimage.allocType == GLRAllocType::ALIGNED) {
+								FreeAlignedMemory(c.texture_subimage.data);
+							} else if (c.texture_subimage.allocType == GLRAllocType::NEW) {
+								delete[] c.texture_subimage.data;
+							}
+						}
+						break;
+					}
+				}
+				break;
+			}
+			delete steps[i];
+		}
+		return;
+	}
+
+	CHECK_GL_ERROR_IF_DEBUG();
 	for (size_t i = 0; i < steps.size(); i++) {
 		const GLRStep &step = *steps[i];
 		switch (step.stepType) {
@@ -456,6 +598,7 @@ void GLQueueRunner::RunSteps(const std::vector<GLRStep *> &steps) {
 		}
 		delete steps[i];
 	}
+	CHECK_GL_ERROR_IF_DEBUG();
 }
 
 void GLQueueRunner::LogSteps(const std::vector<GLRStep *> &steps) {
@@ -464,6 +607,7 @@ void GLQueueRunner::LogSteps(const std::vector<GLRStep *> &steps) {
 
 
 void GLQueueRunner::PerformBlit(const GLRStep &step) {
+	CHECK_GL_ERROR_IF_DEBUG();
 	// Without FBO_ARB / GLES3, this will collide with bind_for_read, but there's nothing
 	// in ES 2.0 that actually separate them anyway of course, so doesn't matter.
 	fbo_bind_fb_target(false, step.blit.dst->handle);
@@ -492,6 +636,7 @@ void GLQueueRunner::PerformBlit(const GLRStep &step) {
 }
 
 void GLQueueRunner::PerformRenderPass(const GLRStep &step) {
+	CHECK_GL_ERROR_IF_DEBUG();
 	// Don't execute empty renderpasses.
 	if (step.commands.empty()) {
 		// Nothing to do.
@@ -507,7 +652,9 @@ void GLQueueRunner::PerformRenderPass(const GLRStep &step) {
 	glDisable(GL_DITHER);
 	glEnable(GL_SCISSOR_TEST);
 #ifndef USING_GLES2
-	glDisable(GL_COLOR_LOGIC_OP);
+	if (!gl_extensions.IsGLES) {
+		glDisable(GL_COLOR_LOGIC_OP);
+	}
 #endif
 
 	/*
@@ -526,7 +673,6 @@ void GLQueueRunner::PerformRenderPass(const GLRStep &step) {
 		glBindVertexArray(globalVAO_);
 	}
 
-	GLRFramebuffer *fb = step.render.framebuffer;
 	GLRProgram *curProgram = nullptr;
 	int activeSlot = 0;
 	glActiveTexture(GL_TEXTURE0 + activeSlot);
@@ -536,7 +682,6 @@ void GLQueueRunner::PerformRenderPass(const GLRStep &step) {
 	int colorMask = -1;
 	int depthMask = -1;
 	int depthFunc = -1;
-	int logicOp = -1;
 	GLuint curArrayBuffer = (GLuint)-1;
 	GLuint curElemArrayBuffer = (GLuint)-1;
 	bool depthEnabled = false;
@@ -544,12 +689,16 @@ void GLQueueRunner::PerformRenderPass(const GLRStep &step) {
 	bool blendEnabled = false;
 	bool cullEnabled = false;
 	bool ditherEnabled = false;
+#ifndef USING_GLES2
+	int logicOp = -1;
 	bool logicEnabled = false;
+#endif
 	GLuint blendEqColor = (GLuint)-1;
 	GLuint blendEqAlpha = (GLuint)-1;
 
 	GLRTexture *curTex[8]{};
 
+	CHECK_GL_ERROR_IF_DEBUG();
 	auto &commands = step.commands;
 	for (const auto &c : commands) {
 		switch (c.cmd) {
@@ -583,6 +732,7 @@ void GLQueueRunner::PerformRenderPass(const GLRStep &step) {
 				glDisable(GL_STENCIL_TEST);
 				stencilEnabled = false;
 			}
+			CHECK_GL_ERROR_IF_DEBUG();
 			break;
 		case GLRRenderCommand::STENCILOP:
 			glStencilOp(c.stencilOp.sFail, c.stencilOp.zFail, c.stencilOp.pass);
@@ -608,6 +758,7 @@ void GLQueueRunner::PerformRenderPass(const GLRStep &step) {
 				glColorMask(c.blend.mask & 1, (c.blend.mask >> 1) & 1, (c.blend.mask >> 2) & 1, (c.blend.mask >> 3) & 1);
 				colorMask = c.blend.mask;
 			}
+			CHECK_GL_ERROR_IF_DEBUG();
 			break;
 		case GLRRenderCommand::LOGICOP:
 #ifndef USING_GLES2
@@ -624,6 +775,7 @@ void GLQueueRunner::PerformRenderPass(const GLRStep &step) {
 				logicEnabled = false;
 			}
 #endif
+			CHECK_GL_ERROR_IF_DEBUG();
 			break;
 		case GLRRenderCommand::CLEAR:
 			// Scissor test is on, and should be on after leaving this case. If we disable it,
@@ -646,7 +798,11 @@ void GLQueueRunner::PerformRenderPass(const GLRStep &step) {
 #if defined(USING_GLES2)
 				glClearDepthf(c.clear.clearZ);
 #else
-				glClearDepth(c.clear.clearZ);
+				if (gl_extensions.IsGLES) {
+					glClearDepthf(c.clear.clearZ);
+				} else {
+					glClearDepth(c.clear.clearZ);
+				}
 #endif
 			}
 			if (c.clear.clearMask & GL_STENCIL_BUFFER_BIT) {
@@ -656,6 +812,7 @@ void GLQueueRunner::PerformRenderPass(const GLRStep &step) {
 			if (c.clear.scissorW == 0) {
 				glEnable(GL_SCISSOR_TEST);
 			}
+			CHECK_GL_ERROR_IF_DEBUG();
 			break;
 		case GLRRenderCommand::INVALIDATE:
 		{
@@ -668,6 +825,7 @@ void GLQueueRunner::PerformRenderPass(const GLRStep &step) {
 			if (c.clear.clearMask & GL_STENCIL_BUFFER_BIT)
 				attachments[count++] = GL_STENCIL_BUFFER_BIT;
 			glInvalidateFramebuffer(GL_FRAMEBUFFER, count, attachments);
+			CHECK_GL_ERROR_IF_DEBUG();
 			break;
 		}
 		case GLRRenderCommand::BLENDCOLOR:
@@ -682,10 +840,15 @@ void GLQueueRunner::PerformRenderPass(const GLRStep &step) {
 			// TODO: Support FP viewports through glViewportArrays
 			glViewport((GLint)c.viewport.vp.x, (GLint)y, (GLsizei)c.viewport.vp.w, (GLsizei)c.viewport.vp.h);
 #if !defined(USING_GLES2)
-			glDepthRange(c.viewport.vp.minZ, c.viewport.vp.maxZ);
+			if (gl_extensions.IsGLES) {
+				glDepthRangef(c.viewport.vp.minZ, c.viewport.vp.maxZ);
+			} else {
+				glDepthRange(c.viewport.vp.minZ, c.viewport.vp.maxZ);
+			}
 #else
 			glDepthRangef(c.viewport.vp.minZ, c.viewport.vp.maxZ);
 #endif
+			CHECK_GL_ERROR_IF_DEBUG();
 			break;
 		}
 		case GLRRenderCommand::SCISSOR:
@@ -694,6 +857,7 @@ void GLQueueRunner::PerformRenderPass(const GLRStep &step) {
 			if (!curFB_)
 				y = curFBHeight_ - y - c.scissor.rc.h;
 			glScissor(c.scissor.rc.x, y, c.scissor.rc.w, c.scissor.rc.h);
+			CHECK_GL_ERROR_IF_DEBUG();
 			break;
 		}
 		case GLRRenderCommand::UNIFORM4F:
@@ -718,10 +882,12 @@ void GLQueueRunner::PerformRenderPass(const GLRStep &step) {
 					break;
 				}
 			}
+			CHECK_GL_ERROR_IF_DEBUG();
 			break;
 		}
 		case GLRRenderCommand::UNIFORM4I:
 		{
+			assert(curProgram);
 			int loc = c.uniform4.loc ? *c.uniform4.loc : -1;
 			if (c.uniform4.name) {
 				loc = curProgram->GetUniformLoc(c.uniform4.name);
@@ -742,10 +908,12 @@ void GLQueueRunner::PerformRenderPass(const GLRStep &step) {
 					break;
 				}
 			}
+			CHECK_GL_ERROR_IF_DEBUG();
 			break;
 		}
 		case GLRRenderCommand::UNIFORMMATRIX:
 		{
+			assert(curProgram);
 			int loc = c.uniform4.loc ? *c.uniform4.loc : -1;
 			if (c.uniform4.name) {
 				loc = curProgram->GetUniformLoc(c.uniform4.name);
@@ -753,6 +921,7 @@ void GLQueueRunner::PerformRenderPass(const GLRStep &step) {
 			if (loc >= 0) {
 				glUniformMatrix4fv(loc, 1, false, c.uniformMatrix4.m);
 			}
+			CHECK_GL_ERROR_IF_DEBUG();
 			break;
 		}
 		case GLRRenderCommand::BINDTEXTURE:
@@ -783,10 +952,14 @@ void GLQueueRunner::PerformRenderPass(const GLRStep &step) {
 			}
 			if (c.bind_fb_texture.aspect == GL_COLOR_BUFFER_BIT) {
 				if (curTex[slot] != &c.bind_fb_texture.framebuffer->color_texture)
-				glBindTexture(GL_TEXTURE_2D, c.bind_fb_texture.framebuffer->color_texture.texture);
+					glBindTexture(GL_TEXTURE_2D, c.bind_fb_texture.framebuffer->color_texture.texture);
 				curTex[slot] = &c.bind_fb_texture.framebuffer->color_texture;
+			} else if (c.bind_fb_texture.aspect == GL_DEPTH_BUFFER_BIT) {
+				if (curTex[slot] != &c.bind_fb_texture.framebuffer->z_stencil_texture)
+					glBindTexture(GL_TEXTURE_2D, c.bind_fb_texture.framebuffer->z_stencil_texture.texture);
+				curTex[slot] = &c.bind_fb_texture.framebuffer->z_stencil_texture;
 			} else {
-				// TODO: Depth texturing?
+				// TODO: Stencil texturing?
 				curTex[slot] = nullptr;
 			}
 			CHECK_GL_ERROR_IF_DEBUG();
@@ -798,13 +971,14 @@ void GLQueueRunner::PerformRenderPass(const GLRStep &step) {
 				glUseProgram(c.program.program->program);
 				curProgram = c.program.program;
 			}
+			CHECK_GL_ERROR_IF_DEBUG();
 			break;
 		}
 		case GLRRenderCommand::BIND_VERTEX_BUFFER:
 		{
 			// TODO: Add fast path for glBindVertexBuffer
 			GLRInputLayout *layout = c.bindVertexBuffer.inputLayout;
-			GLuint buf = c.bindVertexBuffer.buffer ? c.bindVertexBuffer.buffer->buffer : 0;
+			GLuint buf = c.bindVertexBuffer.buffer ? c.bindVertexBuffer.buffer->buffer_ : 0;
 			assert(!c.bindVertexBuffer.buffer->Mapped());
 			if (buf != curArrayBuffer) {
 				glBindBuffer(GL_ARRAY_BUFFER, buf);
@@ -833,14 +1007,14 @@ void GLQueueRunner::PerformRenderPass(const GLRStep &step) {
 			if (c.bind_buffer.target == GL_ARRAY_BUFFER) {
 				Crash();
 			} else if (c.bind_buffer.target == GL_ELEMENT_ARRAY_BUFFER) {
-				GLuint buf = c.bind_buffer.buffer ? c.bind_buffer.buffer->buffer : 0;
+				GLuint buf = c.bind_buffer.buffer ? c.bind_buffer.buffer->buffer_ : 0;
 				assert(!c.bind_buffer.buffer->Mapped());
 				if (buf != curElemArrayBuffer) {
 					glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buf);
 					curElemArrayBuffer = buf;
 				}
 			} else {
-				GLuint buf = c.bind_buffer.buffer ? c.bind_buffer.buffer->buffer : 0;
+				GLuint buf = c.bind_buffer.buffer ? c.bind_buffer.buffer->buffer_ : 0;
 				assert(!c.bind_buffer.buffer->Mapped());
 				glBindBuffer(c.bind_buffer.target, buf);
 			}
@@ -861,6 +1035,7 @@ void GLQueueRunner::PerformRenderPass(const GLRStep &step) {
 			} else {
 				glDrawElementsInstanced(c.drawIndexed.mode, c.drawIndexed.count, c.drawIndexed.indexType, c.drawIndexed.indices, c.drawIndexed.instances);
 			}
+			CHECK_GL_ERROR_IF_DEBUG();
 			break;
 		case GLRRenderCommand::TEXTURESAMPLER:
 		{
@@ -913,7 +1088,7 @@ void GLQueueRunner::PerformRenderPass(const GLRStep &step) {
 				break;
 			}
 #ifndef USING_GLES2
-			if (tex->lodBias != c.textureLod.lodBias) {
+			if (tex->lodBias != c.textureLod.lodBias && !gl_extensions.IsGLES) {
 				glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_LOD_BIAS, c.textureLod.lodBias);
 				tex->lodBias = c.textureLod.lodBias;
 			}
@@ -926,6 +1101,22 @@ void GLQueueRunner::PerformRenderPass(const GLRStep &step) {
 				glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_LOD, c.textureLod.maxLod);
 				tex->maxLod = c.textureLod.maxLod;
 			}
+			break;
+		}
+		case GLRRenderCommand::TEXTURE_SUBIMAGE:
+		{
+			GLRTexture *tex = c.texture_subimage.texture;
+			// TODO: Need bind?
+			if (!c.texture_subimage.data)
+				Crash();
+			// For things to show in RenderDoc, need to split into glTexImage2D(..., nullptr) and glTexSubImage.
+			glTexSubImage2D(tex->target, c.texture_subimage.level, c.texture_subimage.x, c.texture_subimage.y, c.texture_subimage.width, c.texture_subimage.height, c.texture_subimage.format, c.texture_subimage.type, c.texture_subimage.data);
+			if (c.texture_subimage.allocType == GLRAllocType::ALIGNED) {
+				FreeAlignedMemory(c.texture_subimage.data);
+			} else if (c.texture_subimage.allocType == GLRAllocType::NEW) {
+				delete[] c.texture_subimage.data;
+			}
+			CHECK_GL_ERROR_IF_DEBUG();
 			break;
 		}
 		case GLRRenderCommand::RASTER:
@@ -949,6 +1140,7 @@ void GLQueueRunner::PerformRenderPass(const GLRStep &step) {
 				glDisable(GL_DITHER);
 				ditherEnabled = false;
 			}
+			CHECK_GL_ERROR_IF_DEBUG();
 			break;
 		default:
 			Crash();
@@ -966,6 +1158,7 @@ void GLQueueRunner::PerformRenderPass(const GLRStep &step) {
 		glActiveTexture(GL_TEXTURE0);
 		activeSlot = 0;  // doesn't matter, just nice.
 	}
+	CHECK_GL_ERROR_IF_DEBUG();
 
 	// Wipe out the current state.
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -979,13 +1172,16 @@ void GLQueueRunner::PerformRenderPass(const GLRStep &step) {
 	glDisable(GL_BLEND);
 	glDisable(GL_CULL_FACE);
 #ifndef USING_GLES2
-	glDisable(GL_COLOR_LOGIC_OP);
+	if (!gl_extensions.IsGLES) {
+		glDisable(GL_COLOR_LOGIC_OP);
+	}
 #endif
 	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 	CHECK_GL_ERROR_IF_DEBUG();
 }
 
 void GLQueueRunner::PerformCopy(const GLRStep &step) {
+	CHECK_GL_ERROR_IF_DEBUG();
 	GLuint srcTex = 0;
 	GLuint dstTex = 0;
 	GLuint target = GL_TEXTURE_2D;
@@ -1047,23 +1243,38 @@ void GLQueueRunner::PerformCopy(const GLRStep &step) {
 
 void GLQueueRunner::PerformReadback(const GLRStep &pass) {
 	using namespace Draw;
+	CHECK_GL_ERROR_IF_DEBUG();
 
 	GLRFramebuffer *fb = pass.readback.src;
 
 	fbo_bind_fb_target(true, fb ? fb->handle : 0);
 
-	// Reads from the "bound for read" framebuffer.
-	if (gl_extensions.GLES3 || !gl_extensions.IsGLES)
+	// Reads from the "bound for read" framebuffer. Note that if there's no fb, it's not valid to call this.
+	if (fb && (gl_extensions.GLES3 || !gl_extensions.IsGLES))
 		glReadBuffer(GL_COLOR_ATTACHMENT0);
 
 	CHECK_GL_ERROR_IF_DEBUG();
 
-	// Always read back in 8888 format.
-	const GLuint internalFormat = GL_RGBA;
-	const GLuint format = GL_RGBA;
-	const GLuint type = GL_UNSIGNED_BYTE;
-	const int srcAlignment = 4;
+	// Always read back in 8888 format for the color aspect.
+	GLuint internalFormat = GL_RGBA;
+	GLuint format = GL_RGBA;
+	GLuint type = GL_UNSIGNED_BYTE;
+	int srcAlignment = 4;
 	int dstAlignment = (int)DataFormatSizeInBytes(pass.readback.dstFormat);
+
+#ifndef USING_GLES2
+	if (pass.readback.aspectMask & GL_DEPTH_BUFFER_BIT) {
+		internalFormat = GL_DEPTH_COMPONENT;
+		format = GL_DEPTH_COMPONENT;
+		type = GL_FLOAT;
+		srcAlignment = 4;
+	} else if (pass.readback.aspectMask & GL_STENCIL_BUFFER_BIT) {
+		internalFormat = GL_STENCIL_INDEX;
+		format = GL_STENCIL_INDEX;
+		type = GL_UNSIGNED_BYTE;
+		srcAlignment = 1;
+	}
+#endif
 
 	int pixelStride = pass.readback.srcRect.w;
 	// Apply the correct alignment.
@@ -1075,7 +1286,7 @@ void GLQueueRunner::PerformReadback(const GLRStep &pass) {
 
 	GLRect2D rect = pass.readback.srcRect;
 
-	bool convert = pass.readback.dstFormat != DataFormat::R8G8B8A8_UNORM;
+	bool convert = internalFormat == GL_RGBA && pass.readback.dstFormat != DataFormat::R8G8B8A8_UNORM;
 
 	int tempSize = srcAlignment * rect.w * rect.h;
 	int readbackSize = dstAlignment * rect.w * rect.h;
@@ -1097,7 +1308,7 @@ void GLQueueRunner::PerformReadback(const GLRStep &pass) {
 	if (!gl_extensions.IsGLES || gl_extensions.GLES3) {
 		glPixelStorei(GL_PACK_ROW_LENGTH, 0);
 	}
-	if (convert) {
+	if (convert && tempBuffer_ && readbackBuffer_) {
 		ConvertFromRGBA8888(readbackBuffer_, tempBuffer_, pixelStride, pixelStride, rect.w, rect.h, pass.readback.dstFormat);
 	}
 
@@ -1115,7 +1326,7 @@ void GLQueueRunner::PerformReadbackImage(const GLRStep &pass) {
 	int pixelStride = pass.readback_image.srcRect.w;
 	glPixelStorei(GL_PACK_ALIGNMENT, 4);
 
-	GLRect2D rect = pass.readback.srcRect;
+	GLRect2D rect = pass.readback_image.srcRect;
 
 	int size = 4 * rect.w * rect.h;
 	if (size > readbackBufferSize_) {
@@ -1149,6 +1360,7 @@ void GLQueueRunner::PerformBindFramebufferAsRenderTarget(const GLRStep &pass) {
 		fbo_unbind();
 		// Backbuffer is now bound.
 	}
+	CHECK_GL_ERROR_IF_DEBUG();
 }
 
 void GLQueueRunner::CopyReadbackBuffer(int width, int height, Draw::DataFormat srcFormat, Draw::DataFormat destFormat, int pixelStride, uint8_t *pixels) {
@@ -1156,6 +1368,10 @@ void GLQueueRunner::CopyReadbackBuffer(int width, int height, Draw::DataFormat s
 	// don't usually provide very optimized conversion implementations, though some do.
 	// Just need to be careful about dithering, which may break Danganronpa.
 	int bpp = (int)Draw::DataFormatSizeInBytes(destFormat);
+	if (!readbackBuffer_ || bpp <= 0 || !pixels) {
+		// Something went wrong during the read and no readback buffer was allocated, probably.
+		return;
+	}
 	for (int y = 0; y < height; y++) {
 		memcpy(pixels + y * pixelStride * bpp, readbackBuffer_ + y * width * bpp, width * bpp);
 	}
@@ -1168,6 +1384,7 @@ GLuint GLQueueRunner::AllocTextureName() {
 	}
 	u32 name = nameCache_.back();
 	nameCache_.pop_back();
+	CHECK_GL_ERROR_IF_DEBUG();
 	return name;
 }
 
@@ -1177,6 +1394,8 @@ GLuint GLQueueRunner::AllocTextureName() {
 #ifndef USING_GLES2
 void GLQueueRunner::fbo_ext_create(const GLRInitStep &step) {
 	GLRFramebuffer *fbo = step.create_framebuffer.framebuffer;
+
+	CHECK_GL_ERROR_IF_DEBUG();
 
 	// Color texture is same everywhere
 	glGenFramebuffersEXT(1, &fbo->handle);
@@ -1229,6 +1448,8 @@ void GLQueueRunner::fbo_ext_create(const GLRInitStep &step) {
 	// Unbind state we don't need
 	glBindRenderbufferEXT(GL_RENDERBUFFER_EXT, 0);
 	glBindTexture(GL_TEXTURE_2D, 0);
+
+	CHECK_GL_ERROR_IF_DEBUG();
 
 	currentDrawHandle_ = fbo->handle;
 	currentReadHandle_ = fbo->handle;
@@ -1295,35 +1516,34 @@ void GLQueueRunner::fbo_unbind() {
 }
 
 GLRFramebuffer::~GLRFramebuffer() {
-	if (gl_extensions.ARB_framebuffer_object || gl_extensions.IsGLES) {
-		if (handle) {
+	if (handle == 0 && z_stencil_buffer == 0 && z_buffer == 0 && stencil_buffer == 0)
+		return;
+
+	CHECK_GL_ERROR_IF_DEBUG();
+	if (handle) {
+		if (gl_extensions.ARB_framebuffer_object || gl_extensions.IsGLES) {
 			glBindFramebuffer(GL_FRAMEBUFFER, handle);
 			glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
 			glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, 0);
 			glBindFramebuffer(GL_FRAMEBUFFER, g_defaultFBO);
 			glDeleteFramebuffers(1, &handle);
-		}
-		if (z_stencil_buffer)
-			glDeleteRenderbuffers(1, &z_stencil_buffer);
-		if (z_buffer)
-			glDeleteRenderbuffers(1, &z_buffer);
-		if (stencil_buffer)
-			glDeleteRenderbuffers(1, &stencil_buffer);
-	} else if (gl_extensions.EXT_framebuffer_object) {
 #ifndef USING_GLES2
-		if (handle) {
+		} else if (gl_extensions.EXT_framebuffer_object) {
 			glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, handle);
 			glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
 			glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER_EXT, 0);
 			glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, g_defaultFBO);
 			glDeleteFramebuffersEXT(1, &handle);
-		}
-		if (z_stencil_buffer)
-			glDeleteRenderbuffers(1, &z_stencil_buffer);
-		if (z_buffer)
-			glDeleteRenderbuffers(1, &z_buffer);
-		if (stencil_buffer)
-			glDeleteRenderbuffers(1, &stencil_buffer);
 #endif
+		}
 	}
+
+	// These can only be set when supported.
+	if (z_stencil_buffer)
+		glDeleteRenderbuffers(1, &z_stencil_buffer);
+	if (z_buffer)
+		glDeleteRenderbuffers(1, &z_buffer);
+	if (stencil_buffer)
+		glDeleteRenderbuffers(1, &stencil_buffer);
+	CHECK_GL_ERROR_IF_DEBUG();
 }

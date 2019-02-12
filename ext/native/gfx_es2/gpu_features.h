@@ -15,15 +15,15 @@ enum {
 	GPU_VENDOR_IMGTEC = 5,
 	GPU_VENDOR_QUALCOMM = 6,
 	GPU_VENDOR_BROADCOM = 7,
+	GPU_VENDOR_VIVANTE = 8,
 	GPU_VENDOR_UNKNOWN = 0,
 };
 
+// TODO: Move to Draw::Bugs
 enum {
 	BUG_FBO_UNUSABLE = 1,
 	BUG_PVR_SHADER_PRECISION_BAD = 2,
 	BUG_PVR_SHADER_PRECISION_TERRIBLE = 4,
-	BUG_PVR_GENMIPMAP_HEIGHT_GREATER = 8,
-	BUG_ANY_MAP_BUFFER_RANGE_SLOW = 16,
 };
 
 // Extensions to look at using:
@@ -63,6 +63,7 @@ struct GLExtensions {
 	bool ARB_texture_float;
 	bool ARB_draw_instanced;
 	bool ARB_buffer_storage;
+	bool ARB_cull_distance;
 
 	// EXT
 	bool EXT_swap_control_tear;
@@ -78,6 +79,7 @@ struct GLExtensions {
 	bool PBO_EXT;
 	bool EXT_draw_instanced;
 	bool EXT_buffer_storage;
+	bool EXT_clip_cull_distance;
 
 	// NV
 	bool NV_shader_framebuffer_fetch;
@@ -103,6 +105,7 @@ struct GLExtensions {
 
 	// greater-or-equal than
 	bool VersionGEThan(int major, int minor, int sub = 0);
+	int GLSLVersion();
 };
 
 extern GLExtensions gl_extensions;

@@ -508,11 +508,17 @@ public:
 	void Draw(UIContext &dc) override;
 	void GetContentDimensions(const UIContext &dc, float &w, float &h) const override;
 	const std::string &GetText() const { return text_; }
+	void SetPadding(int w, int h) {
+		paddingW_ = w;
+		paddingH_ = h;
+	}
 
 private:
 	Style style_;
 	std::string text_;
 	ImageID imageID_;
+	int paddingW_ = 16;
+	int paddingH_ = 8;
 };
 
 class Slider : public Clickable {
@@ -736,13 +742,28 @@ public:
 
 	EventReturn OnClicked(EventParams &e);
 	//allow external agents to toggle the checkbox
-	void Toggle();
+	virtual void Toggle();
+	virtual bool Toggled() const;
 private:
 	float CalculateTextScale(const UIContext &dc, float availWidth) const;
 
 	bool *toggle_;
 	std::string text_;
 	std::string smallText_;
+};
+
+class BitCheckBox : public CheckBox {
+public:
+	BitCheckBox(uint32_t *bitfield, uint32_t bit, const std::string &text, const std::string &smallText = "", LayoutParams *layoutParams = nullptr)
+		: CheckBox(nullptr, text, smallText, layoutParams), bitfield_(bitfield), bit_(bit) {
+	}
+
+	void Toggle() override;
+	bool Toggled() const override;
+
+private:
+	uint32_t *bitfield_;
+	uint32_t bit_;
 };
 
 // These are for generic use.
@@ -829,6 +850,7 @@ private:
 enum ImageSizeMode {
 	IS_DEFAULT,
 	IS_FIXED,
+	IS_KEEP_ASPECT,
 };
 
 class ImageView : public InertView {

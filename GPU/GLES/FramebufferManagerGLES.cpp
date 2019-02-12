@@ -32,6 +32,7 @@
 #include "Core/Host.h"
 #include "Core/MemMap.h"
 #include "Core/Config.h"
+#include "Core/ConfigValues.h"
 #include "Core/System.h"
 #include "Core/Reporting.h"
 #include "GPU/ge_constants.h"
@@ -47,38 +48,36 @@
 #include "GPU/GLES/DrawEngineGLES.h"
 #include "GPU/GLES/ShaderManagerGLES.h"
 
-static const char tex_fs[] =
-	"#if __VERSION__ >= 130\n"
-	"#define varying in\n"
-	"#define texture2D texture\n"
-	"#define gl_FragColor fragColor0\n"
-	"out vec4 fragColor0;\n"
-	"#endif\n"
-#ifdef USING_GLES2
-	"precision mediump float;\n"
+static const char tex_fs[] = R"(
+#if __VERSION__ >= 130
+#define varying in
+#define texture2D texture
+#define gl_FragColor fragColor0
+out vec4 fragColor0;
 #endif
-	"uniform sampler2D sampler0;\n"
-	"varying vec2 v_texcoord0;\n"
-	"void main() {\n"
-	"  gl_FragColor = texture2D(sampler0, v_texcoord0);\n"
-	"}\n";
+#ifdef GL_ES
+precision mediump float;
+#endif
+uniform sampler2D sampler0;
+varying vec2 v_texcoord0;
+void main() {
+	gl_FragColor = texture2D(sampler0, v_texcoord0);
+}
+)";
 
-static const char basic_vs[] =
-	"#if __VERSION__ >= 130\n"
-	"#define attribute in\n"
-	"#define varying out\n"
-	"#endif\n"
-	"attribute vec4 a_position;\n"
-	"attribute vec2 a_texcoord0;\n"
-	"varying vec2 v_texcoord0;\n"
-	"void main() {\n"
-	"  v_texcoord0 = a_texcoord0;\n"
-	"  gl_Position = a_position;\n"
-	"}\n";
-
-const int MAX_PBO = 2;
-
-void ConvertFromRGBA8888(u8 *dst, const u8 *src, u32 dstStride, u32 srcStride, u32 width, u32 height, GEBufferFormat format);
+static const char basic_vs[] = R"(
+#if __VERSION__ >= 130
+#define attribute in
+#define varying out
+#endif
+attribute vec4 a_position;
+attribute vec2 a_texcoord0;
+varying vec2 v_texcoord0;
+void main() {
+  v_texcoord0 = a_texcoord0;
+  gl_Position = a_position;
+}
+)";
 
 void FramebufferManagerGLES::CompileDraw2DProgram() {
 	if (!draw2dprogram_) {
@@ -327,6 +326,10 @@ void FramebufferManagerGLES::DestroyDeviceObjects() {
 		render_->DeleteProgram(stencilUploadProgram_);
 		stencilUploadProgram_ = nullptr;
 	}
+	if (depthDownloadProgram_) {
+		render_->DeleteProgram(depthDownloadProgram_);
+		depthDownloadProgram_ = nullptr;
+	}
 }
 
 FramebufferManagerGLES::~FramebufferManagerGLES() {
@@ -336,62 +339,39 @@ FramebufferManagerGLES::~FramebufferManagerGLES() {
 }
 
 void FramebufferManagerGLES::MakePixelTexture(const u8 *srcPixels, GEBufferFormat srcPixelFormat, int srcStride, int width, int height, float &u1, float &v1) {
-	// Optimization: skip a copy if possible in a common case.
-	int texWidth = width;
-	if (srcPixelFormat == GE_FORMAT_8888 && width < srcStride) {
-		// Don't up the upload requirements too much if subimages are unsupported.
-		if (gstate_c.Supports(GPU_SUPPORTS_UNPACK_SUBIMAGE) || width >= 480) {
-			texWidth = srcStride;
-			u1 *= (float)width / texWidth;
-		}
-	}
-
 	if (drawPixelsTex_) {
 		render_->DeleteTexture(drawPixelsTex_);
 	}
 
 	drawPixelsTex_ = render_->CreateTexture(GL_TEXTURE_2D);
-	drawPixelsTexW_ = texWidth;
+	drawPixelsTexW_ = width;
 	drawPixelsTexH_ = height;
 
 	drawPixelsTexFormat_ = srcPixelFormat;
 
 	// TODO: We can just change the texture format and flip some bits around instead of this.
 	// Could share code with the texture cache perhaps.
-	u32 neededSize = texWidth * height * 4;
+	u32 neededSize = width * height * 4;
 	u8 *convBuf = new u8[neededSize];
 	for (int y = 0; y < height; y++) {
+		const u16_le *src16 = (const u16_le *)srcPixels + srcStride * y;
+		const u32_le *src32 = (const u32_le *)srcPixels + srcStride * y;
+		u32 *dst = (u32 *)convBuf + width * y;
 		switch (srcPixelFormat) {
 		case GE_FORMAT_565:
-			{
-				const u16 *src = (const u16 *)srcPixels + srcStride * y;
-				u8 *dst = convBuf + 4 * texWidth * y;
-				ConvertRGBA565ToRGBA8888((u32 *)dst, src, width);
-			}
+			ConvertRGBA565ToRGBA8888((u32 *)dst, src16, width);
 			break;
 
 		case GE_FORMAT_5551:
-			{
-				const u16 *src = (const u16 *)srcPixels + srcStride * y;
-				u8 *dst = convBuf + 4 * texWidth * y;
-				ConvertRGBA5551ToRGBA8888((u32 *)dst, src, width);
-			}
+			ConvertRGBA5551ToRGBA8888((u32 *)dst, src16, width);
 			break;
 
 		case GE_FORMAT_4444:
-			{
-				const u16 *src = (const u16 *)srcPixels + srcStride * y;
-				u8 *dst = convBuf + 4 * texWidth * y;
-				ConvertRGBA4444ToRGBA8888((u32 *)dst, src, width);
-			}
+			ConvertRGBA4444ToRGBA8888((u32 *)dst, src16, width);
 			break;
 
 		case GE_FORMAT_8888:
-			{
-				const u8 *src = srcPixels + srcStride * 4 * y;
-				u8 *dst = convBuf + 4 * texWidth * y;
-				memcpy(dst, src, 4 * width);
-			}
+			memcpy(dst, src32, 4 * width);
 			break;
 
 		case GE_FORMAT_INVALID:
@@ -399,7 +379,7 @@ void FramebufferManagerGLES::MakePixelTexture(const u8 *srcPixels, GEBufferForma
 			break;
 		}
 	}
-	render_->TextureImage(drawPixelsTex_, 0, texWidth, height, GL_RGBA, GL_RGBA, GL_UNSIGNED_BYTE, convBuf, GLRAllocType::NEW, false);
+	render_->TextureImage(drawPixelsTex_, 0, width, height, GL_RGBA, GL_RGBA, GL_UNSIGNED_BYTE, convBuf, GLRAllocType::NEW, false);
 	render_->FinalizeTexture(drawPixelsTex_, 0, false);
 
 	// TODO: Return instead?
@@ -492,27 +472,20 @@ void FramebufferManagerGLES::ReformatFramebufferFrom(VirtualFramebuffer *vfb, GE
 	// Technically, we should at this point re-interpret the bytes of the old format to the new.
 	// That might get tricky, and could cause unnecessary slowness in some games.
 	// For now, we just clear alpha/stencil from 565, which fixes shadow issues in Kingdom Hearts.
-	// (it uses 565 to write zeros to the buffer, than 4444 to actually render the shadow.)
+	// (it uses 565 to write zeros to the buffer, then 4444 to actually render the shadow.)
 	//
 	// The best way to do this may ultimately be to create a new FBO (combine with any resize?)
 	// and blit with a shader to that, then replace the FBO on vfb.  Stencil would still be complex
 	// to exactly reproduce in 4444 and 8888 formats.
 
 	if (old == GE_FORMAT_565) {
-		draw_->BindFramebufferAsRenderTarget(vfb->fbo, { Draw::RPAction::CLEAR, Draw::RPAction::CLEAR, Draw::RPAction::CLEAR });
-		gstate_c.Dirty(DIRTY_BLEND_STATE);
-	} else {
-		draw_->BindFramebufferAsRenderTarget(vfb->fbo, { Draw::RPAction::KEEP, Draw::RPAction::KEEP, Draw::RPAction::KEEP });
+		// Clear alpha and stencil.
+		draw_->BindFramebufferAsRenderTarget(vfb->fbo, { Draw::RPAction::KEEP, Draw::RPAction::KEEP, Draw::RPAction::CLEAR });
+		render_->Clear(0, 0.0f, 0, GL_COLOR_BUFFER_BIT, 0x8, 0, 0, 0, 0);
 	}
-
-	RebindFramebuffer();
 }
 
 void FramebufferManagerGLES::BlitFramebufferDepth(VirtualFramebuffer *src, VirtualFramebuffer *dst) {
-	if (g_Config.bDisableSlowFramebufEffects) {
-		return;
-	}
-
 	bool matchingDepthBuffer = src->z_address == dst->z_address && src->z_stride != 0 && dst->z_stride != 0;
 	bool matchingSize = src->width == dst->width && src->height == dst->height;
 
@@ -539,12 +512,12 @@ void FramebufferManagerGLES::BindFramebufferAsColorTexture(int stage, VirtualFra
 	// currentRenderVfb_ will always be set when this is called, except from the GE debugger.
 	// Let's just not bother with the copy in that case.
 	bool skipCopy = (flags & BINDFBCOLOR_MAY_COPY) == 0;
-	if (GPUStepping::IsStepping() || g_Config.bDisableSlowFramebufEffects) {
+	if (GPUStepping::IsStepping()) {
 		skipCopy = true;
 	}
-	if (!skipCopy && currentRenderVfb_ && framebuffer->fb_address == gstate.getFrameBufRawAddress()) {
+	if (!skipCopy && framebuffer == currentRenderVfb_) {
 		// TODO: Maybe merge with bvfbs_?  Not sure if those could be packing, and they're created at a different size.
-		Draw::Framebuffer *renderCopy = GetTempFBO(framebuffer->renderWidth, framebuffer->renderHeight, (Draw::FBColorDepth)framebuffer->colorDepth);
+		Draw::Framebuffer *renderCopy = GetTempFBO(TempFBO::COPY, framebuffer->renderWidth, framebuffer->renderHeight, (Draw::FBColorDepth)framebuffer->colorDepth);
 		if (renderCopy) {
 			VirtualFramebuffer copyInfo = *framebuffer;
 			copyInfo.fbo = renderCopy;
@@ -579,7 +552,7 @@ bool FramebufferManagerGLES::CreateDownloadTempBuffer(VirtualFramebuffer *nvfb) 
 		}
 	}
 
-	nvfb->fbo = draw_->CreateFramebuffer({ nvfb->width, nvfb->height, 1, 1, false, (Draw::FBColorDepth)nvfb->colorDepth });
+	nvfb->fbo = draw_->CreateFramebuffer({ nvfb->bufferWidth, nvfb->bufferHeight, 1, 1, false, (Draw::FBColorDepth)nvfb->colorDepth });
 	if (!nvfb->fbo) {
 		ERROR_LOG(FRAMEBUF, "Error creating GL FBO! %i x %i", nvfb->renderWidth, nvfb->renderHeight);
 		return false;
@@ -679,103 +652,6 @@ void FramebufferManagerGLES::BlitFramebuffer(VirtualFramebuffer *dst, int dstX, 
 	gstate_c.Dirty(DIRTY_VIEWPORTSCISSOR_STATE | DIRTY_BLEND_STATE | DIRTY_RASTER_STATE);
 }
 
-void ConvertFromRGBA8888(u8 *dst, const u8 *src, u32 dstStride, u32 srcStride, u32 width, u32 height, GEBufferFormat format) {
-	// Must skip stride in the cases below.  Some games pack data into the cracks, like MotoGP.
-	const u32 *src32 = (const u32 *)src;
-
-	if (format == GE_FORMAT_8888) {
-		u32 *dst32 = (u32 *)dst;
-		if (src == dst) {
-			return;
-		} else {
-			// Here let's assume they don't intersect
-			for (u32 y = 0; y < height; ++y) {
-				memcpy(dst32, src32, width * 4);
-				src32 += srcStride;
-				dst32 += dstStride;
-			}
-		}
-	} else {
-		// But here it shouldn't matter if they do intersect
-		u16 *dst16 = (u16 *)dst;
-		switch (format) {
-			case GE_FORMAT_565: // BGR 565
-				{
-					for (u32 y = 0; y < height; ++y) {
-						ConvertRGBA8888ToRGB565(dst16, src32, width);
-						src32 += srcStride;
-						dst16 += dstStride;
-					}
-				}
-				break;
-			case GE_FORMAT_5551: // ABGR 1555
-				{
-					for (u32 y = 0; y < height; ++y) {
-						ConvertRGBA8888ToRGBA5551(dst16, src32, width);
-						src32 += srcStride;
-						dst16 += dstStride;
-					}
-				}
-				break;
-			case GE_FORMAT_4444: // ABGR 4444
-				{
-					for (u32 y = 0; y < height; ++y) {
-						ConvertRGBA8888ToRGBA4444(dst16, src32, width);
-						src32 += srcStride;
-						dst16 += dstStride;
-					}
-				}
-				break;
-			case GE_FORMAT_8888:
-			case GE_FORMAT_INVALID:
-				// Not possible.
-				break;
-		}
-	}
-}
-
-void FramebufferManagerGLES::PackDepthbuffer(VirtualFramebuffer *vfb, int x, int y, int w, int h) {
-	if (!vfb->fbo) {
-		ERROR_LOG_REPORT_ONCE(vfbfbozero, SCEGE, "PackDepthbuffer: vfb->fbo == 0");
-		return;
-	}
-
-	// Pixel size always 4 here because we always request float
-	const u32 bufSize = vfb->z_stride * (h - y) * 4;
-	const u32 z_address = (0x04000000) | vfb->z_address;
-	const int packWidth = std::min(vfb->z_stride, std::min(x + w, (int)vfb->width));
-
-	if (!convBuf_ || convBufSize_ < bufSize) {
-		delete [] convBuf_;
-		convBuf_ = new u8[bufSize];
-		convBufSize_ = bufSize;
-	}
-
-	DEBUG_LOG(FRAMEBUF, "Reading depthbuffer to mem at %08x for vfb=%08x", z_address, vfb->fb_address);
-
-	draw_->CopyFramebufferToMemorySync(vfb->fbo, Draw::FB_DEPTH_BIT, 0, y, packWidth, h, Draw::DataFormat::D32F, convBuf_, vfb->z_stride);
-
-	int dstByteOffset = y * vfb->z_stride * sizeof(u16);
-	u16 *depth = (u16 *)Memory::GetPointer(z_address + dstByteOffset);
-	GLfloat *packed = (GLfloat *)convBuf_;
-
-	int totalPixels = h == 1 ? packWidth : vfb->z_stride * h;
-	for (int yp = 0; yp < h; ++yp) {
-		int row_offset = vfb->z_stride * yp;
-		for (int xp = 0; xp < packWidth; ++xp) {
-			const int i = row_offset + xp;
-			float scaled = FromScaledDepth(packed[i]);
-			if (scaled <= 0.0f) {
-				depth[i] = 0;
-			} else if (scaled >= 65535.0f) {
-				depth[i] = 65535;
-			} else {
-				depth[i] = (int)scaled;
-			}
-		}
-	}
-}
-
 void FramebufferManagerGLES::EndFrame() {
 }
 
@@ -809,8 +685,8 @@ void FramebufferManagerGLES::DestroyAllFBOs() {
 	}
 	bvfbs_.clear();
 
-	for (auto it = tempFBOs_.begin(), end = tempFBOs_.end(); it != end; ++it) {
-		it->second.fbo->Release();
+	for (auto &tempFB : tempFBOs_) {
+		tempFB.second.fbo->Release();
 	}
 	tempFBOs_.clear();
 

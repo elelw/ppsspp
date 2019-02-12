@@ -1,4 +1,5 @@
 #include "Core/Config.h"
+#include "Core/ConfigValues.h"
 #include "base/NativeApp.h"
 #include "base/display.h"
 #include "thin3d/thin3d.h"
@@ -62,16 +63,15 @@ bool SDLVulkanGraphicsContext::Init(SDL_Window *&window, int x, int y, int mode,
 	case SDL_SYSWM_X11:
 #if defined(VK_USE_PLATFORM_XLIB_KHR)
 		vulkan_->InitSurface(WINDOWSYSTEM_XLIB, (void*)sys_info.info.x11.display,
-				(void *)(intptr_t)sys_info.info.x11.window, pixel_xres, pixel_yres);
+				(void *)(intptr_t)sys_info.info.x11.window);
 #elif defined(VK_USE_PLATFORM_XCB_KHR)
 		vulkan_->InitSurface(WINDOWSYSTEM_XCB, (void*)XGetXCBConnection(sys_info.info.x11.display),
-				(void *)(intptr_t)sys_info.info.x11.window, pixel_xres, pixel_yres);
+				(void *)(intptr_t)sys_info.info.x11.window);
 #endif
 		break;
 #if defined(VK_USE_PLATFORM_WAYLAND_KHR)
 	case SDL_SYSWM_WAYLAND:
-		vulkan_->InitSurface(WINDOWSYSTEM_WAYLAND, (void*)sys_info.info.wl.display,
-				(void *)sys_info.info.wl.surface, pixel_xres, pixel_yres);
+		vulkan_->InitSurface(WINDOWSYSTEM_WAYLAND, (void*)sys_info.info.wl.display, (void *)sys_info.info.wl.surface);
 		break;
 #endif
 	default:

@@ -16,50 +16,60 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include "gfx_es2/glsl_program.h"
+#include "Core/Config.h"
+#include "Core/ConfigValues.h"
 #include "Core/Reporting.h"
 #include "GPU/Common/StencilCommon.h"
+#include "GPU/GLES/DrawEngineGLES.h"
 #include "GPU/GLES/FramebufferManagerGLES.h"
 #include "GPU/GLES/ShaderManagerGLES.h"
 #include "GPU/GLES/TextureCacheGLES.h"
 
-static const char *stencil_fs =
-"#ifdef GL_ES\n"
-"precision highp float;\n"
-"#endif\n"
-"#if __VERSION__ >= 130\n"
-"#define varying in\n"
-"#define texture2D texture\n"
-"#define gl_FragColor fragColor0\n"
-"out vec4 fragColor0;\n"
-"#endif\n"
-"varying vec2 v_texcoord0;\n"
-"uniform float u_stencilValue;\n"
-"uniform sampler2D tex;\n"
-"float roundAndScaleTo255f(in float x) { return floor(x * 255.99); }\n"
-"void main() {\n"
-"  vec4 index = texture2D(tex, v_texcoord0);\n"
-"  gl_FragColor = vec4(index.a);\n"
-"  float shifted = roundAndScaleTo255f(index.a) / roundAndScaleTo255f(u_stencilValue);\n"
-"  if (mod(floor(shifted), 2.0) < 0.99) discard;\n"
-"}\n";
+static const char *stencil_fs = R"(
+#ifdef GL_ES
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;  // just hope it's enough..
+#endif
+#endif
+#if __VERSION__ >= 130
+#define varying in
+#define texture2D texture
+#define gl_FragColor fragColor0
+out vec4 fragColor0;
+#endif
+varying vec2 v_texcoord0;
+uniform float u_stencilValue;
+uniform sampler2D tex;
+float roundAndScaleTo255f(in float x) { return floor(x * 255.99); }
+void main() {
+  vec4 index = texture2D(tex, v_texcoord0);
+  gl_FragColor = vec4(index.a);
+  float shifted = roundAndScaleTo255f(index.a) / roundAndScaleTo255f(u_stencilValue);
+  if (mod(floor(shifted), 2.0) < 0.99) discard;
+}
+)";
 
-static const char *stencil_vs =
-"#ifdef GL_ES\n"
-"precision highp float;\n"
-"#endif\n"
-"#if __VERSION__ >= 130\n"
-"#define attribute in\n"
-"#define varying out\n"
-"#endif\n"
-"attribute vec4 a_position;\n"
-"attribute vec2 a_texcoord0;\n"
-"varying vec2 v_texcoord0;\n"
-"void main() {\n"
-"  v_texcoord0 = a_texcoord0;\n"
-"  gl_Position = a_position;\n"
-"}\n";
+static const char *stencil_vs = R"(
+#ifdef GL_ES
+precision highp float;
+#endif
+#if __VERSION__ >= 130
+#define attribute in
+#define varying out
+#endif
+attribute vec4 a_position;
+attribute vec2 a_texcoord0;
+varying vec2 v_texcoord0;
+void main() {
+  v_texcoord0 = a_texcoord0;
+  gl_Position = a_position;
+}
+)";
 
 bool FramebufferManagerGLES::NotifyStencilUpload(u32 addr, int size, bool skipZero) {
+	addr &= 0x3FFFFFFF;
 	if (!MayIntersectFramebuffer(addr)) {
 		return false;
 	}
@@ -67,7 +77,7 @@ bool FramebufferManagerGLES::NotifyStencilUpload(u32 addr, int size, bool skipZe
 	VirtualFramebuffer *dstBuffer = 0;
 	for (size_t i = 0; i < vfbs_.size(); ++i) {
 		VirtualFramebuffer *vfb = vfbs_[i];
-		if (MaskedEqual(vfb->fb_address, addr)) {
+		if (vfb->fb_address == addr) {
 			dstBuffer = vfb;
 		}
 	}
@@ -108,6 +118,7 @@ bool FramebufferManagerGLES::NotifyStencilUpload(u32 addr, int size, bool skipZe
 			// Common when creating buffers, it's already 0.  We're done.
 			return false;
 		}
+		shaderManagerGL_->DirtyLastShader();
 
 		// Let's not bother with the shader if it's just zero.
 		if (dstBuffer->fbo) {
@@ -126,12 +137,15 @@ bool FramebufferManagerGLES::NotifyStencilUpload(u32 addr, int size, bool skipZe
 		std::vector<GLRShader *> shaders;
 		shaders.push_back(render_->CreateShader(GL_VERTEX_SHADER, vs_code, "stencil"));
 		shaders.push_back(render_->CreateShader(GL_FRAGMENT_SHADER, fs_code, "stencil"));
+		std::vector<GLRProgram::Semantic> semantics;
+		semantics.push_back({ 0, "a_position" });
+		semantics.push_back({ 1, "a_texcoord0" });
 		std::vector<GLRProgram::UniformLocQuery> queries;
 		queries.push_back({ &u_stencilUploadTex, "tex" });
 		queries.push_back({ &u_stencilValue, "u_stencilValue" });
 		std::vector<GLRProgram::Initializer> inits;
-		inits.push_back({ &u_stencilUploadTex, 0, 0 });
-		stencilUploadProgram_ = render_->CreateProgram(shaders, {}, queries, inits, false);
+		inits.push_back({ &u_stencilUploadTex, 0, TEX_SLOT_PSP_TEXTURE });
+		stencilUploadProgram_ = render_->CreateProgram(shaders, semantics, queries, inits, false);
 		for (auto iter : shaders) {
 			render_->DeleteShader(iter);
 		}
@@ -146,27 +160,28 @@ bool FramebufferManagerGLES::NotifyStencilUpload(u32 addr, int size, bool skipZe
 
 	// Our fragment shader (and discard) is slow.  Since the source is 1x, we can stencil to 1x.
 	// Then after we're done, we'll just blit it across and stretch it there.
-	if (dstBuffer->bufferWidth == dstBuffer->renderWidth || !dstBuffer->fbo) {
+	if (dstBuffer->width == dstBuffer->renderWidth || !dstBuffer->fbo) {
 		useBlit = false;
 	}
-	u16 w = useBlit ? dstBuffer->bufferWidth : dstBuffer->renderWidth;
-	u16 h = useBlit ? dstBuffer->bufferHeight : dstBuffer->renderHeight;
+	u16 w = useBlit ? dstBuffer->width : dstBuffer->renderWidth;
+	u16 h = useBlit ? dstBuffer->height : dstBuffer->renderHeight;
 
 	Draw::Framebuffer *blitFBO = nullptr;
 	if (useBlit) {
-		blitFBO = GetTempFBO(w, h, Draw::FBO_8888);
+		blitFBO = GetTempFBO(TempFBO::COPY, w, h, Draw::FBO_8888);
 		draw_->BindFramebufferAsRenderTarget(blitFBO, { Draw::RPAction::DONT_CARE, Draw::RPAction::DONT_CARE, Draw::RPAction::DONT_CARE });
 	} else if (dstBuffer->fbo) {
-		draw_->BindFramebufferAsRenderTarget(dstBuffer->fbo, { Draw::RPAction::KEEP, Draw::RPAction::KEEP, Draw::RPAction::CLEAR });
+		draw_->BindFramebufferAsRenderTarget(dstBuffer->fbo, { Draw::RPAction::KEEP, Draw::RPAction::KEEP, Draw::RPAction::DONT_CARE });
 	}
 	render_->SetViewport({ 0, 0, (float)w, (float)h, 0.0f, 1.0f });
 
 	float u1 = 1.0f;
 	float v1 = 1.0f;
-	MakePixelTexture(src, dstBuffer->format, dstBuffer->fb_stride, dstBuffer->bufferWidth, dstBuffer->bufferHeight, u1, v1);
+	MakePixelTexture(src, dstBuffer->format, dstBuffer->fb_stride, dstBuffer->width, dstBuffer->height, u1, v1);
 	textureCacheGL_->ForgetLastTexture();
 
 	// We must bind the program after starting the render pass, and set the color mask after clearing.
+	render_->SetScissor({ 0, 0, w, h });
 	render_->SetDepth(false, false, GL_ALWAYS);
 	render_->Clear(0, 0, 0, GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT, 0x8, 0, 0, 0, 0);
 	render_->SetStencilFunc(GL_TRUE, GL_ALWAYS, 0xFF, 0xFF);

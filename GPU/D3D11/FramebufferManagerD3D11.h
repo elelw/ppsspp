@@ -17,10 +17,6 @@
 
 #pragma once
 
-#include <list>
-#include <set>
-#include <map>
-
 #include <d3d11.h>
 
 // Keeps track of allocated FBOs.
@@ -111,6 +107,9 @@ private:
 	ID3D11Buffer *stencilValueBuffer_ = nullptr;
 	ID3D11DepthStencilState *stencilMaskStates_[256]{};
 
+	ID3D11Texture2D *nullTexture_ = nullptr;
+	ID3D11ShaderResourceView *nullTextureView_ = nullptr;
+
 	TextureCacheD3D11 *textureCacheD3D11_;
 	ShaderManagerD3D11 *shaderManagerD3D11_;
 	DrawEngineD3D11 *drawEngineD3D11_;
@@ -122,9 +121,4 @@ private:
 	ID3D11InputLayout *postInputLayout_ = nullptr;
 	ID3D11Buffer *postConstants_ = nullptr;
 	static const D3D11_INPUT_ELEMENT_DESC g_PostVertexElements[2];
-
-#if 0
-	AsyncPBO *pixelBufObj_; //this isn't that large
-	u8 currentPBO_;
-#endif
 };

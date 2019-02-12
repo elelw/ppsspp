@@ -189,8 +189,8 @@ UI::EventReturn GameScreen::OnDeleteConfig(UI::EventParams &e)
 	return UI::EVENT_DONE;
 }
 
-void GameScreen::update() {
-	UIScreen::update();
+void GameScreen::render() {
+	UIScreen::render();
 
 	I18NCategory *ga = GetI18NCategory("Game");
 
@@ -216,12 +216,12 @@ void GameScreen::update() {
 
 	if (info->gameSize) {
 		char temp[256];
-		sprintf(temp, "%s: %1.1f %s", ga->T("Game"), (float) (info->gameSize) / 1024.f / 1024.f, ga->T("MB"));
+		snprintf(temp, sizeof(temp), "%s: %1.1f %s", ga->T("Game"), (float) (info->gameSize) / 1024.f / 1024.f, ga->T("MB"));
 		tvGameSize_->SetText(temp);
-		sprintf(temp, "%s: %1.2f %s", ga->T("SaveData"), (float) (info->saveDataSize) / 1024.f / 1024.f, ga->T("MB"));
+		snprintf(temp, sizeof(temp), "%s: %1.2f %s", ga->T("SaveData"), (float) (info->saveDataSize) / 1024.f / 1024.f, ga->T("MB"));
 		tvSaveDataSize_->SetText(temp);
 		if (info->installDataSize > 0) {
-			sprintf(temp, "%s: %1.2f %s", ga->T("InstallData"), (float) (info->installDataSize) / 1024.f / 1024.f, ga->T("MB"));
+			snprintf(temp, sizeof(temp), "%s: %1.2f %s", ga->T("InstallData"), (float) (info->installDataSize) / 1024.f / 1024.f, ga->T("MB"));
 			tvInstallDataSize_->SetText(temp);
 			tvInstallDataSize_->SetVisibility(UI::V_VISIBLE);
 		}
@@ -354,31 +354,18 @@ bool GameScreen::isRecentGame(const std::string &gamePath) {
 	if (g_Config.iMaxRecent <= 0)
 		return false;
 
+	const std::string resolved = File::ResolvePath(gamePath);
 	for (auto it = g_Config.recentIsos.begin(); it != g_Config.recentIsos.end(); ++it) {
-#ifdef _WIN32
-		if (!strcmpIgnore((*it).c_str(), gamePath.c_str(), "\\","/"))
-#else
-		if (!strcmp((*it).c_str(), gamePath.c_str()))
-#endif
+		const std::string recent = File::ResolvePath(*it);
+		if (resolved == recent)
 			return true;
 	}
 	return false;
 }
 
 UI::EventReturn GameScreen::OnRemoveFromRecent(UI::EventParams &e) {
-	if (g_Config.iMaxRecent <= 0)
-		return UI::EVENT_DONE;
-	for (auto it = g_Config.recentIsos.begin(); it != g_Config.recentIsos.end(); ++it) {
-#ifdef _WIN32
-		if (!strcmpIgnore((*it).c_str(), gamePath_.c_str(), "\\","/")) {
-#else
-		if (!strcmp((*it).c_str(), gamePath_.c_str())) {
-#endif
-			g_Config.recentIsos.erase(it);
-			screenManager()->switchScreen(new MainScreen());
-			return UI::EVENT_DONE;
-		}
-	}
+	g_Config.RemoveRecent(gamePath_);
+	screenManager()->switchScreen(new MainScreen());
 	return UI::EVENT_DONE;
 }
 

@@ -25,54 +25,61 @@
 #include "GPU/GLES/TextureCacheGLES.h"
 #include "GPU/Common/DepalettizeShaderCommon.h"
 
-#ifdef _WIN32
-#define SHADERLOG
+static const char *depalVShader100 = R"(
+#ifdef GL_ES
+precision highp float;
 #endif
+attribute vec4 a_position;
+attribute vec2 a_texcoord0;
+varying vec2 v_texcoord0;
+void main() {
+  v_texcoord0 = a_texcoord0;
+  gl_Position = a_position;
+}
+)";
 
-static const char *depalVShader100 =
-#ifdef USING_GLES2
-"#version 100\n"
-"precision highp float;\n"
+static const char *depalVShader300 = R"(
+#ifdef GL_ES
+precision highp float;
 #endif
-"attribute vec4 a_position;\n"
-"attribute vec2 a_texcoord0;\n"
-"varying vec2 v_texcoord0;\n"
-"void main() {\n"
-"  v_texcoord0 = a_texcoord0;\n"
-"  gl_Position = a_position;\n"
-"}\n";
-
-static const char *depalVShader300 =
-#ifdef USING_GLES2
-"#version 300 es\n"
-"precision highp float;\n"
-#else
-"#version 330\n"
-#endif
-"in vec4 a_position;\n"
-"in vec2 a_texcoord0;\n"
-"out vec2 v_texcoord0;\n"
-"void main() {\n"
-"  v_texcoord0 = a_texcoord0;\n"
-"  gl_Position = a_position;\n"
-"}\n";
+in vec4 a_position;
+in vec2 a_texcoord0;
+out vec2 v_texcoord0;
+void main() {
+  v_texcoord0 = a_texcoord0;
+  gl_Position = a_position;
+}
+)";
 
 DepalShaderCacheGLES::DepalShaderCacheGLES(Draw::DrawContext *draw) {
+	_assert_(draw);
 	render_ = (GLRenderManager *)draw->GetNativeObject(Draw::NativeObject::RENDER_MANAGER);
 	// Pre-build the vertex program
 	useGL3_ = gl_extensions.GLES3 || gl_extensions.VersionGEThan(3, 3);
-
-	vertexShaderFailed_ = false;
-	vertexShader_ = 0;
+	if (!gstate_c.Supports(GPU_SUPPORTS_32BIT_INT_FSHADER)) {
+		// Use the floating point path, it just can't handle the math.
+		useGL3_ = false;
+	}
 }
 
 DepalShaderCacheGLES::~DepalShaderCacheGLES() {
 	Clear();
 }
 
+void DepalShaderCacheGLES::DeviceRestore(Draw::DrawContext *draw) {
+	render_ = (GLRenderManager *)draw->GetNativeObject(Draw::NativeObject::RENDER_MANAGER);
+}
+
 bool DepalShaderCacheGLES::CreateVertexShader() {
 	std::string src(useGL3_ ? depalVShader300 : depalVShader100);
-	vertexShader_ = render_->CreateShader(GL_VERTEX_SHADER, src, "depal");
+	std::string prelude;
+	if (gl_extensions.IsGLES) {
+		prelude = useGL3_ ? "#version 300 es\n" : "#version 100\n";
+	} else {
+		// We need to add a corresponding #version.  Apple drivers fail without an exact match.
+		prelude = StringFromFormat("#version %d\n", gl_extensions.GLSLVersion());
+	}
+	vertexShader_ = render_->CreateShader(GL_VERTEX_SHADER, prelude + src, "depal");
 	return true;
 }
 

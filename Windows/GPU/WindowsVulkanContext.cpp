@@ -51,6 +51,7 @@
 #include <sstream>
 
 #include "Core/Config.h"
+#include "Core/ConfigValues.h"
 #include "Core/System.h"
 #include "Common/Vulkan/VulkanLoader.h"
 #include "Common/Vulkan/VulkanContext.h"
@@ -109,10 +110,13 @@ bool WindowsVulkanContext::Init(HINSTANCE hInst, HWND hWnd, std::string *error_m
 		g_Vulkan = nullptr;
 		return false;
 	}
-	g_Vulkan->ChooseDevice(g_Vulkan->GetBestPhysicalDevice());
-	if (g_Vulkan->EnableDeviceExtension(VK_NV_DEDICATED_ALLOCATION_EXTENSION_NAME)) {
-		supportsDedicatedAlloc_ = true;
+	int deviceNum = g_Vulkan->GetPhysicalDeviceByName(g_Config.sVulkanDevice);
+	if (deviceNum < 0) {
+		deviceNum = g_Vulkan->GetBestPhysicalDevice();
+		if (!g_Config.sVulkanDevice.empty())
+			g_Config.sVulkanDevice = g_Vulkan->GetPhysicalDeviceProperties(deviceNum).properties.deviceName;
 	}
+	g_Vulkan->ChooseDevice(deviceNum);
 	if (g_Vulkan->CreateDevice() != VK_SUCCESS) {
 		*error_message = g_Vulkan->InitError();
 		delete g_Vulkan;
@@ -120,8 +124,17 @@ bool WindowsVulkanContext::Init(HINSTANCE hInst, HWND hWnd, std::string *error_m
 		return false;
 	}
 	if (g_validate_) {
-		int bits = VK_DEBUG_REPORT_ERROR_BIT_EXT | VK_DEBUG_REPORT_WARNING_BIT_EXT | VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT;
-		g_Vulkan->InitDebugMsgCallback(&Vulkan_Dbg, bits, &g_LogOptions);
+		if (g_Vulkan->DeviceExtensions().EXT_debug_utils) {
+			int bits = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT
+				| VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT
+				| VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT
+				| VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT
+				| VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+			g_Vulkan->InitDebugUtilsCallback(&VulkanDebugUtilsCallback, bits, &g_LogOptions);
+		} else {
+			int bits = VK_DEBUG_REPORT_ERROR_BIT_EXT | VK_DEBUG_REPORT_WARNING_BIT_EXT | VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT;
+			g_Vulkan->InitDebugMsgCallback(&VulkanDebugReportCallback, bits, &g_LogOptions);
+		}
 	}
 	g_Vulkan->InitSurface(WINDOWSYSTEM_WIN32, (void *)hInst, (void *)hWnd);
 	if (!g_Vulkan->InitObjects()) {
@@ -133,9 +146,9 @@ bool WindowsVulkanContext::Init(HINSTANCE hInst, HWND hWnd, std::string *error_m
 	bool splitSubmit = g_Config.bGfxDebugSplitSubmit;
 
 	draw_ = Draw::T3DCreateVulkanContext(g_Vulkan, splitSubmit);
-	SetGPUBackend(GPUBackend::VULKAN);
+	SetGPUBackend(GPUBackend::VULKAN, g_Vulkan->GetPhysicalDeviceProperties(deviceNum).properties.deviceName);
 	bool success = draw_->CreatePresets();
-	assert(success);  // Doesn't fail, we include the compiler.
+	_assert_msg_(G3D, success, "Failed to compile preset shaders");
 	draw_->HandleEvent(Draw::Event::GOT_BACKBUFFER, g_Vulkan->GetBackbufferWidth(), g_Vulkan->GetBackbufferHeight());
 
 	VulkanRenderManager *renderManager = (VulkanRenderManager *)draw_->GetNativeObject(Draw::NativeObject::RENDER_MANAGER);
@@ -156,6 +169,7 @@ void WindowsVulkanContext::Shutdown() {
 	g_Vulkan->WaitUntilQueueIdle();
 	g_Vulkan->DestroyObjects();
 	g_Vulkan->DestroyDevice();
+	g_Vulkan->DestroyDebugUtilsCallback();
 	g_Vulkan->DestroyDebugMsgCallback();
 	g_Vulkan->DestroyInstance();
 

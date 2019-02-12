@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "base/stringutil.h"
 #include "Common/ColorConv.h"
 #include "Core/Config.h"
 #include "Core/Screenshot.h"
@@ -31,7 +32,6 @@
 #include "Windows/GEDebugger/TabVertices.h"
 #include "Windows/W32Util/ShellUtil.h"
 #include "Windows/InputBox.h"
-#include "Windows/WindowsHost.h"
 #include "Windows/MainWindow.h"
 #include "Windows/main.h"
 #include "GPU/GPUInterface.h"
@@ -39,6 +39,7 @@
 #include "GPU/Common/GPUStateUtils.h"
 #include "GPU/GPUState.h"
 #include "GPU/Debugger/Breakpoints.h"
+#include "GPU/Debugger/Debugger.h"
 #include "GPU/Debugger/Record.h"
 #include "GPU/Debugger/Stepping.h"
 #include <windowsx.h>
@@ -47,11 +48,8 @@
 const int POPUP_SUBMENU_ID_GEDBG_PREVIEW = 10;
 
 using namespace GPUBreakpoints;
+using namespace GPUDebug;
 using namespace GPUStepping;
-
-static bool attached = false;
-
-static BreakNextType breakNext = BREAK_NONE;
 
 enum PrimaryDisplayType {
 	PRIMARY_FRAMEBUF,
@@ -59,16 +57,76 @@ enum PrimaryDisplayType {
 	PRIMARY_STENCILBUF,
 };
 
+StepCountDlg::StepCountDlg(HINSTANCE _hInstance, HWND _hParent) : Dialog((LPCSTR)IDD_GEDBG_STEPCOUNT, _hInstance, _hParent) {
+	DialogManager::AddDlg(this);
+
+	for (int i = 0; i < 4; i++) // Add items 1, 10, 100, 1000
+		SendMessageA(GetDlgItem(m_hDlg, IDC_GEDBG_STEPCOUNT_COMBO), CB_ADDSTRING, 0, (LPARAM)std::to_string((int)pow(10, i)).c_str());
+	SetWindowTextA(GetDlgItem(m_hDlg, IDC_GEDBG_STEPCOUNT_COMBO), "1");
+}
+
+StepCountDlg::~StepCountDlg() {
+	DialogManager::RemoveDlg(this);
+}
+
+void StepCountDlg::Jump(int count, bool relative) {
+	if (relative && count == 0)
+		return;
+	SetBreakNext(BreakNext::COUNT);
+	SetBreakCount(count, relative);
+};
+
+BOOL StepCountDlg::DlgProc(UINT message, WPARAM wParam, LPARAM lParam) {
+	int count;
+	bool relative;
+	auto GetValue = [&]() {
+		char str[7]; // +/-99999\0
+		GetWindowTextA(GetDlgItem(m_hDlg, IDC_GEDBG_STEPCOUNT_COMBO), str, 7);
+		relative = str[0] == '+' || str[0] == '-';
+		return TryParse(str, &count);
+	};
+
+	switch (message) {
+	case WM_CLOSE:
+		Show(false);
+		return TRUE;
+	case WM_COMMAND:
+		switch (wParam) {
+		case IDC_GEDBG_STEPCOUNT_DEC:
+			if (GetValue())
+				Jump(-abs(count), true);
+			return TRUE;
+		case IDC_GEDBG_STEPCOUNT_INC:
+			if (GetValue())
+				Jump(abs(count), true);
+			return TRUE;
+		case IDC_GEDBG_STEPCOUNT_JUMP:
+			if (GetValue())
+				Jump(abs(count), false);
+			return TRUE;
+		case IDOK:
+			if (GetValue())
+				Jump(count, relative);
+			Show(false);
+			return TRUE;
+		case IDCANCEL:
+			SetFocus(m_hParent);
+			Show(false);
+			return TRUE;
+		}
+		break;
+	}
+	return FALSE;
+}
+
 void CGEDebugger::Init() {
 	SimpleGLWindow::RegisterClass();
 	CtrlDisplayListView::registerClass();
 }
 
 CGEDebugger::CGEDebugger(HINSTANCE _hInstance, HWND _hParent)
-	: Dialog((LPCSTR)IDD_GEDEBUGGER, _hInstance, _hParent) {
-	GPUBreakpoints::Init();
-	Core_ListenShutdown(ForceUnpause);
-
+	: Dialog((LPCSTR)IDD_GEDEBUGGER, _hInstance, _hParent)
+	, stepCountDlg(_hInstance, m_hDlg) {
 	// minimum size = a little more than the default
 	RECT windowRect;
 	GetWindowRect(m_hDlg, &windowRect);
@@ -128,6 +186,8 @@ CGEDebugger::CGEDebugger(HINSTANCE _hInstance, HWND _hParent)
 	int w = g_Config.iGEWindowW == -1 ? minWidth_ : g_Config.iGEWindowW;
 	int h = g_Config.iGEWindowH == -1 ? minHeight_ : g_Config.iGEWindowH;
 	MoveWindow(m_hDlg,x,y,w,h,FALSE);
+
+	SetTimer(m_hDlg, 1, USER_TIMER_MINIMUM, nullptr);
 
 	UpdateTextureLevel(textureLevel_);
 }
@@ -295,6 +355,10 @@ void CGEDebugger::UpdatePreviews() {
 		displayList->setDisplayList(list);
 	}
 
+	wchar_t primCounter[1024]{};
+	swprintf(primCounter, ARRAY_SIZE(primCounter), L"%d/%d", PrimsThisFrame(), PrimsLastFrame());
+	SetDlgItemText(m_hDlg, IDC_GEDBG_PRIMCOUNTER, primCounter);
+
 	flags->Update();
 	lighting->Update();
 	textureState->Update();
@@ -317,6 +381,8 @@ u32 CGEDebugger::TexturePreviewFlags(const GPUgstate &state) {
 void CGEDebugger::UpdatePrimaryPreview(const GPUgstate &state) {
 	bool bufferResult = false;
 	u32 flags = SimpleGLWindow::ALPHA_IGNORE | SimpleGLWindow::RESIZE_SHRINK_CENTER;
+
+	SetupPreviews();
 
 	primaryBuffer_ = nullptr;
 	if (showClut_) {
@@ -362,6 +428,8 @@ void CGEDebugger::UpdatePrimaryPreview(const GPUgstate &state) {
 void CGEDebugger::UpdateSecondPreview(const GPUgstate &state) {
 	bool bufferResult = false;
 
+	SetupPreviews();
+
 	secondBuffer_ = nullptr;
 	if (showClut_) {
 		bufferResult = GPU_GetCurrentClut(secondBuffer_);
@@ -403,6 +471,8 @@ void CGEDebugger::PrimaryPreviewHover(int x, int y) {
 	if (primaryBuffer_ == nullptr) {
 		return;
 	}
+
+	SetupPreviews();
 
 	wchar_t desc[256] = {0};
 
@@ -626,14 +696,6 @@ void CGEDebugger::SavePosition()
 	}
 }
 
-void CGEDebugger::SetBreakNext(BreakNextType type) {
-	attached = true;
-	SetupPreviews();
-
-	breakNext = type;
-	ResumeFromStepping();
-}
-
 BOOL CGEDebugger::DlgProc(UINT message, WPARAM wParam, LPARAM lParam) {
 	switch (message) {
 	case WM_INITDIALOG:
@@ -657,10 +719,9 @@ BOOL CGEDebugger::DlgProc(UINT message, WPARAM wParam, LPARAM lParam) {
 		return TRUE;
 
 	case WM_CLOSE:
-		attached = false;
-		ResumeFromStepping();
-		breakNext = BREAK_NONE;
+		GPUDebug::SetActive(false);
 
+		stepCountDlg.Show(false);
 		Show(false);
 		return TRUE;
 
@@ -671,6 +732,16 @@ BOOL CGEDebugger::DlgProc(UINT message, WPARAM wParam, LPARAM lParam) {
 	case WM_ACTIVATE:
 		if (wParam == WA_ACTIVE || wParam == WA_CLICKACTIVE) {
 			g_activeWindow = WINDOW_GEDEBUGGER;
+		}
+		break;
+
+	case WM_TIMER:
+		if (GPUStepping::IsStepping()) {
+			static int lastCounter = 0;
+			if (lastCounter != GPUStepping::GetSteppingCounter()) {
+				UpdatePreviews();
+				lastCounter = GPUStepping::GetSteppingCounter();
+			}
 		}
 		break;
 
@@ -685,7 +756,7 @@ BOOL CGEDebugger::DlgProc(UINT message, WPARAM wParam, LPARAM lParam) {
 			break;
 		case IDC_GEDBG_FBTABS:
 			fbTabs->HandleNotify(lParam);
-			if (attached && gpuDebug != nullptr) {
+			if (GPUDebug::IsActive() && gpuDebug != nullptr) {
 				UpdatePreviews();
 			}
 			break;
@@ -695,32 +766,36 @@ BOOL CGEDebugger::DlgProc(UINT message, WPARAM wParam, LPARAM lParam) {
 	case WM_COMMAND:
 		switch (LOWORD(wParam)) {
 		case IDC_GEDBG_STEPDRAW:
-			SetBreakNext(BREAK_NEXT_DRAW);
+			SetBreakNext(BreakNext::DRAW);
 			break;
 
 		case IDC_GEDBG_STEP:
-			SetBreakNext(BREAK_NEXT_OP);
+			SetBreakNext(BreakNext::OP);
 			break;
 
 		case IDC_GEDBG_STEPTEX:
-			AddTextureChangeTempBreakpoint();
-			SetBreakNext(BREAK_NEXT_TEX);
+			SetBreakNext(BreakNext::TEX);
 			break;
 
 		case IDC_GEDBG_STEPFRAME:
-			SetBreakNext(BREAK_NEXT_FRAME);
+			SetBreakNext(BreakNext::FRAME);
 			break;
 
 		case IDC_GEDBG_STEPPRIM:
-			AddCmdBreakpoint(GE_CMD_PRIM, true);
-			AddCmdBreakpoint(GE_CMD_BEZIER, true);
-			AddCmdBreakpoint(GE_CMD_SPLINE, true);
-			SetBreakNext(BREAK_NEXT_PRIM);
+			SetBreakNext(BreakNext::PRIM);
+			break;
+
+		case IDC_GEDBG_STEPCURVE:
+			SetBreakNext(BreakNext::CURVE);
+			break;
+
+		case IDC_GEDBG_STEPCOUNT:
+			stepCountDlg.Show(true);
 			break;
 
 		case IDC_GEDBG_BREAKTEX:
 			{
-				attached = true;
+				GPUDebug::SetActive(true);
 				if (!gpuDebug) {
 					break;
 				}
@@ -739,7 +814,7 @@ BOOL CGEDebugger::DlgProc(UINT message, WPARAM wParam, LPARAM lParam) {
 
 		case IDC_GEDBG_BREAKTARGET:
 			{
-				attached = true;
+				GPUDebug::SetActive(true);
 				if (!gpuDebug) {
 					break;
 				}
@@ -758,26 +833,27 @@ BOOL CGEDebugger::DlgProc(UINT message, WPARAM wParam, LPARAM lParam) {
 
 		case IDC_GEDBG_TEXLEVELDOWN:
 			UpdateTextureLevel(textureLevel_ - 1);
-			if (attached && gpuDebug != nullptr) {
+			if (GPUDebug::IsActive() && gpuDebug != nullptr) {
 				UpdatePreviews();
 			}
 			break;
 
 		case IDC_GEDBG_TEXLEVELUP:
 			UpdateTextureLevel(textureLevel_ + 1);
-			if (attached && gpuDebug != nullptr) {
+			if (GPUDebug::IsActive() && gpuDebug != nullptr) {
 				UpdatePreviews();
 			}
 			break;
 
 		case IDC_GEDBG_RESUME:
+			SetupPreviews();
 			primaryWindow->Clear();
 			secondWindow->Clear();
 			SetDlgItemText(m_hDlg, IDC_GEDBG_FRAMEBUFADDR, L"");
 			SetDlgItemText(m_hDlg, IDC_GEDBG_TEXADDR, L"");
+			SetDlgItemText(m_hDlg, IDC_GEDBG_PRIMCOUNTER, L"");
 
-			ResumeFromStepping();
-			breakNext = BREAK_NONE;
+			SetBreakNext(BreakNext::NONE);
 			break;
 
 		case IDC_GEDBG_RECORD:
@@ -785,14 +861,14 @@ BOOL CGEDebugger::DlgProc(UINT message, WPARAM wParam, LPARAM lParam) {
 			break;
 
 		case IDC_GEDBG_FORCEOPAQUE:
-			if (attached && gpuDebug != nullptr) {
+			if (GPUDebug::IsActive() && gpuDebug != nullptr) {
 				forceOpaque_ = SendMessage(GetDlgItem(m_hDlg, IDC_GEDBG_FORCEOPAQUE), BM_GETCHECK, 0, 0) != 0;
 				UpdatePreviews();
 			}
 			break;
 
 		case IDC_GEDBG_SHOWCLUT:
-			if (attached && gpuDebug != nullptr) {
+			if (GPUDebug::IsActive() && gpuDebug != nullptr) {
 				showClut_ = SendMessage(GetDlgItem(m_hDlg, IDC_GEDBG_SHOWCLUT), BM_GETCHECK, 0, 0) != 0;
 				UpdatePreviews();
 			}
@@ -800,30 +876,13 @@ BOOL CGEDebugger::DlgProc(UINT message, WPARAM wParam, LPARAM lParam) {
 		}
 		break;
 
-	case WM_GEDBG_BREAK_CMD:
-		{
-			u32 pc = (u32)wParam;
-			ClearTempBreakpoints();
-			auto info = gpuDebug->DissassembleOp(pc);
-			NOTICE_LOG(G3D, "Waiting at %08x, %s", pc, info.desc.c_str());
-			UpdatePreviews();
-		}
-		break;
-
-	case WM_GEDBG_BREAK_DRAW:
-		{
-			NOTICE_LOG(G3D, "Waiting at a draw");
-			UpdatePreviews();
-		}
-		break;
-
 	case WM_GEDBG_STEPDISPLAYLIST:
-		SetBreakNext(BREAK_NEXT_OP);
+		SetBreakNext(BreakNext::OP);
 		break;
 
 	case WM_GEDBG_TOGGLEPCBREAKPOINT:
 		{
-			attached = true;
+			GPUDebug::SetActive(true);
 			u32 pc = (u32)wParam;
 			bool temp;
 			bool isBreak = IsAddressBreakpoint(pc, temp);
@@ -837,7 +896,7 @@ BOOL CGEDebugger::DlgProc(UINT message, WPARAM wParam, LPARAM lParam) {
 
 	case WM_GEDBG_RUNTOWPARAM:
 		{
-			attached = true;
+			GPUDebug::SetActive(true);
 			u32 pc = (u32)wParam;
 			AddAddressBreakpoint(pc, true);
 			SendMessage(m_hDlg,WM_COMMAND,IDC_GEDBG_RESUME,0);
@@ -845,9 +904,7 @@ BOOL CGEDebugger::DlgProc(UINT message, WPARAM wParam, LPARAM lParam) {
 		break;
 
 	case WM_GEDBG_SETCMDWPARAM:
-		{
-			GPU_SetCmdValue((u32)wParam);
-		}
+		GPU_SetCmdValue((u32)wParam);
 		break;
 
 	case WM_GEDBG_UPDATE_WATCH:
@@ -858,45 +915,4 @@ BOOL CGEDebugger::DlgProc(UINT message, WPARAM wParam, LPARAM lParam) {
 	}
 
 	return FALSE;
-}
-
-// The below WindowsHost methods are called on the GPU thread.
-
-bool WindowsHost::GPUDebuggingActive() {
-	return attached;
-}
-
-static void DeliverMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
-	PostMessage(geDebuggerWindow->GetDlgHandle(), msg, wParam, lParam);
-}
-
-static void PauseWithMessage(UINT msg, WPARAM wParam = NULL, LPARAM lParam = NULL) {
-	if (attached) {
-		EnterStepping(std::bind(&DeliverMessage, msg, wParam, lParam));
-	}
-}
-
-void WindowsHost::GPUNotifyCommand(u32 pc) {
-	u32 op = Memory::ReadUnchecked_U32(pc);
-	u8 cmd = op >> 24;
-
-	if (breakNext == BREAK_NEXT_OP || IsBreakpoint(pc, op)) {
-		PauseWithMessage(WM_GEDBG_BREAK_CMD, (WPARAM) pc);
-	}
-}
-
-void WindowsHost::GPUNotifyDisplay(u32 framebuf, u32 stride, int format) {
-	if (breakNext == BREAK_NEXT_FRAME) {
-		// This should work fine, start stepping at the first op of the new frame.
-		breakNext = BREAK_NEXT_OP;
-	}
-}
-
-void WindowsHost::GPUNotifyDraw() {
-	if (breakNext == BREAK_NEXT_DRAW) {
-		PauseWithMessage(WM_GEDBG_BREAK_DRAW);
-	}
-}
-
-void WindowsHost::GPUNotifyTextureAttachment(u32 addr) {
 }

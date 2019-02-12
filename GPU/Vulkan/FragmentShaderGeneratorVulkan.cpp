@@ -34,14 +34,16 @@
 #include "GPU/GPUState.h"
 
 static const char *vulkan_glsl_preamble =
-	"#version 400\n"
+	"#version 450\n"
 	"#extension GL_ARB_separate_shader_objects : enable\n"
-	"#extension GL_ARB_shading_language_420pack : enable\n\n";
+	"#extension GL_ARB_shading_language_420pack : enable\n"
+	"#extension GL_ARB_conservative_depth : enable\n"
+	"#extension GL_ARB_shader_image_load_store : enable\n\n";
 
 #define WRITE p+=sprintf
 
 // Missing: Z depth range
-bool GenerateVulkanGLSLFragmentShader(const FShaderID &id, char *buffer) {
+bool GenerateVulkanGLSLFragmentShader(const FShaderID &id, char *buffer, uint32_t vulkanVendorId) {
 	char *p = buffer;
 
 	const char *lastFragData = nullptr;
@@ -54,6 +56,7 @@ bool GenerateVulkanGLSLFragmentShader(const FShaderID &id, char *buffer) {
 	bool enableAlphaTest = id.Bit(FS_BIT_ALPHA_TEST);
 
 	bool alphaTestAgainstZero = id.Bit(FS_BIT_ALPHA_AGAINST_ZERO);
+	bool testForceToZero = id.Bit(FS_BIT_TEST_DISCARD_TO_ZERO);
 	bool enableColorTest = id.Bit(FS_BIT_COLOR_TEST);
 	bool colorTestAgainstZero = id.Bit(FS_BIT_COLOR_AGAINST_ZERO);
 	bool enableColorDoubling = id.Bit(FS_BIT_COLOR_DOUBLE);
@@ -80,6 +83,14 @@ bool GenerateVulkanGLSLFragmentShader(const FShaderID &id, char *buffer) {
 	bool isModeClear = id.Bit(FS_BIT_CLEARMODE);
 
 	const char *shading = doFlatShading ? "flat" : "";
+	bool earlyFragmentTests = ((!enableAlphaTest && !enableColorTest) || testForceToZero) && !gstate_c.Supports(GPU_ROUND_FRAGMENT_DEPTH_TO_16BIT);
+	bool useAdrenoBugWorkaround = id.Bit(FS_BIT_NO_DEPTH_CANNOT_DISCARD_STENCIL);
+
+	if (earlyFragmentTests) {
+		WRITE(p, "layout (early_fragment_tests) in;\n");
+	} else if (useAdrenoBugWorkaround && !gstate_c.Supports(GPU_ROUND_FRAGMENT_DEPTH_TO_16BIT)) {
+		WRITE(p, "layout (depth_unchanged) out float gl_FragDepth;\n");
+	}
 
 	WRITE(p, "layout (std140, set = 0, binding = 3) uniform baseUBO {\n%s} base;\n", ub_baseStr);
 	if (doTexture) {
@@ -175,29 +186,37 @@ bool GenerateVulkanGLSLFragmentShader(const FShaderID &id, char *buffer) {
 				doTextureProjection = false;
 			}
 
-			if (doTextureProjection) {
-				WRITE(p, "  vec4 t = textureProj(tex, %s);\n", texcoord);
-				if (shaderDepal) {
-					WRITE(p, "  vec4 t1 = textureProjOffset(tex, %s, ivec2(1, 0));\n", texcoord);
-					WRITE(p, "  vec4 t2 = textureProjOffset(tex, %s, ivec2(0, 1));\n", texcoord);
-					WRITE(p, "  vec4 t3 = textureProjOffset(tex, %s, ivec2(1, 1));\n", texcoord);
+			if (!shaderDepal) {
+				if (doTextureProjection) {
+					WRITE(p, "  vec4 t = textureProj(tex, %s);\n", texcoord);
+				} else {
+					WRITE(p, "  vec4 t = texture(tex, %s.xy);\n", texcoord);
 				}
 			} else {
-				WRITE(p, "  vec4 t = texture(tex, %s.xy);\n", texcoord);
-				if (shaderDepal) {
-					WRITE(p, "  vec4 t1 = textureOffset(tex, %s.xy, ivec2(1, 0));\n", texcoord);
-					WRITE(p, "  vec4 t2 = textureOffset(tex, %s.xy, ivec2(0, 1));\n", texcoord);
-					WRITE(p, "  vec4 t3 = textureOffset(tex, %s.xy, ivec2(1, 1));\n", texcoord);
+				if (doTextureProjection) {
+					// We don't use textureProj because we need better control and it's probably not much of a savings anyway.
+					WRITE(p, "  vec2 uv = %s.xy/%s.z;\n  vec2 uv_round;\n", texcoord, texcoord);
+				} else {
+					WRITE(p, "  vec2 uv = %s.xy;\n  vec2 uv_round;\n", texcoord);
 				}
-			}
-
-			if (shaderDepal) {
+				WRITE(p, "  vec2 tsize = textureSize(tex, 0);\n");
+				WRITE(p, "  vec2 fraction;\n");
+				WRITE(p, "  bool bilinear = (base.depal_mask_shift_off_fmt >> 31) != 0;\n");
+				WRITE(p, "  if (bilinear) {\n");
+				WRITE(p, "    uv_round = uv * tsize - vec2(0.5, 0.5);\n");
+				WRITE(p, "    fraction = fract(uv_round);\n");
+				WRITE(p, "    uv_round = (uv_round - fraction + vec2(0.5, 0.5)) / tsize;\n");  // We want to take our four point samples at pixel centers.
+				WRITE(p, "  } else {\n");
+				WRITE(p, "    uv_round = uv;\n");
+				WRITE(p, "  }\n");
+				WRITE(p, "  vec4 t = texture(tex, uv_round);\n");
+				WRITE(p, "  vec4 t1 = textureOffset(tex, uv_round, ivec2(1, 0));\n");
+				WRITE(p, "  vec4 t2 = textureOffset(tex, uv_round, ivec2(0, 1));\n");
+				WRITE(p, "  vec4 t3 = textureOffset(tex, uv_round, ivec2(1, 1));\n");
 				WRITE(p, "  uint depalMask = (base.depal_mask_shift_off_fmt & 0xFF);\n");
 				WRITE(p, "  uint depalShift = (base.depal_mask_shift_off_fmt >> 8) & 0xFF;\n");
 				WRITE(p, "  uint depalOffset = ((base.depal_mask_shift_off_fmt >> 16) & 0xFF) << 4;\n");
 				WRITE(p, "  uint depalFmt = (base.depal_mask_shift_off_fmt >> 24) & 0x3;\n");
-				WRITE(p, "  bool bilinear = (base.depal_mask_shift_off_fmt >> 31) != 0;\n");
-				WRITE(p, "  vec2 fraction = fract(%s.xy * vec2(textureSize(tex, 0).xy));\n", texcoord);
 				WRITE(p, "  uvec4 col; uint index0; uint index1; uint index2; uint index3;\n");
 				WRITE(p, "  switch (depalFmt) {\n");  // We might want to include fmt in the shader ID if this is a performance issue.
 				WRITE(p, "  case 0:\n");  // 565
@@ -225,33 +244,33 @@ bool GenerateVulkanGLSLFragmentShader(const FShaderID &id, char *buffer) {
 				WRITE(p, "    }\n");
 				WRITE(p, "    break;\n");
 				WRITE(p, "  case 2:\n");  // 4444
-				WRITE(p, "    col = uvec4(t.rgba * vec4(15.99, 15.99, 15.99, 15.99));\n");
+				WRITE(p, "    col = uvec4(t.rgba * 15.99);\n");
 				WRITE(p, "    index0 = (col.a << 12) | (col.b << 8) | (col.g << 4) | (col.r);\n");
 				WRITE(p, "    if (bilinear) {\n");
-				WRITE(p, "      col = uvec4(t1.rgba * vec4(15.99, 15.99, 15.99, 15.99));\n");
+				WRITE(p, "      col = uvec4(t1.rgba * 15.99);\n");
 				WRITE(p, "      index1 = (col.a << 12) | (col.b << 8) | (col.g << 4) | (col.r);\n");
-				WRITE(p, "      col = uvec4(t2.rgba * vec4(15.99, 15.99, 15.99, 15.99));\n");
+				WRITE(p, "      col = uvec4(t2.rgba * 15.99);\n");
 				WRITE(p, "      index2 = (col.a << 12) | (col.b << 8) | (col.g << 4) | (col.r);\n");
-				WRITE(p, "      col = uvec4(t3.rgba * vec4(15.99, 15.99, 15.99, 15.99));\n");
+				WRITE(p, "      col = uvec4(t3.rgba * 15.99);\n");
 				WRITE(p, "      index3 = (col.a << 12) | (col.b << 8) | (col.g << 4) | (col.r);\n");
 				WRITE(p, "    }\n");
 				WRITE(p, "    break;\n");
 				WRITE(p, "  case 3:\n");  // 8888
-				WRITE(p, "    col = uvec4(t.rgba * vec4(255.99, 255.99, 255.99, 255.99));\n");
+				WRITE(p, "    col = uvec4(t.rgba * 255.99);\n");
 				WRITE(p, "    index0 = (col.a << 24) | (col.b << 16) | (col.g << 8) | (col.r);\n");
 				WRITE(p, "    if (bilinear) {\n");
-				WRITE(p, "      col = uvec4(t1.rgba * vec4(255.99, 255.99, 255.99, 255.99));\n");
+				WRITE(p, "      col = uvec4(t1.rgba * 255.99);\n");
 				WRITE(p, "      index1 = (col.a << 24) | (col.b << 16) | (col.g << 8) | (col.r);\n");
-				WRITE(p, "      col = uvec4(t2.rgba * vec4(255.99, 255.99, 255.99, 255.99));\n");
+				WRITE(p, "      col = uvec4(t2.rgba * 255.99);\n");
 				WRITE(p, "      index2 = (col.a << 24) | (col.b << 16) | (col.g << 8) | (col.r);\n");
-				WRITE(p, "      col = uvec4(t3.rgba * vec4(255.99, 255.99, 255.99, 255.99));\n");
+				WRITE(p, "      col = uvec4(t3.rgba * 255.99);\n");
 				WRITE(p, "      index3 = (col.a << 24) | (col.b << 16) | (col.g << 8) | (col.r);\n");
 				WRITE(p, "    }\n");
 				WRITE(p, "    break;\n");
 				WRITE(p, "  };\n");
 				WRITE(p, "  index0 = ((index0 >> depalShift) & depalMask) | depalOffset;\n");
 				WRITE(p, "  t = texelFetch(pal, ivec2(index0, 0), 0);\n");
-				WRITE(p, "  if (bilinear) {\n");
+				WRITE(p, "  if (bilinear && !(index0 == index1 && index1 == index2 && index2 == index3)) {\n");
 				WRITE(p, "    index1 = ((index1 >> depalShift) & depalMask) | depalOffset;\n");
 				WRITE(p, "    index2 = ((index2 >> depalShift) & depalMask) | depalOffset;\n");
 				WRITE(p, "    index3 = ((index3 >> depalShift) & depalMask) | depalOffset;\n");
@@ -321,6 +340,11 @@ bool GenerateVulkanGLSLFragmentShader(const FShaderID &id, char *buffer) {
 					WRITE(p, "  vec4 v = p;\n"); break;
 				}
 			}
+
+			if (enableColorDoubling) {
+				// This happens before fog is applied.
+				WRITE(p, "  v.rgb = clamp(v.rgb * 2.0, 0.0, 1.0);\n");
+			}
 		} else {
 			// No texture mapping
 			WRITE(p, "  vec4 v = v_color0 %s;\n", secondary);
@@ -330,29 +354,36 @@ bool GenerateVulkanGLSLFragmentShader(const FShaderID &id, char *buffer) {
 		// So we have to scale to account for the difference.
 		std::string alphaTestXCoord = "0";
 
+		const char *discardStatement = testForceToZero ? "v.a = 0.0;" : "discard;";
 		if (enableAlphaTest) {
 			if (alphaTestAgainstZero) {
 				// When testing against 0 (extremely common), we can avoid some math.
 				// 0.002 is approximately half of 1.0 / 255.0.
 				if (alphaTestFunc == GE_COMP_NOTEQUAL || alphaTestFunc == GE_COMP_GREATER) {
-					WRITE(p, "  if (v.a < 0.002) discard;\n");
+					WRITE(p, "  if (v.a < 0.002) %s\n", discardStatement);
 				} else if (alphaTestFunc != GE_COMP_NEVER) {
 					// Anything else is a test for == 0.  Happens sometimes, actually...
-					WRITE(p, "  if (v.a > 0.002) discard;\n");
+					WRITE(p, "  if (v.a > 0.002) %s\n", discardStatement);
 				} else {
 					// NEVER has been logged as used by games, although it makes little sense - statically failing.
 					// Maybe we could discard the drawcall, but it's pretty rare.  Let's just statically discard here.
-					WRITE(p, "  discard;\n");
+					WRITE(p, "  %s\n", discardStatement);
 				}
 			} else {
 				const char *alphaTestFuncs[] = { "#", "#", " != ", " == ", " >= ", " > ", " <= ", " < " };
 				if (alphaTestFuncs[alphaTestFunc][0] != '#') {
-					WRITE(p, "  if ((roundAndScaleTo255i(v.a) & base.alphacolormask.a) %s base.alphacolorref.a) discard;\n", alphaTestFuncs[alphaTestFunc]);
+					WRITE(p, "  if ((roundAndScaleTo255i(v.a) & base.alphacolormask.a) %s base.alphacolorref.a) %s\n", alphaTestFuncs[alphaTestFunc], discardStatement);
 				} else {
 					// This means NEVER.  See above.
-					WRITE(p, "  discard;\n");
+					WRITE(p, "  %s\n", discardStatement);
 				}
 			}
+		}
+
+		if (enableFog) {
+			WRITE(p, "  float fogCoef = clamp(v_fogdepth, 0.0, 1.0);\n");
+			WRITE(p, "  v = mix(vec4(base.fogcolor, v.a), v, fogCoef);\n");
+			// WRITE(p, "  v.x = v_depth;\n");
 		}
 
 		if (enableColorTest) {
@@ -361,37 +392,28 @@ bool GenerateVulkanGLSLFragmentShader(const FShaderID &id, char *buffer) {
 				// Have my doubts that this special case is actually worth it, but whatever.
 				// 0.002 is approximately half of 1.0 / 255.0.
 				if (colorTestFunc == GE_COMP_NOTEQUAL) {
-					WRITE(p, "  if (v.r + v.g + v.b < 0.002) discard;\n");
+					WRITE(p, "  if (v.r + v.g + v.b < 0.002) %s\n", discardStatement);
 				} else if (colorTestFunc != GE_COMP_NEVER) {
 					// Anything else is a test for == 0.
-					WRITE(p, "  if (v.r + v.g + v.b > 0.002) discard;\n");
+					WRITE(p, "  if (v.r + v.g + v.b > 0.002) %s\n", discardStatement);
 				} else {
 					// NEVER has been logged as used by games, although it makes little sense - statically failing.
 					// Maybe we could discard the drawcall, but it's pretty rare.  Let's just statically discard here.
-					WRITE(p, "  discard;\n");
+					WRITE(p, "  %s\n", discardStatement);
 				}
 			} else {
 				const char *colorTestFuncs[] = { "#", "#", " != ", " == " };
 				if (colorTestFuncs[colorTestFunc][0] != '#') {
 					WRITE(p, "  ivec3 v_scaled = roundAndScaleTo255iv(v.rgb);\n");
-					WRITE(p, "  if ((v_scaled & base.alphacolormask.rgb) %s (base.alphacolorref.rgb & base.alphacolormask.rgb)) discard;\n", colorTestFuncs[colorTestFunc]);
+					WRITE(p, "  if ((v_scaled & base.alphacolormask.rgb) %s (base.alphacolorref.rgb & base.alphacolormask.rgb)) %s\n", colorTestFuncs[colorTestFunc], discardStatement);
 				} else {
-					WRITE(p, "  discard;\n");
+					WRITE(p, "  %s\n", discardStatement);
 				}
 			}
 		}
 
-		// Color doubling happens after the color test.
-		if (enableColorDoubling && replaceBlend == REPLACE_BLEND_2X_SRC) {
-			WRITE(p, "  v.rgb = v.rgb * 4.0;\n");
-		} else if (enableColorDoubling || replaceBlend == REPLACE_BLEND_2X_SRC) {
+		if (replaceBlend == REPLACE_BLEND_2X_SRC) {
 			WRITE(p, "  v.rgb = v.rgb * 2.0;\n");
-		}
-
-		if (enableFog) {
-			WRITE(p, "  float fogCoef = clamp(v_fogdepth, 0.0, 1.0);\n");
-			WRITE(p, "  v = mix(vec4(base.fogcolor, v.a), v, fogCoef);\n");
-			// WRITE(p, "  v.x = v_depth;\n");
 		}
 
 		if (replaceBlend == REPLACE_BLEND_PRE_SRC || replaceBlend == REPLACE_BLEND_PRE_SRC_2X_ALPHA) {
@@ -562,6 +584,10 @@ bool GenerateVulkanGLSLFragmentShader(const FShaderID &id, char *buffer) {
 			WRITE(p, "  z = (1.0/65535.0) * floor(z * 65535.0);\n");
 		}
 		WRITE(p, "  gl_FragDepth = z;\n");
+	} else if (!earlyFragmentTests && useAdrenoBugWorkaround) {
+		// Adreno (and possibly MESA/others) apply early frag tests even with discard in the shader.
+		// Writing depth prevents the bug, even with depth_unchanged specified.
+		WRITE(p, "  gl_FragDepth = gl_FragCoord.z;\n");
 	}
 
 	WRITE(p, "}\n");

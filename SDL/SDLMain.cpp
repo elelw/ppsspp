@@ -19,6 +19,7 @@ SDLJoystick *joystick = NULL;
 #include <cassert>
 #include <cmath>
 #include <thread>
+#include <locale>
 
 #include "base/display.h"
 #include "base/logging.h"
@@ -48,13 +49,10 @@ SDLJoystick *joystick = NULL;
 #include <X11/Xlib-xcb.h>
 #endif
 
-#if defined(USING_EGL)
-#include "EGL/egl.h"
-#endif
-
 #include "Core/System.h"
 #include "Core/Core.h"
 #include "Core/Config.h"
+#include "Core/ConfigValues.h"
 #include "Common/GraphicsContext.h"
 #include "SDLGLGraphicsContext.h"
 #include "SDLVulkanGraphicsContext.h"
@@ -69,135 +67,6 @@ static int g_QuitRequested = 0;
 
 static int g_DesktopWidth = 0;
 static int g_DesktopHeight = 0;
-
-#if defined(USING_EGL)
-
-static EGLDisplay               g_eglDisplay    = NULL;
-static EGLContext               g_eglContext    = NULL;
-static EGLSurface               g_eglSurface    = NULL;
-#ifdef USING_FBDEV
-static EGLNativeDisplayType     g_Display       = NULL;
-#else
-static Display*                 g_Display       = NULL;
-#endif
-static NativeWindowType         g_Window        = (NativeWindowType)NULL;
-
-int8_t CheckEGLErrors(const std::string& file, uint16_t line) {
-	EGLenum error;
-	std::string errortext;
-
-	error = eglGetError();
-	switch (error)
-	{
-		case EGL_SUCCESS: case 0:           return 0;
-		case EGL_NOT_INITIALIZED:           errortext = "EGL_NOT_INITIALIZED"; break;
-		case EGL_BAD_ACCESS:                errortext = "EGL_BAD_ACCESS"; break;
-		case EGL_BAD_ALLOC:                 errortext = "EGL_BAD_ALLOC"; break;
-		case EGL_BAD_ATTRIBUTE:             errortext = "EGL_BAD_ATTRIBUTE"; break;
-		case EGL_BAD_CONTEXT:               errortext = "EGL_BAD_CONTEXT"; break;
-		case EGL_BAD_CONFIG:                errortext = "EGL_BAD_CONFIG"; break;
-		case EGL_BAD_CURRENT_SURFACE:       errortext = "EGL_BAD_CURRENT_SURFACE"; break;
-		case EGL_BAD_DISPLAY:               errortext = "EGL_BAD_DISPLAY"; break;
-		case EGL_BAD_SURFACE:               errortext = "EGL_BAD_SURFACE"; break;
-		case EGL_BAD_MATCH:                 errortext = "EGL_BAD_MATCH"; break;
-		case EGL_BAD_PARAMETER:             errortext = "EGL_BAD_PARAMETER"; break;
-		case EGL_BAD_NATIVE_PIXMAP:         errortext = "EGL_BAD_NATIVE_PIXMAP"; break;
-		case EGL_BAD_NATIVE_WINDOW:         errortext = "EGL_BAD_NATIVE_WINDOW"; break;
-		default:                            errortext = "unknown"; break;
-	}
-	printf( "ERROR: EGL Error detected in file %s at line %d: %s (0x%X)\n", file.c_str(), line, errortext.c_str(), error );
-	return 1;
-}
-#define EGL_ERROR(str, check) { \
-		if (check) CheckEGLErrors( __FILE__, __LINE__ ); \
-		printf("EGL ERROR: " str "\n"); \
-		return 1; \
-	}
-
-int8_t EGL_Open() {
-#ifdef USING_FBDEV
-	g_Display = ((EGLNativeDisplayType)0);
-#else
-	if ((g_Display = XOpenDisplay(NULL)) == NULL)
-		EGL_ERROR("Unable to get display!", false);
-#endif
-	if ((g_eglDisplay = eglGetDisplay((NativeDisplayType)g_Display)) == EGL_NO_DISPLAY)
-		EGL_ERROR("Unable to create EGL display.", true);
-	if (eglInitialize(g_eglDisplay, NULL, NULL) != EGL_TRUE)
-		EGL_ERROR("Unable to initialize EGL display.", true);
-	return 0;
-}
-
-int8_t EGL_Init() {
-	EGLConfig g_eglConfig;
-	EGLint g_numConfigs = 0;
-	EGLint attrib_list[]= {
-	// TODO: Should cycle through fallbacks, like on Android
-#ifdef USING_FBDEV
-		EGL_RED_SIZE,        5,
-		EGL_GREEN_SIZE,      6,
-		EGL_BLUE_SIZE,       5,
-#endif
-		EGL_DEPTH_SIZE,      16,
-		EGL_SURFACE_TYPE,    EGL_WINDOW_BIT,
-#ifdef USING_GLES2
-		EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
-#else
-		EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
-#endif
-		EGL_SAMPLE_BUFFERS,  0,
-		EGL_SAMPLES,         0,
-		EGL_NONE};
-
-	const EGLint attributes[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
-
-	EGLBoolean result = eglChooseConfig(g_eglDisplay, attrib_list, &g_eglConfig, 1, &g_numConfigs);
-	if (result != EGL_TRUE || g_numConfigs == 0) EGL_ERROR("Unable to query for available configs.", true);
-
-	g_eglContext = eglCreateContext(g_eglDisplay, g_eglConfig, NULL, attributes );
-	if (g_eglContext == EGL_NO_CONTEXT) EGL_ERROR("Unable to create GLES context!", true);
-
-#if !defined(USING_FBDEV) && !defined(__APPLE__)
-	//Get the SDL window handle
-	SDL_SysWMinfo sysInfo; //Will hold our Window information
-	SDL_VERSION(&sysInfo.version); //Set SDL version
-	g_Window = (NativeWindowType)sysInfo.info.x11.window;
-#else
-	g_Window = (NativeWindowType)NULL;
-#endif
-	g_eglSurface = eglCreateWindowSurface(g_eglDisplay, g_eglConfig, g_Window, 0);
-	if (g_eglSurface == EGL_NO_SURFACE)
-		EGL_ERROR("Unable to create EGL surface!", true);
-
-	if (eglMakeCurrent(g_eglDisplay, g_eglSurface, g_eglSurface, g_eglContext) != EGL_TRUE)
-		EGL_ERROR("Unable to make GLES context current.", true);
-
-	return 0;
-}
-
-void EGL_Close() {
-	if (g_eglDisplay != NULL) {
-		eglMakeCurrent(g_eglDisplay, NULL, NULL, EGL_NO_CONTEXT);
-		if (g_eglContext != NULL) {
-			eglDestroyContext(g_eglDisplay, g_eglContext);
-		}
-		if (g_eglSurface != NULL) {
-			eglDestroySurface(g_eglDisplay, g_eglSurface);
-		}
-		eglTerminate(g_eglDisplay);
-		g_eglDisplay = NULL;
-	}
-	if (g_Display != NULL) {
-#if !defined(USING_FBDEV)
-		XCloseDisplay(g_Display);
-#endif
-		g_Display = NULL;
-	}
-	g_eglSurface = NULL;
-	g_eglContext = NULL;
-}
-#endif
-
 
 int getDisplayNumber(void) {
 	int displayNumber = 0;
@@ -319,8 +188,23 @@ std::string System_GetProperty(SystemProperty prop) {
 #else
 		return "SDL:";
 #endif
-	case SYSPROP_LANGREGION:
+	case SYSPROP_LANGREGION: {
+		// Get user-preferred locale from OS
+		setlocale(LC_ALL, "");
+		std::string locale(setlocale(LC_ALL, NULL));
+		// Set c and c++ strings back to POSIX
+		std::locale::global(std::locale("POSIX"));
+		if (!locale.empty()) {
+			if (locale.find("_", 0) != std::string::npos) {
+				if (locale.find(".", 0) != std::string::npos) {
+					return locale.substr(0, locale.find(".",0));
+				} else {
+					return locale;
+				}
+			}
+		}
 		return "en_US";
+	}
 	default:
 		return "";
 	}
@@ -448,6 +332,13 @@ static void EmuThreadJoin() {
 #undef main
 #endif
 int main(int argc, char *argv[]) {
+	for (int i = 1; i < argc; i++) {
+		if (!strcmp(argv[i], "--version")) {
+			printf("%s\n", PPSSPP_GIT_VERSION);
+			return 0;
+		}
+	}
+
 	glslang::InitializeProcess();
 
 #if PPSSPP_PLATFORM(RPI)
@@ -464,6 +355,7 @@ int main(int argc, char *argv[]) {
 
 	int set_xres = -1;
 	int set_yres = -1;
+	int w = 0, h = 0;
 	bool portrait = false;
 	bool set_ipad = false;
 	float set_dpi = 1.0f;
@@ -547,6 +439,13 @@ int main(int argc, char *argv[]) {
 	if (g_DesktopWidth < 480 * 2 && g_DesktopHeight < 272 * 2) {
 		mode |= SDL_WINDOW_FULLSCREEN_DESKTOP;
 	}
+
+	// If we're on mobile, don't try for windowed either.
+#if defined(MOBILE_DEVICE)
+    mode |= SDL_WINDOW_FULLSCREEN;
+#else
+    mode |= SDL_WINDOW_RESIZABLE;
+#endif
 
 	if (mode & SDL_WINDOW_FULLSCREEN_DESKTOP) {
 		pixel_xres = g_DesktopWidth;
@@ -703,7 +602,7 @@ int main(int argc, char *argv[]) {
 
 	while (true) {
 		double startTime = time_now_d();
-		SDL_Event event;
+		SDL_Event event, touchEvent;
 		while (SDL_PollEvent(&event)) {
 			float mx = event.motion.x * g_dpi_scale_x;
 			float my = event.motion.y * g_dpi_scale_y;
@@ -721,11 +620,9 @@ int main(int argc, char *argv[]) {
 					Uint32 window_flags = SDL_GetWindowFlags(window);
 					bool fullscreen = (window_flags & SDL_WINDOW_FULLSCREEN);
 
-					pixel_xres = event.window.data1;
-					pixel_yres = event.window.data2;
-					dp_xres = (float)pixel_xres * dpi_scale;
-					dp_yres = (float)pixel_yres * dpi_scale;
-					NativeResized();
+					if (UpdateScreenScale(event.window.data1, event.window.data2)) {
+						NativeMessageReceived("gpu_resized", "");
+					}
 
 					// Set variable here in case fullscreen was toggled by hotkey
 					g_Config.bFullScreen = fullscreen;
@@ -783,6 +680,68 @@ int main(int argc, char *argv[]) {
 					key.keyCode = c;
 					key.deviceId = DEVICE_ID_KEYBOARD;
 					NativeKey(key);
+					break;
+				}
+			case SDL_FINGERMOTION:
+				{
+					SDL_GetWindowSize(window, &w, &h);
+					touchEvent.type = SDL_MOUSEMOTION;
+					touchEvent.motion.type = SDL_MOUSEMOTION;
+					touchEvent.motion.timestamp = event.tfinger.timestamp;
+					touchEvent.motion.windowID = SDL_GetWindowID(window);
+					touchEvent.motion.which = SDL_TOUCH_MOUSEID;
+					touchEvent.motion.state = SDL_GetMouseState(NULL, NULL);
+					touchEvent.motion.x = event.tfinger.x * w;
+					touchEvent.motion.y = event.tfinger.y * h;
+
+					SDL_WarpMouseInWindow(window, event.tfinger.x * w, event.tfinger.y * h);
+
+					SDL_PushEvent(&touchEvent);
+					break;
+				}
+			case SDL_FINGERDOWN:
+				{
+					SDL_GetWindowSize(window, &w, &h);
+					touchEvent.type = SDL_MOUSEBUTTONDOWN;
+					touchEvent.button.type = SDL_MOUSEBUTTONDOWN;
+					touchEvent.button.timestamp = SDL_GetTicks();
+					touchEvent.button.windowID = SDL_GetWindowID(window);
+					touchEvent.button.which = SDL_TOUCH_MOUSEID;
+					touchEvent.button.button = SDL_BUTTON_LEFT;
+					touchEvent.button.state = SDL_PRESSED;
+					touchEvent.button.clicks = 1;
+					touchEvent.button.x = event.tfinger.x * w;
+					touchEvent.button.y = event.tfinger.y * h;
+
+					touchEvent.motion.type = SDL_MOUSEMOTION;
+					touchEvent.motion.timestamp = SDL_GetTicks();
+					touchEvent.motion.windowID = SDL_GetWindowID(window);
+					touchEvent.motion.which = SDL_TOUCH_MOUSEID;
+					touchEvent.motion.x = event.tfinger.x * w;
+					touchEvent.motion.y = event.tfinger.y * h;
+					// Any real mouse cursor should also move
+					SDL_WarpMouseInWindow(window, event.tfinger.x * w, event.tfinger.y * h);
+					// First finger down event also has to be a motion to that position
+					SDL_PushEvent(&touchEvent);
+					touchEvent.motion.type = SDL_MOUSEBUTTONDOWN;
+					// Now we push the mouse button event
+					SDL_PushEvent(&touchEvent);
+					break;
+				}
+			case SDL_FINGERUP:
+				{
+					SDL_GetWindowSize(window, &w, &h);
+					touchEvent.type = SDL_MOUSEBUTTONUP;
+					touchEvent.button.type = SDL_MOUSEBUTTONUP;
+					touchEvent.button.timestamp = SDL_GetTicks();
+					touchEvent.button.windowID = SDL_GetWindowID(window);
+					touchEvent.button.which = SDL_TOUCH_MOUSEID;
+					touchEvent.button.button = SDL_BUTTON_LEFT;
+					touchEvent.button.state = SDL_RELEASED;
+					touchEvent.button.clicks = 1;
+					touchEvent.button.x = event.tfinger.x * w;
+					touchEvent.button.y = event.tfinger.y * h;
+					SDL_PushEvent(&touchEvent);
 					break;
 				}
 			case SDL_MOUSEBUTTONDOWN:
@@ -879,7 +838,7 @@ int main(int argc, char *argv[]) {
 			lastUIState = GetUIState();
 			if (lastUIState == UISTATE_INGAME && g_Config.bFullScreen && !g_Config.bShowTouchControls)
 				SDL_ShowCursor(SDL_DISABLE);
-			if (lastUIState != UISTATE_INGAME && g_Config.bFullScreen)
+			if (lastUIState != UISTATE_INGAME || !g_Config.bFullScreen)
 				SDL_ShowCursor(SDL_ENABLE);
 		}
 #endif

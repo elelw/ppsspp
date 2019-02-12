@@ -4,6 +4,7 @@
 #include "Common/Vulkan/VulkanDebug.h"
 #include "Common/Log.h"
 #include "Core/Config.h"
+#include "Core/ConfigValues.h"
 #include "Core/System.h"
 #include "GPU/GPUInterface.h"
 #include "util/text/parsers.h"
@@ -133,7 +134,7 @@ void LibretroVulkanContext::CreateDrawContext() {
 	}
 	vk_libretro_set_hwrender_interface(vulkan);
 
-	vk->ReinitSurface(PSP_CoreParameter().pixelWidth, PSP_CoreParameter().pixelHeight);
+	vk->ReinitSurface();
 
 	if (!vk->InitSwapchain()) {
 		return;

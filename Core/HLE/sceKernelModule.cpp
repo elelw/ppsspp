@@ -84,13 +84,14 @@ enum {
 };
 
 // This is a workaround for misbehaving homebrew (like TBL's Suicide Barbie (Final)).
-static const char *lieAboutSuccessModules[] = {
+static const char * const lieAboutSuccessModules[] = {
 	"flash0:/kd/audiocodec.prx",
+	"flash0:/kd/audiocodec_260.prx",
 	"flash0:/kd/libatrac3plus.prx",
 	"disc0:/PSP_GAME/SYSDIR/UPDATE/EBOOT.BIN",
 };
 
-static const char *blacklistedModules[] = {
+static const char * const blacklistedModules[] = {
 	"sceATRAC3plus_Library",
 	"sceFont_Library",
 	"SceFont_Library",
@@ -1811,8 +1812,7 @@ u32 sceKernelLoadModule(const char *name, u32 flags, u32 optionAddr) {
 	s64 size = (s64)info.size;
 
 	if (!info.exists) {
-		const int ERROR_ERRNO_FILE_NOT_FOUND = 0x80010002;
-		const u32 error = hleLogError(LOADER, ERROR_ERRNO_FILE_NOT_FOUND, "file does not exist");
+		const u32 error = hleLogError(LOADER, SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND, "file does not exist");
 		return hleDelayResult(error, "module loaded", 500);
 	}
 

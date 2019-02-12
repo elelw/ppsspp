@@ -28,6 +28,7 @@
 #include "Core/Reporting.h"
 #include "GPU/GPUState.h"
 
+#include "GPU/Common/TextureCacheCommon.h"
 #include "GPU/Common/TextureDecoder.h"
 #include "GPU/Software/SoftGpu.h"
 #include "GPU/Software/Rasterizer.h"
@@ -198,6 +199,7 @@ static inline void GetTextureCoordinates(const VertexData& v0, const VertexData&
 	case GE_TEXMAP_TEXTURE_COORDS:
 	case GE_TEXMAP_UNKNOWN:
 	case GE_TEXMAP_ENVIRONMENT_MAP:
+	case GE_TEXMAP_TEXTURE_MATRIX:
 		{
 			// TODO: What happens if vertex has no texture coordinates?
 			// Note that for environment mapping, texture coordinates have been calculated during lighting
@@ -209,39 +211,6 @@ static inline void GetTextureCoordinates(const VertexData& v0, const VertexData&
 			float q_recip = 1.0f / (wq0 + wq1);
 			s = (v0.texturecoords.s() * wq0 + v1.texturecoords.s() * wq1) * q_recip;
 			t = (v0.texturecoords.t() * wq0 + v1.texturecoords.t() * wq1) * q_recip;
-		}
-		break;
-	case GE_TEXMAP_TEXTURE_MATRIX:
-		{
-			// projection mapping, TODO: Move this code to TransformUnit!
-			Vec3<float> source;
-			switch (gstate.getUVProjMode()) {
-			case GE_PROJMAP_POSITION:
-				source = (v0.modelpos * p + v1.modelpos * (1.0f - p));
-				break;
-
-			case GE_PROJMAP_UV:
-				source = Vec3f((v0.texturecoords * p + v1.texturecoords * (1.0f - p)), 0.0f);
-				break;
-
-			case GE_PROJMAP_NORMALIZED_NORMAL:
-				source = (v0.normal.Normalized() * p + v1.normal.Normalized() * (1.0f - p));
-				break;
-
-			case GE_PROJMAP_NORMAL:
-				source = (v0.normal * p + v1.normal * (1.0f - p));
-				break;
-
-			default:
-				ERROR_LOG_REPORT(G3D, "Software: Unsupported UV projection mode %x", gstate.getUVProjMode());
-				break;
-			}
-
-			Mat3x3<float> tgen(gstate.tgenMatrix);
-			Vec3<float> stq = tgen * source + Vec3<float>(gstate.tgenMatrix[9], gstate.tgenMatrix[10], gstate.tgenMatrix[11]);
-			float z_recip = 1.0f / stq.z;
-			s = stq.x * z_recip;
-			t = stq.y * z_recip;
 		}
 		break;
 	default:
@@ -258,6 +227,7 @@ static inline void GetTextureCoordinates(const VertexData& v0, const VertexData&
 	case GE_TEXMAP_TEXTURE_COORDS:
 	case GE_TEXMAP_UNKNOWN:
 	case GE_TEXMAP_ENVIRONMENT_MAP:
+	case GE_TEXMAP_TEXTURE_MATRIX:
 		{
 			// TODO: What happens if vertex has no texture coordinates?
 			// Note that for environment mapping, texture coordinates have been calculated during lighting
@@ -271,39 +241,6 @@ static inline void GetTextureCoordinates(const VertexData& v0, const VertexData&
 			Vec4<float> q_recip = (wq0 + wq1 + wq2).Reciprocal();
 			s = Interpolate(v0.texturecoords.s(), v1.texturecoords.s(), v2.texturecoords.s(), wq0, wq1, wq2, q_recip);
 			t = Interpolate(v0.texturecoords.t(), v1.texturecoords.t(), v2.texturecoords.t(), wq0, wq1, wq2, q_recip);
-		}
-		break;
-	case GE_TEXMAP_TEXTURE_MATRIX:
-		for (int i = 0; i < 4; ++i) {
-			// projection mapping, TODO: Move this code to TransformUnit!
-			Vec3<float> source;
-			switch (gstate.getUVProjMode()) {
-			case GE_PROJMAP_POSITION:
-				source = (v0.modelpos * w0[i] + v1.modelpos * w1[i] + v2.modelpos * w2[i]) * wsum_recip[i];
-				break;
-
-			case GE_PROJMAP_UV:
-				source = Vec3f((v0.texturecoords * w0[i] + v1.texturecoords * w1[i] + v2.texturecoords * w2[i]) * wsum_recip[i], 0.0f);
-				break;
-
-			case GE_PROJMAP_NORMALIZED_NORMAL:
-				source = (v0.normal.Normalized() * w0[i] + v1.normal.Normalized() * w1[i] + v2.normal.Normalized() * w2[i]) * wsum_recip[i];
-				break;
-
-			case GE_PROJMAP_NORMAL:
-				source = (v0.normal * w0[i] + v1.normal * w1[i] + v2.normal * w2[i]) * wsum_recip[i];
-				break;
-
-			default:
-				ERROR_LOG_REPORT(G3D, "Software: Unsupported UV projection mode %x", gstate.getUVProjMode());
-				break;
-			}
-
-			Mat3x3<float> tgen(gstate.tgenMatrix);
-			Vec3<float> stq = tgen * source + Vec3<float>(gstate.tgenMatrix[9], gstate.tgenMatrix[10], gstate.tgenMatrix[11]);
-			float z_recip = 1.0f / stq.z;
-			s[i] = stq.x * z_recip;
-			t[i] = stq.y * z_recip;
 		}
 		break;
 	default:
@@ -483,36 +420,36 @@ static inline bool StencilTestPassed(u8 stencil)
 	return true;
 }
 
-static inline u8 ApplyStencilOp(int op, int x, int y)
-{
-	u8 old_stencil = GetPixelStencil(x, y); // TODO: Apply mask?
+static inline u8 ApplyStencilOp(int op, u8 old_stencil) {
+	// TODO: Apply mask to reference or old stencil?
 	u8 reference_stencil = gstate.getStencilTestRef(); // TODO: Apply mask?
+	const u8 write_mask = gstate.getStencilWriteMask();
 
 	switch (op) {
 		case GE_STENCILOP_KEEP:
 			return old_stencil;
 
 		case GE_STENCILOP_ZERO:
-			return 0;
+			return old_stencil & write_mask;
 
 		case GE_STENCILOP_REPLACE:
-			return reference_stencil;
+			return (reference_stencil & ~write_mask) | (old_stencil & write_mask);
 
 		case GE_STENCILOP_INVERT:
-			return ~old_stencil;
+			return (~old_stencil & ~write_mask) | (old_stencil & write_mask);
 
 		case GE_STENCILOP_INCR:
 			switch (gstate.FrameBufFormat()) {
 			case GE_FORMAT_8888:
 				if (old_stencil != 0xFF) {
-					return old_stencil + 1;
+					return ((old_stencil + 1) & ~write_mask) | (old_stencil & write_mask);
 				}
 				return old_stencil;
 			case GE_FORMAT_5551:
-				return 0xFF;
+				return ~write_mask | (old_stencil & write_mask);
 			case GE_FORMAT_4444:
 				if (old_stencil < 0xF0) {
-					return old_stencil + 0x10;
+					return ((old_stencil + 0x10) & ~write_mask) | (old_stencil & write_mask);
 				}
 				return old_stencil;
 			default:
@@ -524,11 +461,11 @@ static inline u8 ApplyStencilOp(int op, int x, int y)
 			switch (gstate.FrameBufFormat()) {
 			case GE_FORMAT_4444:
 				if (old_stencil >= 0x10)
-					return old_stencil - 0x10;
+					return ((old_stencil - 0x10) & ~write_mask) | (old_stencil & write_mask);
 				break;
 			default:
 				if (old_stencil != 0)
-					return old_stencil - 1;
+					return ((old_stencil - 1) & ~write_mask) | (old_stencil & write_mask);
 				return old_stencil;
 			}
 			break;
@@ -537,71 +474,71 @@ static inline u8 ApplyStencilOp(int op, int x, int y)
 	return old_stencil;
 }
 
-static inline u32 ApplyLogicOp(GELogicOp op, u32 old_color, u32 new_color)
-{
+static inline u32 ApplyLogicOp(GELogicOp op, u32 old_color, u32 new_color) {
+	// All of the operations here intentionally preserve alpha/stencil.
 	switch (op) {
 	case GE_LOGIC_CLEAR:
-		new_color = 0;
+		new_color &= 0xFF000000;
 		break;
 
 	case GE_LOGIC_AND:
-		new_color = new_color & old_color;
+		new_color = new_color & (old_color | 0xFF000000);
 		break;
 
 	case GE_LOGIC_AND_REVERSE:
-		new_color = new_color & ~old_color;
+		new_color = new_color & (~old_color | 0xFF000000);
 		break;
 
 	case GE_LOGIC_COPY:
-		//new_color = new_color;
+		// No change to new_color.
 		break;
 
 	case GE_LOGIC_AND_INVERTED:
-		new_color = ~new_color & old_color;
+		new_color = (~new_color & (old_color & 0x00FFFFFF)) | (new_color & 0xFF000000);
 		break;
 
 	case GE_LOGIC_NOOP:
-		new_color = old_color;
+		new_color = (old_color & 0x00FFFFFF) | (new_color & 0xFF000000);
 		break;
 
 	case GE_LOGIC_XOR:
-		new_color = new_color ^ old_color;
+		new_color = new_color ^ (old_color & 0x00FFFFFF);
 		break;
 
 	case GE_LOGIC_OR:
-		new_color = new_color | old_color;
+		new_color = new_color | (old_color & 0x00FFFFFF);
 		break;
 
 	case GE_LOGIC_NOR:
-		new_color = ~(new_color | old_color);
+		new_color = (~(new_color | old_color) & 0x00FFFFFF) | (new_color & 0xFF000000);
 		break;
 
 	case GE_LOGIC_EQUIV:
-		new_color = ~(new_color ^ old_color);
+		new_color = (~(new_color ^ old_color) & 0x00FFFFFF) | (new_color & 0xFF000000);
 		break;
 
 	case GE_LOGIC_INVERTED:
-		new_color = ~old_color;
+		new_color = (~old_color & 0x00FFFFFF) | (new_color & 0xFF000000);
 		break;
 
 	case GE_LOGIC_OR_REVERSE:
-		new_color = new_color | ~old_color;
+		new_color = new_color | (~old_color & 0x00FFFFFF);
 		break;
 
 	case GE_LOGIC_COPY_INVERTED:
-		new_color = ~new_color;
+		new_color = (~new_color & 0x00FFFFFF) | (new_color & 0xFF000000);
 		break;
 
 	case GE_LOGIC_OR_INVERTED:
-		new_color = ~new_color | old_color;
+		new_color = ((~new_color | old_color) & 0x00FFFFFF) | (new_color & 0xFF000000);
 		break;
 
 	case GE_LOGIC_NAND:
-		new_color = ~(new_color & old_color);
+		new_color = (~(new_color & old_color) & 0x00FFFFFF) | (new_color & 0xFF000000);
 		break;
 
 	case GE_LOGIC_SET:
-		new_color = 0xFFFFFFFF;
+		new_color |= 0x00FFFFFF;
 		break;
 	}
 
@@ -622,7 +559,13 @@ static inline Vec4<int> GetTextureFunctionOutput(const Vec4<int>& prim_color, co
 		// We can be accurate up to 24 bit integers, should be enough.
 		const __m128 p = _mm_cvtepi32_ps(prim_color.ivec);
 		const __m128 t = _mm_cvtepi32_ps(texcolor.ivec);
-		out_rgb.ivec = _mm_cvtps_epi32(_mm_div_ps(_mm_mul_ps(p, t), _mm_set_ps1(255.0f)));
+		const __m128 b = _mm_mul_ps(p, t);
+		if (gstate.isColorDoublingEnabled()) {
+			// We double right here, only for modulate.  Other tex funcs do not color double.
+			out_rgb.ivec = _mm_cvtps_epi32(_mm_mul_ps(b, _mm_set_ps1(2.0f / 255.0f)));
+		} else {
+			out_rgb.ivec = _mm_cvtps_epi32(_mm_mul_ps(b, _mm_set_ps1(1.0f / 255.0f)));
+		}
 
 		if (rgba) {
 			return Vec4<int>(out_rgb.ivec);
@@ -630,7 +573,11 @@ static inline Vec4<int> GetTextureFunctionOutput(const Vec4<int>& prim_color, co
 			out_a = prim_color.a();
 		}
 #else
-		out_rgb = prim_color.rgb() * texcolor.rgb() / 255;
+		if (gstate.isColorDoublingEnabled()) {
+			out_rgb = (prim_color.rgb() * texcolor.rgb() * 2) / 255;
+		} else {
+			out_rgb = prim_color.rgb() * texcolor.rgb() / 255;
+		}
 		out_a = (rgba) ? (prim_color.a() * texcolor.a() / 255) : prim_color.a();
 #endif
 		break;
@@ -894,28 +841,34 @@ static inline Vec3<int> AlphaBlendingResult(const Vec4<int> &source, const Vec4<
 
 template <bool clearMode>
 inline void DrawSinglePixel(const DrawingCoords &p, u16 z, u8 fog, const Vec4<int> &color_in) {
-	Vec4<int> prim_color = color_in;
-	// Depth range test
-	// TODO: Clear mode?
+	Vec4<int> prim_color = color_in.Clamp(0, 255);
+	// Depth range test - applied in clear mode, if not through mode.
 	if (!gstate.isModeThrough())
 		if (z < gstate.getDepthRangeMin() || z > gstate.getDepthRangeMax())
 			return;
+
+	if (gstate.isAlphaTestEnabled() && !clearMode)
+		if (!AlphaTestPassed(prim_color.a()))
+			return;
+
+	// Fog is applied prior to color test.
+	if (gstate.isFogEnabled() && !gstate.isModeThrough() && !clearMode) {
+		Vec3<int> fogColor = Vec3<int>::FromRGB(gstate.fogcolor);
+		fogColor = (prim_color.rgb() * (int)fog + fogColor * (255 - (int)fog)) / 255;
+		prim_color.r() = fogColor.r();
+		prim_color.g() = fogColor.g();
+		prim_color.b() = fogColor.b();
+	}
 
 	if (gstate.isColorTestEnabled() && !clearMode)
 		if (!ColorTestPassed(prim_color.rgb()))
 			return;
 
-	// TODO: Does a need to be clamped?
-	if (gstate.isAlphaTestEnabled() && !clearMode)
-		if (!AlphaTestPassed(prim_color.a()))
-			return;
-
 	// In clear mode, it uses the alpha color as stencil.
 	u8 stencil = clearMode ? prim_color.a() : GetPixelStencil(p.x, p.y);
-	// TODO: Is it safe to ignore gstate.isDepthTestEnabled() when clear mode is enabled? Probably yes
 	if (!clearMode && (gstate.isStencilTestEnabled() || gstate.isDepthTestEnabled())) {
 		if (gstate.isStencilTestEnabled() && !StencilTestPassed(stencil)) {
-			stencil = ApplyStencilOp(gstate.getStencilOpSFail(), p.x, p.y);
+			stencil = ApplyStencilOp(gstate.getStencilOpSFail(), stencil);
 			SetPixelStencil(p.x, p.y, stencil);
 			return;
 		}
@@ -923,12 +876,12 @@ inline void DrawSinglePixel(const DrawingCoords &p, u16 z, u8 fog, const Vec4<in
 		// Also apply depth at the same time.  If disabled, same as passing.
 		if (gstate.isDepthTestEnabled() && !DepthTestPassed(p.x, p.y, z)) {
 			if (gstate.isStencilTestEnabled()) {
-				stencil = ApplyStencilOp(gstate.getStencilOpZFail(), p.x, p.y);
+				stencil = ApplyStencilOp(gstate.getStencilOpZFail(), stencil);
 				SetPixelStencil(p.x, p.y, stencil);
 			}
 			return;
 		} else if (gstate.isStencilTestEnabled()) {
-			stencil = ApplyStencilOp(gstate.getStencilOpZPass(), p.x, p.y);
+			stencil = ApplyStencilOp(gstate.getStencilOpZPass(), stencil);
 		}
 
 		if (gstate.isDepthTestEnabled() && gstate.isDepthWriteEnabled()) {
@@ -938,28 +891,12 @@ inline void DrawSinglePixel(const DrawingCoords &p, u16 z, u8 fog, const Vec4<in
 		SetPixelDepth(p.x, p.y, z);
 	}
 
-	// Doubling happens only when texturing is enabled, and after tests.
-	if (gstate.isTextureMapEnabled() && gstate.isColorDoublingEnabled() && !clearMode) {
-		// TODO: Does this need to be clamped before blending?
-		prim_color.r() <<= 1;
-		prim_color.g() <<= 1;
-		prim_color.b() <<= 1;
-	}
-
-	if (gstate.isFogEnabled() && !gstate.isModeThrough() && !clearMode) {
-		Vec3<int> fogColor = Vec3<int>::FromRGB(gstate.fogcolor);
-		fogColor = (prim_color.rgb() * (int)fog + fogColor * (255 - (int)fog)) / 255;
-		prim_color.r() = fogColor.r();
-		prim_color.g() = fogColor.g();
-		prim_color.b() = fogColor.b();
-	}
-
 	const u32 old_color = GetPixelColor(p.x, p.y);
 	u32 new_color;
 
 	if (gstate.isAlphaBlendEnabled() && !clearMode) {
 		const Vec4<int> dst = Vec4<int>::FromRGBA(old_color);
-		// ToRGBA() always automatically clamps.
+		// ToRGB() always automatically clamps.
 		new_color = AlphaBlendingResult(prim_color, dst).ToRGB();
 		new_color |= stencil << 24;
 	} else {
@@ -971,17 +908,16 @@ inline void DrawSinglePixel(const DrawingCoords &p, u16 z, u8 fog, const Vec4<in
 #endif
 	}
 
-	// TODO: Is alpha blending still performed if logic ops are enabled?
+	// Logic ops are applied after blending (if blending is enabled.)
 	if (gstate.isLogicOpEnabled() && !clearMode) {
-		// Logic ops don't affect stencil.
-		new_color = (stencil << 24) | (ApplyLogicOp(gstate.getLogicOp(), old_color, new_color) & 0x00FFFFFF);
+		// Logic ops don't affect stencil, which happens inside ApplyLogicOp.
+		new_color = ApplyLogicOp(gstate.getLogicOp(), old_color, new_color);
 	}
 
 	if (clearMode) {
 		new_color = (new_color & ~gstate.getClearModeColorMask()) | (old_color & gstate.getClearModeColorMask());
-	} else {
-		new_color = (new_color & ~gstate.getColorMask()) | (old_color & gstate.getColorMask());
 	}
+	new_color = (new_color & ~gstate.getColorMask()) | (old_color & gstate.getColorMask());
 
 	// TODO: Dither before or inside SetPixelColor
 	SetPixelColor(p.x, p.y, new_color);
@@ -1081,9 +1017,9 @@ static inline void CalculateSamplingParams(const float ds, const float dt, const
 		levelFrac = 0;
 	}
 
-	if (g_Config.iTexFiltering == 3) {
+	if (g_Config.iTexFiltering == TEX_FILTER_LINEAR) {
 		filt = true;
-	} else if (g_Config.iTexFiltering == 2) {
+	} else if (g_Config.iTexFiltering == TEX_FILTER_NEAREST) {
 		filt = false;
 	} else {
 		filt = detail > 0 ? gstate.isMinifyFilteringEnabled() : gstate.isMagnifyFilteringEnabled();
@@ -1513,39 +1449,35 @@ void ClearRectangle(const VertexData &v0, const VertexData &v1)
 		}
 	}
 
-	const u32 new_color = v1.color0.ToRGBA();
-	u16 new_color16;
-
 	// Note: this stays 0xFFFFFFFF if keeping color and alpha, even for 16-bit.
 	u32 keepOldMask = 0xFFFFFFFF;
+	if (gstate.isClearModeColorMask())
+		keepOldMask &= 0xFF000000;
+	if (gstate.isClearModeAlphaMask())
+		keepOldMask &= 0x00FFFFFF;
+
+	// The pixel write masks are respected in clear mode.
+	keepOldMask |= gstate.getColorMask();
+
+	const u32 new_color = v1.color0.ToRGBA();
+	u16 new_color16;
 	switch (gstate.FrameBufFormat()) {
 	case GE_FORMAT_565:
 		new_color16 = RGBA8888ToRGB565(new_color);
-		if (gstate.isClearModeColorMask())
-			keepOldMask = 0;
+		keepOldMask = keepOldMask == 0 ? 0 : (0xFFFF0000 | RGBA8888ToRGB565(keepOldMask));
 		break;
 
 	case GE_FORMAT_5551:
 		new_color16 = RGBA8888ToRGBA5551(new_color);
-		if (gstate.isClearModeColorMask())
-			keepOldMask &= 0x00008000;
-		if (gstate.isClearModeAlphaMask())
-			keepOldMask &= 0x00007FFF;
+		keepOldMask = keepOldMask == 0 ? 0 : (0xFFFF0000 | RGBA8888ToRGBA5551(keepOldMask));
 		break;
 
 	case GE_FORMAT_4444:
 		new_color16 = RGBA8888ToRGBA4444(new_color);
-		if (gstate.isClearModeColorMask())
-			keepOldMask &= 0x0000F000;
-		if (gstate.isClearModeAlphaMask())
-			keepOldMask &= 0x00000FFF;
+		keepOldMask = keepOldMask == 0 ? 0 : (0xFFFF0000 | RGBA8888ToRGBA4444(keepOldMask));
 		break;
 
 	case GE_FORMAT_8888:
-		if (gstate.isClearModeColorMask())
-			keepOldMask &= 0xFF000000;
-		if (gstate.isClearModeAlphaMask())
-			keepOldMask &= 0x00FFFFFF;
 		break;
 
 	case GE_FORMAT_INVALID:
@@ -1761,17 +1693,20 @@ bool GetCurrentTexture(GPUDebugBuffer &buffer, int level)
 		return false;
 	}
 
-	int w = gstate.getTextureWidth(level);
-	int h = gstate.getTextureHeight(level);
-	buffer.Allocate(w, h, GE_FORMAT_8888, false);
-
 	GETextureFormat texfmt = gstate.getTextureFormat();
 	u32 texaddr = gstate.getTextureAddress(level);
 	int texbufw = GetTextureBufw(level, texaddr, texfmt);
-	u8 *texptr = Memory::GetPointer(texaddr);
+	int w = gstate.getTextureWidth(level);
+	int h = gstate.getTextureHeight(level);
+
+	if (!texaddr || !Memory::IsValidRange(texaddr, (textureBitsPerPixel[texfmt] * texbufw * h) / 8))
+		return false;
+
+	buffer.Allocate(w, h, GE_FORMAT_8888, false);
 
 	Sampler::Funcs sampler = Sampler::GetFuncs();
 
+	u8 *texptr = Memory::GetPointer(texaddr);
 	u32 *row = (u32 *)buffer.GetData();
 	for (int y = 0; y < h; ++y) {
 		for (int x = 0; x < w; ++x) {

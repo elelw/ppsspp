@@ -223,7 +223,7 @@ void DrawEngineD3D11::ApplyDrawState(int prim) {
 #endif
 
 			// Let's not write to alpha if stencil isn't enabled.
-			if (!gstate.isStencilTestEnabled()) {
+			if (IsStencilTestOutputDisabled()) {
 				amask = false;
 			} else {
 				// If the stencil type is set to KEEP, we shouldn't write to the stencil/alpha channel.
@@ -276,12 +276,22 @@ void DrawEngineD3D11::ApplyDrawState(int prim) {
 
 	if (gstate_c.IsDirty(DIRTY_RASTER_STATE)) {
 		keys_.raster.value = 0;
-		if (gstate.isModeClear()) {
+		if (gstate.isModeClear() || gstate.isModeThrough()) {
 			keys_.raster.cullMode = D3D11_CULL_NONE;
+			// TODO: Might happen in clear mode if not through...
+			keys_.raster.depthClipEnable = 1;
 		} else {
 			// Set cull
-			bool wantCull = !gstate.isModeThrough() && prim != GE_PRIM_RECTANGLES && gstate.isCullEnabled();
+			bool wantCull = prim != GE_PRIM_RECTANGLES && gstate.isCullEnabled();
 			keys_.raster.cullMode = wantCull ? (gstate.getCullMode() ? D3D11_CULL_FRONT : D3D11_CULL_BACK) : D3D11_CULL_NONE;
+			if (gstate.getDepthRangeMin() == 0 || gstate.getDepthRangeMax() == 65535) {
+				// TODO: Still has a bug where we clamp to depth range if one is not the full range.
+				// But the alternate is not clamping in either direction...
+				keys_.raster.depthClipEnable = !gstate.isDepthClampEnabled() || !gstate_c.Supports(GPU_SUPPORTS_DEPTH_CLAMP);
+			} else {
+				// We just want to clip in this case, the clamp would be clipped anyway.
+				keys_.raster.depthClipEnable = 1;
+			}
 		}
 		ID3D11RasterizerState *rs = rasterCache_.Get(keys_.raster.value);
 		if (rs == nullptr) {
@@ -290,7 +300,7 @@ void DrawEngineD3D11::ApplyDrawState(int prim) {
 			desc.FillMode = D3D11_FILL_SOLID;
 			desc.ScissorEnable = TRUE;
 			desc.FrontCounterClockwise = TRUE;
-			desc.DepthClipEnable = TRUE;
+			desc.DepthClipEnable = keys_.raster.depthClipEnable;
 			ASSERT_SUCCESS(device_->CreateRasterizerState(&desc, &rs));
 			rasterCache_.Insert(keys_.raster.value, rs);
 		}
@@ -426,6 +436,9 @@ void DrawEngineD3D11::ApplyDrawState(int prim) {
 	if (gstate_c.IsDirty(DIRTY_TEXTURE_IMAGE | DIRTY_TEXTURE_PARAMS) && !gstate.isModeClear() && gstate.isTextureMapEnabled()) {
 		textureCache_->SetTexture();
 		gstate_c.Clean(DIRTY_TEXTURE_IMAGE | DIRTY_TEXTURE_PARAMS);
+	} else if (gstate.getTextureAddress(0) == ((gstate.getFrameBufRawAddress() | 0x04000000) & 0x3FFFFFFF)) {
+		// This catches the case of clearing a texture.
+		gstate_c.Dirty(DIRTY_TEXTURE_IMAGE);
 	}
 }
 

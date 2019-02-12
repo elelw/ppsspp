@@ -317,6 +317,7 @@ void InterruptState::restore()
 
 void InterruptState::clear()
 {
+	savedCpu.reset();
 }
 
 // http://forums.ps2dev.org/viewtopic.php?t=5687
@@ -654,10 +655,10 @@ static u32 sceKernelMemcpy(u32 dst, u32 src, u32 size)
 				*dstp++ = *srcp++;
 		}
 	}
-#ifndef MOBILE_DEVICE
+
 	CBreakPoints::ExecMemCheck(src, false, size, currentMIPS->pc);
 	CBreakPoints::ExecMemCheck(dst, true, size, currentMIPS->pc);
-#endif
+
 	return dst;
 }
 
@@ -683,7 +684,9 @@ const HLEFunction Kernel_Library[] =
 
 static u32 sysclib_memcpy(u32 dst, u32 src, u32 size) {
 	ERROR_LOG(SCEKERNEL, "Untested sysclib_memcpy(dest=%08x, src=%08x, size=%i)", dst, src, size);
-	memcpy(Memory::GetPointer(dst), Memory::GetPointer(src), size);
+	if (Memory::IsValidRange(dst, size) && Memory::IsValidRange(src, size)) {
+		memcpy(Memory::GetPointer(dst), Memory::GetPointer(src), size);
+	}
 	return dst;
 }
 

@@ -103,6 +103,9 @@ void DrawEngineDX9::ApplyDrawState(int prim) {
 	if (gstate_c.IsDirty(DIRTY_TEXTURE_IMAGE | DIRTY_TEXTURE_PARAMS) && !gstate.isModeClear() && gstate.isTextureMapEnabled()) {
 		textureCache_->SetTexture();
 		gstate_c.Clean(DIRTY_TEXTURE_IMAGE | DIRTY_TEXTURE_PARAMS);
+	} else if (gstate.getTextureAddress(0) == ((gstate.getFrameBufRawAddress() | 0x04000000) & 0x3FFFFFFF)) {
+		// This catches the case of clearing a texture.
+		gstate_c.Dirty(DIRTY_TEXTURE_IMAGE);
 	}
 
 	// Start profiling here to skip SetTexture which is already accounted for
@@ -178,7 +181,7 @@ void DrawEngineDX9::ApplyDrawState(int prim) {
 #endif
 
 			// Let's not write to alpha if stencil isn't enabled.
-			if (!gstate.isStencilTestEnabled()) {
+			if (IsStencilTestOutputDisabled()) {
 				amask = false;
 			} else {
 				// If the stencil type is set to KEEP, we shouldn't write to the stencil/alpha channel.
@@ -191,8 +194,6 @@ void DrawEngineDX9::ApplyDrawState(int prim) {
 		}
 	}
 
-	bool enableStencilTest = !g_Config.bDisableStencilTest;
-
 	if (gstate_c.IsDirty(DIRTY_RASTER_STATE)) {
 		gstate_c.Clean(DIRTY_RASTER_STATE);
 		// Set Dither
@@ -204,10 +205,13 @@ void DrawEngineDX9::ApplyDrawState(int prim) {
 		if (gstate.isModeClear()) {
 			// Set Cull 
 			dxstate.cullMode.set(false, false);
+			// Well, probably doesn't matter...
+			dxstate.shadeMode.set(D3DSHADE_GOURAUD);
 		} else {
 			// Set cull
 			bool wantCull = !gstate.isModeThrough() && prim != GE_PRIM_RECTANGLES && gstate.isCullEnabled();
 			dxstate.cullMode.set(wantCull, gstate.getCullMode());
+			dxstate.shadeMode.set(gstate.getShadeMode() == GE_SHADE_GOURAUD ? D3DSHADE_GOURAUD : D3DSHADE_FLAT);
 		}
 	}
 
@@ -225,7 +229,7 @@ void DrawEngineDX9::ApplyDrawState(int prim) {
 
 			// Stencil Test
 			bool alphaMask = gstate.isClearModeAlphaMask();
-			if (alphaMask && enableStencilTest) {
+			if (alphaMask) {
 				dxstate.stencilTest.enable();
 				dxstate.stencilOp.set(D3DSTENCILOP_REPLACE, D3DSTENCILOP_REPLACE, D3DSTENCILOP_REPLACE);
 				dxstate.stencilFunc.set(D3DCMP_ALWAYS, 255, 0xFF);

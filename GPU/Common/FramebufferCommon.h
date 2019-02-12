@@ -19,7 +19,7 @@
 
 #include <set>
 #include <vector>
-#include <map>
+#include <unordered_map>
 
 #include "Common/CommonTypes.h"
 #include "Core/MemMap.h"
@@ -86,10 +86,13 @@ struct VirtualFramebuffer {
 	// width/height: The detected size of the current framebuffer.
 	u16 width;
 	u16 height;
-	// renderWidth/renderHeight: The actual size we render at. May be scaled to render at higher resolutions.
+	// renderWidth/renderHeight: The scaled size we render at. May be scaled to render at higher resolutions.
+	// The physical buffer may be larger than renderWidth/renderHeight.
 	u16 renderWidth;
 	u16 renderHeight;
-	// bufferWidth/bufferHeight: The actual (but non scaled) size of the buffer we render to. May only be bigger than width/height.
+	// bufferWidth/bufferHeight: The pre-scaling size of the buffer itself. May only be bigger than width/height.
+	// Actual physical buffer is this size times the render resolution multiplier.
+	// The buffer may be used to render a width or height from 0 to these values without being recreated.
 	u16 bufferWidth;
 	u16 bufferHeight;
 
@@ -116,7 +119,6 @@ struct VirtualFramebuffer {
 };
 
 struct FramebufferHeuristicParams {
-	u32 fb_addr;
 	u32 fb_address;
 	int fb_stride;
 	u32 z_address;
@@ -144,6 +146,8 @@ enum BindFramebufferColorFlags {
 	BINDFBCOLOR_MAY_COPY = 1,
 	BINDFBCOLOR_MAY_COPY_WITH_UV = 3,
 	BINDFBCOLOR_APPLY_TEX_OFFSET = 4,
+	// Used when rendering to a temporary surface (e.g. not the current render target.)
+	BINDFBCOLOR_FORCE_SELF = 8,
 };
 
 enum DrawTextureFlags {
@@ -151,6 +155,13 @@ enum DrawTextureFlags {
 	DRAWTEX_LINEAR = 1,
 	DRAWTEX_KEEP_TEX = 2,
 	DRAWTEX_KEEP_STENCIL_ALPHA = 4,
+};
+
+enum class TempFBO {
+	DEPAL,
+	BLIT,
+	// For copies of framebuffers (e.g. shader blending.)
+	COPY,
 };
 
 inline Draw::DataFormat GEFormatToThin3D(int geFormat) {
@@ -233,10 +244,10 @@ public:
 	size_t NumVFBs() const { return vfbs_.size(); }
 
 	u32 PrevDisplayFramebufAddr() {
-		return prevDisplayFramebuf_ ? (0x04000000 | prevDisplayFramebuf_->fb_address) : 0;
+		return prevDisplayFramebuf_ ? prevDisplayFramebuf_->fb_address : 0;
 	}
 	u32 DisplayFramebufAddr() {
-		return displayFramebuf_ ? (0x04000000 | displayFramebuf_->fb_address) : 0;
+		return displayFramebuf_ ? displayFramebuf_->fb_address : 0;
 	}
 
 	u32 DisplayFramebufStride() {
@@ -290,7 +301,7 @@ public:
 
 	virtual void Resized();
 
-	Draw::Framebuffer *GetTempFBO(u16 w, u16 h, Draw::FBColorDepth colorDepth = Draw::FBO_8888);
+	Draw::Framebuffer *GetTempFBO(TempFBO reason, u16 w, u16 h, Draw::FBColorDepth colorDepth = Draw::FBO_8888);
 
 	// Debug features
 	virtual bool GetFramebuffer(u32 fb_address, int fb_stride, GEBufferFormat format, GPUDebugBuffer &buffer, int maxRes);
@@ -322,7 +333,6 @@ protected:
 
 	void EstimateDrawingSize(u32 fb_address, GEBufferFormat fb_format, int viewport_width, int viewport_height, int region_width, int region_height, int scissor_width, int scissor_height, int fb_stride, int &drawing_width, int &drawing_height);
 	u32 FramebufferByteSize(const VirtualFramebuffer *vfb) const;
-	static bool MaskedEqual(u32 addr1, u32 addr2);
 
 	void NotifyRenderFramebufferCreated(VirtualFramebuffer *vfb);
 	void NotifyRenderFramebufferUpdated(VirtualFramebuffer *vfb, bool vfbFormatChanged);
@@ -336,10 +346,12 @@ protected:
 
 	bool ShouldDownloadFramebuffer(const VirtualFramebuffer *vfb) const;
 	void DownloadFramebufferOnSwitch(VirtualFramebuffer *vfb);
-	void FindTransferFramebuffers(VirtualFramebuffer *&dstBuffer, VirtualFramebuffer *&srcBuffer, u32 dstBasePtr, int dstStride, int &dstX, int &dstY, u32 srcBasePtr, int srcStride, int &srcX, int &srcY, int &srcWidth, int &srcHeight, int &dstWidth, int &dstHeight, int bpp) const;
+	void FindTransferFramebuffers(VirtualFramebuffer *&dstBuffer, VirtualFramebuffer *&srcBuffer, u32 dstBasePtr, int dstStride, int &dstX, int &dstY, u32 srcBasePtr, int srcStride, int &srcX, int &srcY, int &srcWidth, int &srcHeight, int &dstWidth, int &dstHeight, int bpp);
 	VirtualFramebuffer *FindDownloadTempBuffer(VirtualFramebuffer *vfb);
 	virtual bool CreateDownloadTempBuffer(VirtualFramebuffer *nvfb) = 0;
 	virtual void UpdateDownloadTempBuffer(VirtualFramebuffer *nvfb) = 0;
+
+	VirtualFramebuffer *CreateRAMFramebuffer(uint32_t fbAddress, int width, int height, int stride, GEBufferFormat format);
 	void OptimizeDownloadRange(VirtualFramebuffer *vfb, int &x, int &y, int &w, int &h);
 
 	void UpdateFramebufUsage(VirtualFramebuffer *vfb);
@@ -383,7 +395,6 @@ protected:
 
 	std::vector<VirtualFramebuffer *> vfbs_;
 	std::vector<VirtualFramebuffer *> bvfbs_; // blitting framebuffers (for download)
-	std::set<std::pair<u32, u32>> knownFramebufferRAMCopies_;
 
 	bool gameUsesSequentialCopies_ = false;
 
@@ -393,19 +404,18 @@ protected:
 	int pixelWidth_;
 	int pixelHeight_;
 	int bloomHack_ = 0;
-	bool trueColor_ = false;
 
 	// Used by post-processing shaders
 	std::vector<Draw::Framebuffer *> extraFBOs_;
 
 	bool needGLESRebinds_ = false;
 
-	struct TempFBO {
+	struct TempFBOInfo {
 		Draw::Framebuffer *fbo;
 		int last_frame_used;
 	};
 
-	std::map<u64, TempFBO> tempFBOs_;
+	std::unordered_map<u64, TempFBOInfo> tempFBOs_;
 
 	std::vector<Draw::Framebuffer *> fbosToDelete_;
 

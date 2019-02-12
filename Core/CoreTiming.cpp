@@ -34,6 +34,7 @@
 #include "Core/Reporting.h"
 #include "Common/ChunkFile.h"
 
+static const int initialHz = 222000000;
 int CPU_HZ = 222000000;
 
 // is this really necessary?
@@ -119,15 +120,8 @@ u64 GetGlobalTimeUsScaled()
 {
 	s64 ticksSinceLast = GetTicks() - lastGlobalTimeTicks;
 	int freq = GetClockFrequencyMHz();
-	if (g_Config.bTimerHack) {
-		float vps;
-		__DisplayGetVPS(&vps);
-		if (vps > 4.0f)
-			freq *= (vps / 59.94f);
-	}
 	s64 usSinceLast = ticksSinceLast / freq;
 	return lastGlobalTimeUs + usSinceLast;
-
 }
 
 u64 GetGlobalTimeUs()
@@ -182,7 +176,7 @@ int RegisterEvent(const char *name, TimedCallback callback)
 void AntiCrashCallback(u64 userdata, int cyclesLate)
 {
 	ERROR_LOG(SAVESTATE, "Savestate broken: an unregistered event was called.");
-	Core_Halt("invalid timing events");
+	Core_EnableStepping(true);
 }
 
 void RestoreRegisterEvent(int event_type, const char *name, TimedCallback callback)
@@ -211,6 +205,7 @@ void Init()
 	lastGlobalTimeUs = 0;
 	hasTsEvents = 0;
 	mhzChangeCallbacks.clear();
+	CPU_HZ = initialHz;
 }
 
 void Shutdown()

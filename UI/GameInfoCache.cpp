@@ -66,10 +66,7 @@ bool GameInfo::Delete() {
 			// Just delete the one file (TODO: handle two-disk games as well somehow).
 			const char *fileToRemove = filePath_.c_str();
 			File::Delete(fileToRemove);
-			auto i = std::find(g_Config.recentIsos.begin(), g_Config.recentIsos.end(), fileToRemove);
-			if (i != g_Config.recentIsos.end()) {
-				g_Config.recentIsos.erase(i);
-			}
+			g_Config.RemoveRecent(filePath_);
 			return true;
 		}
 	case IdentifiedFileType::PSP_PBP_DIRECTORY:
@@ -356,8 +353,10 @@ public:
 	}
 
 	void run() override {
-		if (!info_->LoadFromPath(gamePath_))
+		if (!info_->LoadFromPath(gamePath_)) {
+			info_->pending = false;
 			return;
+		}
 		// In case of a remote file, check if it actually exists before locking.
 		if (!info_->GetFileLoader()->Exists()) {
 			info_->pending = false;
@@ -384,6 +383,7 @@ public:
 						goto handleELF;
 					}
 					ERROR_LOG(LOADER, "invalid pbp %s\n", pbpLoader->Path().c_str());
+					info_->pending = false;
 					info_->working = false;
 					return;
 				}
@@ -552,11 +552,13 @@ handleELF:
 				// few files.
 				auto fl = info_->GetFileLoader();
 				if (!fl) {
+					info_->pending = false;
 					info_->working = false;
 					return;  // Happens with UWP currently, TODO...
 				}
 				BlockDevice *bd = constructBlockDevice(info_->GetFileLoader().get());
 				if (!bd) {
+					info_->pending = false;
 					info_->working = false;
 					return;  // nothing to do here..
 				}
@@ -740,7 +742,7 @@ void GameInfoCache::WaitUntilDone(std::shared_ptr<GameInfo> &info) {
 }
 
 
-// Runs on the main thread.
+// Runs on the main thread. Only call from render() and similar, not update()!
 std::shared_ptr<GameInfo> GameInfoCache::GetInfo(Draw::DrawContext *draw, const std::string &gamePath, int wantFlags) {
 	std::shared_ptr<GameInfo> info;
 
@@ -798,7 +800,7 @@ void GameInfoCache::SetupTexture(std::shared_ptr<GameInfo> &info, Draw::DrawCont
 			if (tex.texture) {
 				tex.timeLoaded = time_now_d();
 			} else {
-				ERROR_LOG(G3D, "Failed creating texture");
+				ERROR_LOG(G3D, "Failed creating texture (%s)", info->GetTitle().c_str());
 			}
 		}
 		if ((info->wantFlags & GAMEINFO_WANTBGDATA) == 0) {

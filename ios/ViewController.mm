@@ -23,6 +23,7 @@
 #include "gfx_es2/gpu_features.h"
 
 #include "Core/Config.h"
+#include "Core/ConfigValues.h"
 #include "Core/System.h"
 #include "Common/GraphicsContext.h"
 
@@ -43,7 +44,7 @@ public:
 		renderManager_ = (GLRenderManager *)draw_->GetNativeObject(Draw::NativeObject::RENDER_MANAGER);
 		SetGPUBackend(GPUBackend::OPENGL);
 		bool success = draw_->CreatePresets();
-		assert(success);
+		_assert_msg_(G3D, success, "Failed to compile preset shaders");
 	}
 	~IOSGraphicsContext() {
 		delete draw_;
@@ -52,7 +53,7 @@ public:
 		return draw_;
 	}
 	void ThreadStart() override {
-		renderManager_->ThreadStart();
+		renderManager_->ThreadStart(draw_);
 	}
 
 	bool ThreadFrame() override {

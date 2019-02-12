@@ -2,7 +2,7 @@
 // Does not involve context creation etc, that should be handled separately - only does drawing.
 
 // The goals may change in the future though.
-// MIT licensed, by Henrik Rydgård 2014.
+// MIT licensed, by Henrik RydgÃ¥rd 2014.
 
 #pragma once
 
@@ -204,13 +204,8 @@ enum class ShaderLanguage {
 	GLSL_ES_300 = 2,
 	GLSL_410 = 4,
 	GLSL_VULKAN = 8,
-	SPIRV_VULKAN = 16,
 	HLSL_D3D9 = 32,
 	HLSL_D3D11 = 64,
-	HLSL_D3D9_BYTECODE = 128,
-	HLSL_D3D11_BYTECODE = 256,
-	METAL = 512,
-	METAL_BYTECODE = 1024,
 };
 
 enum FormatSupport {
@@ -239,6 +234,7 @@ enum class GPUVendor {
 	VENDOR_QUALCOMM,
 	VENDOR_IMGTEC,  // PowerVR
 	VENDOR_BROADCOM,  // Raspberry
+	VENDOR_VIVANTE,
 };
 
 enum class NativeObject {
@@ -258,6 +254,7 @@ enum class NativeObject {
 	BOUND_TEXTURE0_IMAGEVIEW,
 	BOUND_TEXTURE1_IMAGEVIEW,
 	RENDER_MANAGER,
+	NULL_IMAGEVIEW,
 };
 
 enum FBColorDepth {
@@ -317,6 +314,27 @@ struct Viewport {
 	float Height;
 	float MinDepth;
 	float MaxDepth;
+};
+
+class Bugs {
+public:
+	bool Has(uint32_t bug) const {
+		return (flags_ & (1 << bug)) != 0;
+	}
+	void Infest(uint32_t bug) {
+		flags_ |= (1 << bug);
+	}
+
+	enum : uint32_t {
+		NO_DEPTH_CANNOT_DISCARD_STENCIL = 0,
+		DUAL_SOURCE_BLENDING_BROKEN = 1,
+		ANY_MAP_BUFFER_RANGE_SLOW = 2,
+		PVR_GENMIPMAP_HEIGHT_GREATER = 3,
+		BROKEN_NAN_IN_CONDITIONAL = 4,
+	};
+
+protected:
+	uint32_t flags_ = 0;
 };
 
 class RefCountedObject {
@@ -420,7 +438,6 @@ struct StencilSide {
 	Comparison compareOp;
 	uint8_t compareMask;
 	uint8_t writeMask;
-	uint8_t reference;
 };
 
 struct DepthStencilStateDesc {
@@ -476,6 +493,8 @@ struct PipelineDesc {
 
 struct DeviceCaps {
 	GPUVendor vendor;
+	uint32_t deviceID;  // use caution!
+
 	DataFormat preferredDepthBufferFormat;
 	DataFormat preferredShadowMapFormatLow;
 	DataFormat preferredShadowMapFormatHigh;
@@ -486,10 +505,12 @@ struct DeviceCaps {
 	bool multiViewport;
 	bool dualSourceBlend;
 	bool logicOpSupported;
+	bool depthClampSupported;
 	bool framebufferCopySupported;
 	bool framebufferBlitSupported;
 	bool framebufferDepthCopySupported;
 	bool framebufferDepthBlitSupported;
+	std::string deviceName;  // The device name to use when creating the thin3d context, to get the same one.
 };
 
 struct TextureDesc {
@@ -527,10 +548,13 @@ public:
 	bool CreatePresets();
 	void DestroyPresets();
 
+	Bugs GetBugs() const { return bugs_; }
+
 	virtual const DeviceCaps &GetDeviceCaps() const = 0;
 	virtual uint32_t GetDataFormatSupport(DataFormat fmt) const = 0;
 	virtual std::vector<std::string> GetFeatureList() const { return std::vector<std::string>(); }
 	virtual std::vector<std::string> GetExtensionList() const { return std::vector<std::string>(); }
+	virtual std::vector<std::string> GetDeviceList() const { return std::vector<std::string>(); }
 
 	virtual uint32_t GetSupportedShaderLanguages() const = 0;
 
@@ -543,8 +567,8 @@ public:
 	virtual InputLayout *CreateInputLayout(const InputLayoutDesc &desc) = 0;
 
 	// Note that these DO NOT AddRef so you must not ->Release presets unless you manually AddRef them.
-	ShaderModule *GetVshaderPreset(VertexShaderPreset preset) { return fsPresets_[preset]; }
-	ShaderModule *GetFshaderPreset(FragmentShaderPreset preset) { return vsPresets_[preset]; }
+	ShaderModule *GetVshaderPreset(VertexShaderPreset preset) { return vsPresets_[preset]; }
+	ShaderModule *GetFshaderPreset(FragmentShaderPreset preset) { return fsPresets_[preset]; }
 
 	// Resources
 	virtual Buffer *CreateBuffer(size_t size, uint32_t usageFlags) = 0;
@@ -563,6 +587,9 @@ public:
 	virtual bool BlitFramebuffer(Framebuffer *src, int srcX1, int srcY1, int srcX2, int srcY2, Framebuffer *dst, int dstX1, int dstY1, int dstX2, int dstY2, int channelBits, FBBlitFilter filter) = 0;
 	virtual bool CopyFramebufferToMemorySync(Framebuffer *src, int channelBits, int x, int y, int w, int h, Draw::DataFormat format, void *pixels, int pixelStride) {
 		return false;
+	}
+	virtual DataFormat PreferredFramebufferReadbackFormat(Framebuffer *src) {
+		return DataFormat::R8G8B8A8_UNORM;
 	}
 
 	// These functions should be self explanatory.
@@ -586,6 +613,7 @@ public:
 	virtual void SetScissorRect(int left, int top, int width, int height) = 0;
 	virtual void SetViewports(int count, Viewport *viewports) = 0;
 	virtual void SetBlendFactor(float color[4]) = 0;
+	virtual void SetStencilRef(uint8_t ref) = 0;
 
 	virtual void BindSamplerStates(int start, int count, SamplerState **state) = 0;
 	virtual void BindTextures(int start, int count, Texture **textures) = 0;
@@ -597,7 +625,8 @@ public:
 	virtual void UpdateDynamicUniformBuffer(const void *ub, size_t size) = 0;
 
 	void BindTexture(int stage, Texture *texture) {
-		BindTextures(stage, 1, &texture);
+		Texture *textures[1] = { texture };
+		BindTextures(stage, 1, textures);
 	}  // from sampler 0 and upwards
 
 	// Call this with 0 to signal that you have been drawing on your own, and need the state reset on the next pipeline bind.
@@ -628,13 +657,6 @@ public:
 
 	virtual void HandleEvent(Event ev, int width, int height, void *param1 = nullptr, void *param2 = nullptr) = 0;
 
-	// This flushes command buffers and waits for execution at the point of the end of the last
-	// renderpass that wrote to the requested framebuffer. This is needed before trying to read it back
-	// on modern APIs like Vulkan. Ifr the framebuffer is currently being rendered to, we'll just end the render pass.
-	// The next draw call will automatically start up a new one.
-	// APIs like OpenGL won't need to implement this one.
-	virtual void WaitRenderCompletion(Framebuffer *fbo) {}
-
 	// Flush state like scissors etc so the caller can do its own custom drawing.
 	virtual void FlushState() {}
 
@@ -644,6 +666,8 @@ protected:
 
 	int targetWidth_;
 	int targetHeight_;
+
+	Bugs bugs_;
 };
 
 extern const UniformBufferDesc UBPresetDesc;
@@ -658,5 +682,14 @@ struct VsColUB {
 	float WorldViewProj[16];
 };
 extern const UniformBufferDesc vsColBufDesc;
+
+// Useful utility for specifying a shader in multiple languages.
+
+struct ShaderSource {
+	ShaderLanguage lang;
+	const char *src;
+};
+
+ShaderModule *CreateShader(DrawContext *draw, ShaderStage stage, const std::vector<ShaderSource> &sources);
 
 }  // namespace Draw

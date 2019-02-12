@@ -43,7 +43,6 @@ enum class ReplacedTextureFormat {
 enum class ReplacedTextureAlpha {
 	UNKNOWN = 0x04,
 	FULL = 0x00,
-	SIMPLE = 0x08,
 };
 
 // For forward comatibility, we specify the hash.
@@ -186,6 +185,8 @@ public:
 	ReplacedTexture &FindReplacement(u64 cachekey, u32 hash, int w, int h);
 
 	void NotifyTextureDecoded(const ReplacedTextureDecodeInfo &replacedInfo, const void *data, int pitch, int level, int w, int h);
+
+	static bool GenerateIni(const std::string &gameID, std::string *generatedFilename);
 
 protected:
 	bool LoadIni();

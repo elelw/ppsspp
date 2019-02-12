@@ -7,6 +7,11 @@
 #include "gfx/gl_common.h"
 #include "Common/GraphicsContext.h"
 
+// TODO: Move this to a better place.
+#if defined(USING_EGL)
+int8_t EGL_Open();
+#endif
+
 class SDLGLGraphicsContext : public DummyGraphicsContext {
 public:
 	SDLGLGraphicsContext() {
@@ -27,7 +32,7 @@ public:
 	}
 
 	void ThreadStart() override {
-		renderManager_->ThreadStart();
+		renderManager_->ThreadStart(draw_);
 	}
 
 	bool ThreadFrame() override {

@@ -658,10 +658,16 @@ void PopupHeader::Draw(UIContext &dc) {
 	}
 }
 
-void CheckBox::Toggle(){
+void CheckBox::Toggle() {
 	if (toggle_)
 		*toggle_ = !(*toggle_);
-};
+}
+
+bool CheckBox::Toggled() const {
+	if (toggle_)
+		return *toggle_;
+	return false;
+}
 
 EventReturn CheckBox::OnClicked(EventParams &e) {
 	Toggle();
@@ -676,7 +682,7 @@ void CheckBox::Draw(UIContext &dc) {
 
 	ClickableItem::Draw(dc);
 
-	int image = *toggle_ ? dc.theme->checkOn : dc.theme->checkOff;
+	int image = Toggled() ? dc.theme->checkOn : dc.theme->checkOff;
 	float imageW, imageH;
 	dc.Draw()->MeasureImage(image, &imageW, &imageH);
 
@@ -703,7 +709,7 @@ float CheckBox::CalculateTextScale(const UIContext &dc, float availWidth) const 
 }
 
 void CheckBox::GetContentDimensions(const UIContext &dc, float &w, float &h) const {
-	int image = *toggle_ ? dc.theme->checkOn : dc.theme->checkOff;
+	int image = Toggled() ? dc.theme->checkOn : dc.theme->checkOff;
 	float imageW, imageH;
 	dc.Draw()->MeasureImage(image, &imageW, &imageH);
 
@@ -724,6 +730,17 @@ void CheckBox::GetContentDimensions(const UIContext &dc, float &w, float &h) con
 	h = std::max(actualHeight, ITEM_HEIGHT);
 }
 
+void BitCheckBox::Toggle() {
+	if (bitfield_)
+		*bitfield_ = *bitfield_ ^ bit_;
+}
+
+bool BitCheckBox::Toggled() const {
+	if (bitfield_)
+		return (bit_ & *bitfield_) == bit_;
+	return false;
+}
+
 void Button::GetContentDimensions(const UIContext &dc, float &w, float &h) const {
 	if (imageID_ != -1) {
 		const AtlasImage *img = &dc.Draw()->GetAtlas()->images[imageID_];
@@ -733,8 +750,8 @@ void Button::GetContentDimensions(const UIContext &dc, float &w, float &h) const
 		dc.MeasureText(dc.theme->uiFont, 1.0f, 1.0f, text_.c_str(), &w, &h);
 	}
 	// Add some internal padding to not look totally ugly
-	w += 16;
-	h += 8;
+	w += paddingW_;
+	h += paddingH_;
 }
 
 void Button::Draw(UIContext &dc) {

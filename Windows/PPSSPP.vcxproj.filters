@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="12.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="Resource Files">
@@ -161,33 +161,6 @@
     <ClCompile Include="..\Qt\mainwindow.cpp">
       <Filter>Other Platforms\Qt</Filter>
     </ClCompile>
-    <ClCompile Include="..\Qt\Debugger\debugger_disasm.cpp">
-      <Filter>Other Platforms\Qt\Debugger</Filter>
-    </ClCompile>
-    <ClCompile Include="..\Qt\Debugger\debugger_displaylist.cpp">
-      <Filter>Other Platforms\Qt\Debugger</Filter>
-    </ClCompile>
-    <ClCompile Include="..\Qt\Debugger\debugger_memory.cpp">
-      <Filter>Other Platforms\Qt\Debugger</Filter>
-    </ClCompile>
-    <ClCompile Include="..\Qt\Debugger\debugger_memorytex.cpp">
-      <Filter>Other Platforms\Qt\Debugger</Filter>
-    </ClCompile>
-    <ClCompile Include="..\Qt\Debugger\debugger_vfpu.cpp">
-      <Filter>Other Platforms\Qt\Debugger</Filter>
-    </ClCompile>
-    <ClCompile Include="..\Qt\Debugger\ctrldisasmview.cpp">
-      <Filter>Other Platforms\Qt\Debugger</Filter>
-    </ClCompile>
-    <ClCompile Include="..\Qt\Debugger\ctrlmemview.cpp">
-      <Filter>Other Platforms\Qt\Debugger</Filter>
-    </ClCompile>
-    <ClCompile Include="..\Qt\Debugger\ctrlregisterlist.cpp">
-      <Filter>Other Platforms\Qt\Debugger</Filter>
-    </ClCompile>
-    <ClCompile Include="..\Qt\Debugger\ctrlvfpuview.cpp">
-      <Filter>Other Platforms\Qt\Debugger</Filter>
-    </ClCompile>
     <ClCompile Include="GPU\D3D11Context.cpp">
       <Filter>Windows\System</Filter>
     </ClCompile>
@@ -208,6 +181,18 @@
     </ClCompile>
     <ClCompile Include="..\android\jni\AndroidVulkanContext.cpp">
       <Filter>Other Platforms</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Qt\QtHost.cpp">
+      <Filter>Other Platforms\Qt</Filter>
+    </ClCompile>
+    <ClCompile Include="..\UWP\UWPHost.cpp">
+      <Filter>Other Platforms</Filter>
+    </ClCompile>
+    <ClCompile Include="WindowsAudio.cpp">
+      <Filter>Windows\System</Filter>
+    </ClCompile>
+    <ClCompile Include="WASAPIStream.cpp">
+      <Filter>Windows\System</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -338,33 +323,6 @@
     <ClInclude Include="..\Qt\mainwindow.h">
       <Filter>Other Platforms\Qt</Filter>
     </ClInclude>
-    <ClInclude Include="..\Qt\Debugger\ctrlvfpuview.h">
-      <Filter>Other Platforms\Qt\Debugger</Filter>
-    </ClInclude>
-    <ClInclude Include="..\Qt\Debugger\debugger_disasm.h">
-      <Filter>Other Platforms\Qt\Debugger</Filter>
-    </ClInclude>
-    <ClInclude Include="..\Qt\Debugger\debugger_displaylist.h">
-      <Filter>Other Platforms\Qt\Debugger</Filter>
-    </ClInclude>
-    <ClInclude Include="..\Qt\Debugger\debugger_memory.h">
-      <Filter>Other Platforms\Qt\Debugger</Filter>
-    </ClInclude>
-    <ClInclude Include="..\Qt\Debugger\debugger_memorytex.h">
-      <Filter>Other Platforms\Qt\Debugger</Filter>
-    </ClInclude>
-    <ClInclude Include="..\Qt\Debugger\debugger_vfpu.h">
-      <Filter>Other Platforms\Qt\Debugger</Filter>
-    </ClInclude>
-    <ClInclude Include="..\Qt\Debugger\ctrldisasmview.h">
-      <Filter>Other Platforms\Qt\Debugger</Filter>
-    </ClInclude>
-    <ClInclude Include="..\Qt\Debugger\ctrlmemview.h">
-      <Filter>Other Platforms\Qt\Debugger</Filter>
-    </ClInclude>
-    <ClInclude Include="..\Qt\Debugger\ctrlregisterlist.h">
-      <Filter>Other Platforms\Qt\Debugger</Filter>
-    </ClInclude>
     <ClInclude Include="GPU\D3D11Context.h">
       <Filter>Windows\System</Filter>
     </ClInclude>
@@ -388,6 +346,18 @@
     </ClInclude>
     <ClInclude Include="..\android\jni\AndroidVulkanContext.h">
       <Filter>Other Platforms</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Qt\QtHost.h">
+      <Filter>Other Platforms\Qt</Filter>
+    </ClInclude>
+    <ClInclude Include="..\UWP\UWPHost.h">
+      <Filter>Other Platforms</Filter>
+    </ClInclude>
+    <ClInclude Include="WindowsAudio.h">
+      <Filter>Windows\System</Filter>
+    </ClInclude>
+    <ClInclude Include="WASAPIStream.h">
+      <Filter>Windows\System</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -467,21 +437,6 @@
     </None>
     <None Include="..\Qt\assets.qrc">
       <Filter>Other Platforms\Qt</Filter>
-    </None>
-    <None Include="..\Qt\Debugger\debugger_disasm.ui">
-      <Filter>Other Platforms\Qt\Debugger</Filter>
-    </None>
-    <None Include="..\Qt\Debugger\debugger_displaylist.ui">
-      <Filter>Other Platforms\Qt\Debugger</Filter>
-    </None>
-    <None Include="..\Qt\Debugger\debugger_memory.ui">
-      <Filter>Other Platforms\Qt\Debugger</Filter>
-    </None>
-    <None Include="..\Qt\Debugger\debugger_memorytex.ui">
-      <Filter>Other Platforms\Qt\Debugger</Filter>
-    </None>
-    <None Include="..\Qt\Debugger\debugger_vfpu.ui">
-      <Filter>Other Platforms\Qt\Debugger</Filter>
     </None>
   </ItemGroup>
   <ItemGroup>

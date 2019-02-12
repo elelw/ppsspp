@@ -17,6 +17,7 @@
 
 #include <algorithm>
 
+#include "base/display.h"
 #include "gfx_es2/gpu_features.h"
 #include "i18n/i18n.h"
 #include "ui/ui_context.h"
@@ -30,11 +31,13 @@
 
 #include "Core/MemMap.h"
 #include "Core/Config.h"
+#include "Core/ConfigValues.h"
 #include "Core/System.h"
 #include "Core/CoreParameter.h"
 #include "Core/MIPS/MIPSTables.h"
 #include "Core/MIPS/JitCommon/JitBlockCache.h"
 #include "Core/MIPS/JitCommon/JitCommon.h"
+#include "Core/MIPS/JitCommon/JitState.h"
 #include "GPU/GPUInterface.h"
 #include "GPU/GPUState.h"
 #include "UI/MiscScreens.h"
@@ -124,8 +127,6 @@ UI::EventReturn DevMenu::OnShaderView(UI::EventParams &e) {
 		screenManager()->push(new ShaderListScreen());
 	return UI::EVENT_DONE;
 }
-
-
 
 UI::EventReturn DevMenu::OnFreezeFrame(UI::EventParams &e) {
 	if (PSP_CoreParameter().frozen) {
@@ -318,6 +319,70 @@ void LogLevelScreen::OnCompleted(DialogResult result) {
 	}
 }
 
+struct JitDisableFlag {
+	MIPSComp::JitDisable flag;
+	const char *name;
+};
+
+// Please do not try to translate these :)
+static const JitDisableFlag jitDisableFlags[] = {
+	{ MIPSComp::JitDisable::ALU, "ALU" },
+	{ MIPSComp::JitDisable::ALU_IMM, "ALU_IMM" },
+	{ MIPSComp::JitDisable::ALU_BIT, "ALU_BIT" },
+	{ MIPSComp::JitDisable::MULDIV, "MULDIV" },
+	{ MIPSComp::JitDisable::FPU, "FPU" },
+	{ MIPSComp::JitDisable::FPU_COMP, "FPU_COMP" },
+	{ MIPSComp::JitDisable::FPU_XFER, "FPU_XFER" },
+	{ MIPSComp::JitDisable::VFPU_VEC, "VFPU_VEC" },
+	{ MIPSComp::JitDisable::VFPU_MTX, "VFPU_MTX" },
+	{ MIPSComp::JitDisable::VFPU_COMP, "VFPU_COMP" },
+	{ MIPSComp::JitDisable::VFPU_XFER, "VFPU_XFER" },
+	{ MIPSComp::JitDisable::LSU, "LSU" },
+	{ MIPSComp::JitDisable::LSU_UNALIGNED, "LSU_UNALIGNED" },
+	{ MIPSComp::JitDisable::LSU_FPU, "LSU_FPU" },
+	{ MIPSComp::JitDisable::LSU_VFPU, "LSU_VFPU" },
+	{ MIPSComp::JitDisable::SIMD, "SIMD" },
+	{ MIPSComp::JitDisable::BLOCKLINK, "Block Linking" },
+	{ MIPSComp::JitDisable::POINTERIFY, "Pointerify" },
+	{ MIPSComp::JitDisable::STATIC_ALLOC, "Static regalloc" },
+	{ MIPSComp::JitDisable::CACHE_POINTERS, "Cached pointers" },
+};
+
+void JitDebugScreen::CreateViews() {
+	using namespace UI;
+
+	I18NCategory *di = GetI18NCategory("Dialog");
+	I18NCategory *dev = GetI18NCategory("Developer");
+
+	root_ = new ScrollView(ORIENT_VERTICAL);
+
+	LinearLayout *vert = root_->Add(new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
+	vert->SetSpacing(0);
+
+	LinearLayout *topbar = new LinearLayout(ORIENT_HORIZONTAL);
+	topbar->Add(new Choice(di->T("Back")))->OnClick.Handle<UIScreen>(this, &UIScreen::OnBack);
+	topbar->Add(new Choice(di->T("Disable All")))->OnClick.Handle(this, &JitDebugScreen::OnDisableAll);
+	topbar->Add(new Choice(di->T("Enable All")))->OnClick.Handle(this, &JitDebugScreen::OnEnableAll);
+
+	vert->Add(topbar);
+	vert->Add(new ItemHeader(dev->T("Disabled JIT functionality")));
+
+	for (auto flag : jitDisableFlags) {
+		// Do not add translation of these.
+		vert->Add(new BitCheckBox(&g_Config.uJitDisableFlags, (uint32_t)flag.flag, flag.name));
+	}
+}
+
+UI::EventReturn JitDebugScreen::OnEnableAll(UI::EventParams &e) {
+	g_Config.uJitDisableFlags &= ~(uint32_t)MIPSComp::JitDisable::ALL_FLAGS;
+	return UI::EVENT_DONE;
+}
+
+UI::EventReturn JitDebugScreen::OnDisableAll(UI::EventParams &e) {
+	g_Config.uJitDisableFlags |= (uint32_t)MIPSComp::JitDisable::ALL_FLAGS;
+	return UI::EVENT_DONE;
+}
+
 const char *GetCompilerABI() {
 #if PPSSPP_ARCH(ARMV7)
 	return "armeabi-v7a";
@@ -386,7 +451,8 @@ void SystemInfoScreen::CreateViews() {
 
 	DrawContext *draw = screenManager()->getDrawContext();
 
-	const char *apiName = gr->T(screenManager()->getDrawContext()->GetInfoString(InfoField::APINAME));
+	const std::string apiNameKey = draw->GetInfoString(InfoField::APINAME);
+	const char *apiName = gr->T(apiNameKey);
 	deviceSpecs->Add(new InfoItem(si->T("3D API"), apiName));
 	deviceSpecs->Add(new InfoItem(si->T("Vendor"), draw->GetInfoString(InfoField::VENDORSTRING)));
 	std::string vendor = draw->GetInfoString(InfoField::VENDOR);
@@ -404,6 +470,13 @@ void SystemInfoScreen::CreateViews() {
 #endif
 	if (GetGPUBackend() == GPUBackend::OPENGL) {
 		deviceSpecs->Add(new InfoItem(si->T("Core Context"), gl_extensions.IsCoreContext ? di->T("Active") : di->T("Inactive")));
+		int highp_int_min = gl_extensions.range[1][5][0];
+		int highp_int_max = gl_extensions.range[1][5][1];
+		if (highp_int_max != 0) {
+			char highp_int_range[512];
+			snprintf(highp_int_range, sizeof(highp_int_range), "Highp int range: %d-%d", highp_int_min, highp_int_max);
+			deviceSpecs->Add(new InfoItem(si->T("High precision int range"), highp_int_range));
+		}
 	}
 	deviceSpecs->Add(new ItemHeader(si->T("OS Information")));
 	deviceSpecs->Add(new InfoItem(si->T("Memory Page Size"), StringFromFormat(si->T("%d bytes"), GetMemoryProtectPageSize())));
@@ -432,6 +505,15 @@ void SystemInfoScreen::CreateViews() {
 	deviceSpecs->Add(new InfoItem(si->T("Refresh rate"), StringFromFormat("%0.3f Hz", (float)System_GetPropertyInt(SYSPROP_DISPLAY_REFRESH_RATE) / 1000.0f)));
 #endif
 
+#if 0
+	// For debugging, DO NOT translate
+	deviceSpecs->Add(new InfoItem("Resolution1",
+		StringFromFormat("dp: %dx%d px: %dx%d dpi_s: %0.1fx%0.1f",
+			dp_xres, dp_yres, pixel_xres, pixel_yres, g_dpi_scale_x, g_dpi_scale_y)));
+	deviceSpecs->Add(new InfoItem("Resolution2",
+		StringFromFormat("dpi_s_r: %0.1fx%0.1f px_in_dp: %0.1fx%0.1f",
+			g_dpi_scale_real_x, g_dpi_scale_real_y, pixel_in_dps_x, pixel_in_dps_y)));
+#endif
 
 	deviceSpecs->Add(new ItemHeader(si->T("Version Information")));
 	std::string apiVersion;

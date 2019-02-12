@@ -38,7 +38,7 @@
 // Currently known non working ones should have DISABLE.
 
 // #define CONDITIONAL_DISABLE { fpr.ReleaseSpillLocksAndDiscardTemps(); Comp_Generic(op); return; }
-#define CONDITIONAL_DISABLE ;
+#define CONDITIONAL_DISABLE(flag) if (jo.Disabled(JitDisable::flag)) { Comp_Generic(op); return; }
 #define DISABLE { fpr.ReleaseSpillLocksAndDiscardTemps(); Comp_Generic(op); return; }
 
 #define _RS MIPS_GET_RS(op)
@@ -80,7 +80,7 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_VPFX(MIPSOpcode op)	{
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_XFER);
 		int data = op & 0xFFFFF;
 		int regnum = (op >> 24) & 3;
 		switch (regnum) {
@@ -201,7 +201,8 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_SV(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(LSU_VFPU);
+		CheckMemoryBreakpoint();
 
 		s32 offset = (signed short)(op & 0xFFFC);
 		int vt = ((op >> 16) & 0x1f) | ((op & 3) << 5);
@@ -274,7 +275,8 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_SVQ(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(LSU_VFPU);
+		CheckMemoryBreakpoint();
 
 		int imm = (signed short)(op&0xFFFC);
 		int vt = (((op >> 16) & 0x1f)) | ((op&1) << 5);
@@ -357,7 +359,7 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_VVectorInit(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_XFER);
 		// WARNING: No prefix support!
 		if (js.HasUnknownPrefix()) {
 			DISABLE;
@@ -391,7 +393,7 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_VIdt(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_XFER);
 		if (js.HasUnknownPrefix()) {
 			DISABLE;
 		}
@@ -426,7 +428,7 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_VMatrixInit(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_XFER);
 		if (js.HasUnknownPrefix()) {
 			// Don't think matrix init ops care about prefixes.
 			// DISABLE;
@@ -473,7 +475,7 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_VHdp(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_VEC);
 		if (js.HasUnknownPrefix()) {
 			DISABLE;
 		}
@@ -515,7 +517,7 @@ namespace MIPSComp {
 	alignas(16) static const float vavg_table[4] = { 1.0f, 1.0f / 2.0f, 1.0f / 3.0f, 1.0f / 4.0f };
 
 	void Arm64Jit::Comp_Vhoriz(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_VEC);
 		if (js.HasUnknownPrefix()) {
 			DISABLE;
 		}
@@ -557,7 +559,7 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_VDot(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_VEC);
 		if (js.HasUnknownPrefix()) {
 			DISABLE;
 		}
@@ -593,7 +595,7 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_VecDo3(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_VEC);
 		if (js.HasUnknownPrefix()) {
 			DISABLE;
 		}
@@ -742,7 +744,7 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_VV2Op(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_VEC);
 		if (js.HasUnknownPrefix()) {
 			DISABLE;
 		}
@@ -882,7 +884,7 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_Vi2f(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_VEC);
 		if (js.HasUnknownPrefix()) {
 			DISABLE;
 		}
@@ -929,7 +931,7 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_Vh2f(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_VEC);
 		if (js.HasUnknownPrefix()) {
 			DISABLE;
 		}
@@ -976,6 +978,7 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_Mftv(MIPSOpcode op) {
+		CONDITIONAL_DISABLE(VFPU_XFER);
 		int imm = op & 0xFF;
 		MIPSGPReg rt = _RT;
 		switch ((op >> 21) & 0x1f) {
@@ -1061,7 +1064,7 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_Vmfvc(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_XFER);
 
 		int vs = _VS;
 		int imm = op & 0xFF;
@@ -1079,7 +1082,7 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_Vmtvc(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_XFER);
 
 		int vs = _VS;
 		int imm = op & 0xFF;
@@ -1105,7 +1108,7 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_Vmmov(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_MTX);
 
 		// This probably ignores prefixes for all sane intents and purposes.
 		if (_VS == _VD) {
@@ -1142,7 +1145,7 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_VScl(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_VEC);
 		if (js.HasUnknownPrefix()) {
 			DISABLE;
 		}
@@ -1191,7 +1194,7 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_Vmmul(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_MTX);
 		if (js.HasUnknownPrefix()) {
 			DISABLE;
 		}
@@ -1237,7 +1240,7 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_Vtfm(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_MTX);
 		if (js.HasUnknownPrefix()) {
 			DISABLE;
 		}
@@ -1305,7 +1308,7 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_Vi2x(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_VEC);
 		if (js.HasUnknownPrefix())
 			DISABLE;
 
@@ -1374,7 +1377,7 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_Vx2i(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_VEC);
 		if (js.HasUnknownPrefix())
 			DISABLE;
 
@@ -1469,7 +1472,7 @@ namespace MIPSComp {
 
 	void Arm64Jit::Comp_VCrossQuat(MIPSOpcode op) {
 		// This op does not support prefixes anyway.
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_VEC);
 		if (js.HasUnknownPrefix())
 			DISABLE;
 
@@ -1548,7 +1551,7 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_Vcmp(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_COMP);
 		if (js.HasUnknownPrefix())
 			DISABLE;
 
@@ -1725,7 +1728,7 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_Vcmov(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_COMP);
 		if (js.HasUnknownPrefix()) {
 			DISABLE;
 		}
@@ -1776,7 +1779,7 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_Viim(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_XFER);
 		if (js.HasUnknownPrefix()) {
 			DISABLE;
 		}
@@ -1793,7 +1796,7 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_Vfim(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_XFER);
 		if (js.HasUnknownPrefix()) {
 			DISABLE;
 		}
@@ -1812,7 +1815,7 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_Vcst(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_XFER);
 		if (js.HasUnknownPrefix()) {
 			DISABLE;
 		}
@@ -1880,7 +1883,7 @@ namespace MIPSComp {
 	// calling the math library.
 	void Arm64Jit::Comp_VRot(MIPSOpcode op) {
 		// VRot probably doesn't accept prefixes anyway.
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_VEC);
 		if (js.HasUnknownPrefix()) {
 			DISABLE;
 		}
@@ -1941,7 +1944,7 @@ namespace MIPSComp {
 	}
 
 	void Arm64Jit::Comp_Vocp(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(VFPU_VEC);
 		if (js.HasUnknownPrefix()) {
 			DISABLE;
 		}

@@ -19,6 +19,7 @@
 #define SHADERLOG
 #endif
 
+#include <cmath>
 #include <map>
 #include "gfx/d3d9_shader.h"
 #include "base/logging.h"
@@ -26,6 +27,7 @@
 #include "math/lin/matrix4x4.h"
 #include "math/math_util.h"
 #include "math/dataconv.h"
+#include "thin3d/thin3d.h"
 #include "util/text/utf8.h"
 
 #include "Common/Common.h"
@@ -35,6 +37,7 @@
 #include "GPU/Math3D.h"
 #include "GPU/GPUState.h"
 #include "GPU/ge_constants.h"
+#include "GPU/Common/ShaderUniforms.h"
 #include "GPU/Directx9/ShaderManagerDX9.h"
 #include "GPU/Directx9/DrawEngineDX9.h"
 #include "GPU/Directx9/FramebufferDX9.h"
@@ -58,7 +61,7 @@ PSShader::PSShader(LPDIRECT3DDEVICE9 device, FShaderID id, const char *code) : i
 			ERROR_LOG(G3D, "Error in shader compilation!");
 		}
 		ERROR_LOG(G3D, "Messages: %s", errorMessage.c_str());
-		ERROR_LOG(G3D, "Shader source:\n%s", code);
+		ERROR_LOG(G3D, "Shader source:\n%s", LineNumberString(code).c_str());
 		OutputDebugStringUTF8("Messages:\n");
 		OutputDebugStringUTF8(errorMessage.c_str());
 		Reporting::ReportMessage("D3D error in shader compilation: info: %s / code: %s", errorMessage.c_str(), code);
@@ -265,10 +268,10 @@ void ShaderManagerDX9::PSUpdateUniforms(u64 dirtyUniforms) {
 		PSSetColorUniform3(CONST_PS_TEXENV, gstate.texenvcolor);
 	}
 	if (dirtyUniforms & DIRTY_ALPHACOLORREF) {
-		PSSetColorUniform3Alpha255(CONST_PS_ALPHACOLORREF, gstate.getColorTestRef(), gstate.getAlphaTestRef());
+		PSSetColorUniform3Alpha255(CONST_PS_ALPHACOLORREF, gstate.getColorTestRef(), gstate.getAlphaTestRef() & gstate.getAlphaTestMask());
 	}
 	if (dirtyUniforms & DIRTY_ALPHACOLORMASK) {
-		PSSetColorUniform3(CONST_PS_ALPHACOLORMASK, gstate.colortestmask);
+		PSSetColorUniform3Alpha255(CONST_PS_ALPHACOLORMASK, gstate.colortestmask, gstate.getAlphaTestMask());
 	}
 	if (dirtyUniforms & DIRTY_FOGCOLOR) {
 		PSSetColorUniform3(CONST_PS_FOGCOLOR, gstate.fogcolor);
@@ -313,7 +316,7 @@ void ShaderManagerDX9::PSUpdateUniforms(u64 dirtyUniforms) {
 }
 
 const uint64_t vsUniforms = DIRTY_PROJMATRIX | DIRTY_PROJTHROUGHMATRIX | DIRTY_WORLDMATRIX | DIRTY_VIEWMATRIX | DIRTY_TEXMATRIX |
-DIRTY_FOGCOEF | DIRTY_BONE_UNIFORMS | DIRTY_UVSCALEOFFSET | DIRTY_DEPTHRANGE |
+DIRTY_FOGCOEF | DIRTY_BONE_UNIFORMS | DIRTY_UVSCALEOFFSET | DIRTY_DEPTHRANGE | DIRTY_CULLRANGE |
 DIRTY_AMBIENT | DIRTY_MATAMBIENTALPHA | DIRTY_MATSPECULAR | DIRTY_MATDIFFUSE | DIRTY_MATEMISSIVE | DIRTY_LIGHT0 | DIRTY_LIGHT1 | DIRTY_LIGHT2 | DIRTY_LIGHT3;
 
 void ShaderManagerDX9::VSUpdateUniforms(u64 dirtyUniforms) {
@@ -364,22 +367,15 @@ void ShaderManagerDX9::VSUpdateUniforms(u64 dirtyUniforms) {
 			getFloat24(gstate.fog1),
 			getFloat24(gstate.fog2),
 		};
-		if (my_isinf(fogcoef[1])) {
-			// not really sure what a sensible value might be.
-			fogcoef[1] = fogcoef[1] < 0.0f ? -10000.0f : 10000.0f;
-		} else if (my_isnan(fogcoef[1])) {
-			// Workaround for https://github.com/hrydgard/ppsspp/issues/5384#issuecomment-38365988
-			// Just put the fog far away at a large finite distance.
-			// Infinities and NaNs are rather unpredictable in shaders on many GPUs
-			// so it's best to just make it a sane calculation.
-			fogcoef[0] = 100000.0f;
-			fogcoef[1] = 1.0f;
+		// The PSP just ignores infnan here (ignoring IEEE), so take it down to a valid float.
+		// Workaround for https://github.com/hrydgard/ppsspp/issues/5384#issuecomment-38365988
+		if (my_isnanorinf(fogcoef[0])) {
+			// Not really sure what a sensible value might be, but let's try 64k.
+			fogcoef[0] = std::signbit(fogcoef[0]) ? -65535.0f : 65535.0f;
 		}
-#ifndef MOBILE_DEVICE
-		else if (my_isnanorinf(fogcoef[1]) || my_isnanorinf(fogcoef[0])) {
-			ERROR_LOG_REPORT_ONCE(fognan, G3D, "Unhandled fog NaN/INF combo: %f %f", fogcoef[0], fogcoef[1]);
+		if (my_isnanorinf(fogcoef[1])) {
+			fogcoef[1] = std::signbit(fogcoef[1]) ? -65535.0f : 65535.0f;
 		}
-#endif
 		VSSetFloatArray(CONST_VS_FOGCOEF, fogcoef, 2);
 	}
 	// TODO: Could even set all bones in one go if they're all dirty.
@@ -431,7 +427,7 @@ void ShaderManagerDX9::VSUpdateUniforms(u64 dirtyUniforms) {
 		VSSetFloatArray(CONST_VS_UVSCALEOFFSET, uvscaleoff, 4);
 	}
 
-	if (dirtyUniforms & DIRTY_DEPTHRANGE)	{
+	if (dirtyUniforms & DIRTY_DEPTHRANGE) {
 		// Depth is [0, 1] mapping to [minz, maxz], not too hard.
 		float vpZScale = gstate.getViewportZScale();
 		float vpZCenter = gstate.getViewportZCenter();
@@ -453,6 +449,13 @@ void ShaderManagerDX9::VSUpdateUniforms(u64 dirtyUniforms) {
 		float data[4] = { viewZScale, viewZCenter, viewZCenter, viewZInvScale };
 		VSSetFloatUniform4(CONST_VS_DEPTHRANGE, data);
 	}
+	if (dirtyUniforms & DIRTY_CULLRANGE) {
+		float minValues[4], maxValues[4];
+		CalcCullRange(minValues, maxValues, false, false);
+		VSSetFloatUniform4(CONST_VS_CULLRANGEMIN, minValues);
+		VSSetFloatUniform4(CONST_VS_CULLRANGEMAX, maxValues);
+	}
+
 	// Lighting
 	if (dirtyUniforms & DIRTY_AMBIENT) {
 		VSSetColorUniform3Alpha(CONST_VS_AMBIENT, gstate.ambientcolor, gstate.getAmbientA());
@@ -497,7 +500,8 @@ void ShaderManagerDX9::VSUpdateUniforms(u64 dirtyUniforms) {
 	}
 }
 
-ShaderManagerDX9::ShaderManagerDX9(LPDIRECT3DDEVICE9 device) : device_(device), lastVShader_(nullptr), lastPShader_(nullptr) {
+ShaderManagerDX9::ShaderManagerDX9(Draw::DrawContext *draw, LPDIRECT3DDEVICE9 device)
+	: ShaderManagerCommon(draw), device_(device), lastVShader_(nullptr), lastPShader_(nullptr) {
 	codeBuffer_ = new char[16384];
 }
 
@@ -537,7 +541,9 @@ void ShaderManagerDX9::DirtyLastShader() { // disables vertex arrays
 }
 
 VSShader *ShaderManagerDX9::ApplyShader(int prim, u32 vertType) {
-	bool useHWTransform = CanUseHardwareTransform(prim);
+	// Always use software for flat shading to fix the provoking index.
+	bool tess = gstate_c.bezier || gstate_c.spline;
+	bool useHWTransform = CanUseHardwareTransform(prim) && (tess || gstate.getShadeMode() != GE_SHADE_FLAT);
 
 	VShaderID VSID;
 	if (gstate_c.IsDirty(DIRTY_VERTEXSHADER_STATE)) {
@@ -550,7 +556,7 @@ VSShader *ShaderManagerDX9::ApplyShader(int prim, u32 vertType) {
 	FShaderID FSID;
 	if (gstate_c.IsDirty(DIRTY_FRAGMENTSHADER_STATE)) {
 		gstate_c.Clean(DIRTY_FRAGMENTSHADER_STATE);
-		ComputeFragmentShaderID(&FSID);
+		ComputeFragmentShaderID(&FSID, draw_->GetBugs());
 	} else {
 		FSID = lastFSID_;
 	}

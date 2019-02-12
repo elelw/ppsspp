@@ -39,6 +39,7 @@ enum {
 static inline int CalcClipMask(const ClipCoords& v)
 {
 	int mask = 0;
+	// This checks `x / w` compared to 1 or -1, skipping the division.
 	if (v.x > v.w) mask |= CLIP_POS_X_BIT;
 	if (v.x < -v.w) mask |= CLIP_NEG_X_BIT;
 	if (v.y > v.w) mask |= CLIP_POS_Y_BIT;
@@ -156,7 +157,7 @@ void ProcessRect(const VertexData& v0, const VertexData& v1)
 		// Color and depth values of second vertex are used for the whole rectangle
 		buf[0].color0 = buf[1].color0 = buf[2].color0 = buf[3].color0;
 		buf[0].color1 = buf[1].color1 = buf[2].color1 = buf[3].color1;
-		buf[0].fogdepth = buf[1].fogdepth = buf[2].fogdepth = buf[3].fogdepth = 1.0f;
+		buf[0].fogdepth = buf[1].fogdepth = buf[2].fogdepth = buf[3].fogdepth;
 
 		VertexData* topleft = &buf[0];
 		VertexData* topright = &buf[1];
@@ -175,10 +176,10 @@ void ProcessRect(const VertexData& v0, const VertexData& v1)
 		}
 
 		// Four triangles to do backfaces as well. Two of them will get backface culled.
-		ProcessTriangle(*topleft, *topright, *bottomright);
-		ProcessTriangle(*bottomright, *topright, *topleft);
-		ProcessTriangle(*bottomright, *bottomleft, *topleft);
-		ProcessTriangle(*topleft, *bottomleft, *bottomright);
+		ProcessTriangle(*topleft, *topright, *bottomright, buf[3]);
+		ProcessTriangle(*bottomright, *topright, *topleft, buf[3]);
+		ProcessTriangle(*bottomright, *bottomleft, *topleft, buf[3]);
+		ProcessTriangle(*topleft, *bottomleft, *bottomright, buf[3]);
 	} else {
 		// through mode handling
 		VertexData buf[4];
@@ -255,11 +256,7 @@ void ProcessLine(VertexData& v0, VertexData& v1)
 		return;
 	}
 
-	if (mask && gstate.isClippingEnabled()) {
-		// discard if any vertex is outside the near clipping plane
-		if (mask & CLIP_NEG_Z_BIT)
-			return;
-
+	if (mask) {
 		CLIP_LINE(CLIP_POS_X_BIT, -1,  0,  0, 1);
 		CLIP_LINE(CLIP_NEG_X_BIT,  1,  0,  0, 1);
 		CLIP_LINE(CLIP_POS_Y_BIT,  0, -1,  0, 1);
@@ -274,10 +271,17 @@ void ProcessLine(VertexData& v0, VertexData& v1)
 	Rasterizer::DrawLine(data[0], data[1]);
 }
 
-void ProcessTriangle(VertexData& v0, VertexData& v1, VertexData& v2)
-{
+void ProcessTriangle(VertexData& v0, VertexData& v1, VertexData& v2, const VertexData &provoking) {
 	if (gstate.isModeThrough()) {
-		Rasterizer::DrawTriangle(v0, v1, v2);
+		// In case of cull reordering, make sure the right color is on the final vertex.
+		if (gstate.getShadeMode() == GE_SHADE_FLAT) {
+			VertexData corrected2 = v2;
+			corrected2.color0 = provoking.color0;
+			corrected2.color1 = provoking.color1;
+			Rasterizer::DrawTriangle(v0, v1, corrected2);
+		} else {
+			Rasterizer::DrawTriangle(v0, v1, v2);
+		}
 		return;
 	}
 
@@ -303,11 +307,7 @@ void ProcessTriangle(VertexData& v0, VertexData& v1, VertexData& v2)
 	mask |= CalcClipMask(v1.clippos);
 	mask |= CalcClipMask(v2.clippos);
 
-	if (mask && gstate.isClippingEnabled()) {
-		// discard if any vertex is outside the near clipping plane
-		if (mask & CLIP_NEG_Z_BIT)
-			return;
-
+	if (mask) {
 		for (int i = 0; i < 3; i += 3) {
 			int vlist[2][2*6+1];
 			int *inlist = vlist[0], *outlist = vlist[1];
@@ -346,14 +346,19 @@ void ProcessTriangle(VertexData& v0, VertexData& v1, VertexData& v2)
 		return;
 	}
 
-	for (int i = 0; i+3 <= numIndices; i+=3)
-	{
-		if(indices[i] != SKIP_FLAG)
-		{
+	for (int i = 0; i + 3 <= numIndices; i += 3) {
+		if (indices[i] != SKIP_FLAG) {
 			VertexData data[3] = { *Vertices[indices[i]], *Vertices[indices[i+1]], *Vertices[indices[i+2]] };
 			data[0].screenpos = TransformUnit::ClipToScreen(data[0].clippos);
 			data[1].screenpos = TransformUnit::ClipToScreen(data[1].clippos);
 			data[2].screenpos = TransformUnit::ClipToScreen(data[2].clippos);
+
+			if (gstate.getShadeMode() == GE_SHADE_FLAT) {
+				// So that the order of clipping doesn't matter...
+				data[2].color0 = provoking.color0;
+				data[2].color1 = provoking.color1;
+			}
+
 			Rasterizer::DrawTriangle(data[0], data[1], data[2]);
 		}
 	}

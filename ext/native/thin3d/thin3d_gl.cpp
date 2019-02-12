@@ -186,19 +186,18 @@ public:
 	bool depthTestEnabled;
 	bool depthWriteEnabled;
 	GLuint depthComp;
-	// TODO: Two-sided
+	// TODO: Two-sided. Although in practice, do we care?
 	bool stencilEnabled;
 	GLuint stencilFail;
 	GLuint stencilZFail;
 	GLuint stencilPass;
 	GLuint stencilCompareOp;
-	uint8_t stencilReference;
 	uint8_t stencilCompareMask;
 	uint8_t stencilWriteMask;
 
-	void Apply(GLRenderManager *render) {
+	void Apply(GLRenderManager *render, uint8_t stencilRef) {
 		render->SetDepth(depthTestEnabled, depthWriteEnabled, depthComp);
-		render->SetStencilFunc(stencilEnabled, stencilCompareOp, stencilReference, stencilCompareMask);
+		render->SetStencilFunc(stencilEnabled, stencilCompareOp, stencilRef, stencilCompareMask);
 		render->SetStencilOp(stencilWriteMask, stencilFail, stencilZFail, stencilPass);
 	}
 };
@@ -260,7 +259,6 @@ private:
 	ShaderLanguage language_;
 	GLRShader *shader_ = nullptr;
 	GLuint glstage_ = 0;
-	bool ok_ = false;
 	std::string source_;  // So we can recompile in case of context loss.
 };
 
@@ -302,7 +300,7 @@ public:
 		for (auto &iter : shaders) {
 			iter->Release();
 		}
-		render_->DeleteProgram(program_);
+		if (program_) render_->DeleteProgram(program_);
 		if (depthStencil) depthStencil->Release();
 		if (blend) blend->Release();
 		if (raster) raster->Release();
@@ -347,11 +345,10 @@ public:
 		return caps_;
 	}
 	uint32_t GetSupportedShaderLanguages() const override {
-#if defined(USING_GLES2)
-		return (uint32_t)ShaderLanguage::GLSL_ES_200 | (uint32_t)ShaderLanguage::GLSL_ES_300;
-#else
-		return (uint32_t)ShaderLanguage::GLSL_ES_200 | (uint32_t)ShaderLanguage::GLSL_410;
-#endif
+		if (gl_extensions.IsGLES)
+			return (uint32_t)ShaderLanguage::GLSL_ES_200 | (uint32_t)ShaderLanguage::GLSL_ES_300;
+		else
+			return (uint32_t)ShaderLanguage::GLSL_ES_200 | (uint32_t)ShaderLanguage::GLSL_410;
 	}
 	uint32_t GetDataFormatSupport(DataFormat fmt) const override;
 
@@ -406,6 +403,15 @@ public:
 		renderManager_.SetBlendFactor(color);
 	}
 
+	void SetStencilRef(uint8_t ref) override {
+		stencilRef_ = ref;
+		renderManager_.SetStencilFunc(
+			curPipeline_->depthStencil->stencilEnabled,
+			curPipeline_->depthStencil->stencilCompareOp,
+			ref,
+			curPipeline_->depthStencil->stencilCompareMask);
+	}
+
 	void BindTextures(int start, int count, Texture **textures) override;
 	void BindPipeline(Pipeline *pipeline) override;
 	void BindVertexBuffers(int start, int count, Buffer **buffers, int *offsets) override {
@@ -447,6 +453,7 @@ public:
 				case GPUVendor::VENDOR_QUALCOMM: return "VENDOR_ADRENO";
 				case GPUVendor::VENDOR_ARM: return "VENDOR_ARM";
 				case GPUVendor::VENDOR_BROADCOM: return "VENDOR_BROADCOM";
+				case GPUVendor::VENDOR_VIVANTE: return "VENDOR_VIVANTE";
 				case GPUVendor::VENDOR_UNKNOWN:
 				default:
 					return "VENDOR_UNKNOWN";
@@ -487,6 +494,8 @@ private:
 	OpenGLBuffer *curIBuffer_ = nullptr;
 	int curIBufferOffset_ = 0;
 
+	uint8_t stencilRef_ = 0;
+
 	// Frames in flight is not such a strict concept as with Vulkan until we start using glBufferStorage and fences.
 	// But might as well have the structure ready, and can't hurt to rotate buffers.
 	struct FrameData {
@@ -494,6 +503,26 @@ private:
 	};
 	FrameData frameData_[GLRenderManager::MAX_INFLIGHT_FRAMES];
 };
+
+static constexpr int MakeIntelSimpleVer(int v1, int v2, int v3) {
+	return (v1 << 16) | (v2 << 8) | v3;
+}
+
+static bool HasIntelDualSrcBug(int versions[4]) {
+	// Intel uses a confusing set of at least 3 version numbering schemes.  This is the one given to OpenGL.
+	switch (MakeIntelSimpleVer(versions[0], versions[1], versions[2])) {
+	case MakeIntelSimpleVer(9, 17, 10):
+	case MakeIntelSimpleVer(9, 18, 10):
+		return false;
+	case MakeIntelSimpleVer(10, 18, 10):
+		return versions[3] < 4061;
+	case MakeIntelSimpleVer(10, 18, 14):
+		return versions[3] < 4080;
+	default:
+		// Older than above didn't support dual src anyway, newer should have the fix.
+		return false;
+	}
+}
 
 OpenGLContext::OpenGLContext() {
 	// TODO: Detect more caps
@@ -517,6 +546,7 @@ OpenGLContext::OpenGLContext() {
 	case GPU_VENDOR_BROADCOM: caps_.vendor = GPUVendor::VENDOR_BROADCOM; break;
 	case GPU_VENDOR_INTEL: caps_.vendor = GPUVendor::VENDOR_INTEL; break;
 	case GPU_VENDOR_IMGTEC: caps_.vendor = GPUVendor::VENDOR_IMGTEC; break;
+	case GPU_VENDOR_VIVANTE: caps_.vendor = GPUVendor::VENDOR_VIVANTE; break;
 	case GPU_VENDOR_UNKNOWN:
 	default:
 		caps_.vendor = GPUVendor::VENDOR_UNKNOWN;
@@ -524,6 +554,38 @@ OpenGLContext::OpenGLContext() {
 	}
 	for (int i = 0; i < GLRenderManager::MAX_INFLIGHT_FRAMES; i++) {
 		frameData_[i].push = renderManager_.CreatePushBuffer(i, GL_ARRAY_BUFFER, 64 * 1024);
+	}
+
+	if (!gl_extensions.VersionGEThan(3, 0, 0)) {
+		// Don't use this extension on sub 3.0 OpenGL versions as it does not seem reliable.
+		bugs_.Infest(Bugs::DUAL_SOURCE_BLENDING_BROKEN);
+	} else if (caps_.vendor == GPUVendor::VENDOR_INTEL) {
+		// Note: this is for Intel drivers with GL3+.
+		// Also on Intel, see https://github.com/hrydgard/ppsspp/issues/10117
+		// TODO: Remove entirely sometime reasonably far in driver years after 2015.
+		const std::string ver = GetInfoString(Draw::InfoField::APIVERSION);
+		int versions[4]{};
+		if (sscanf(ver.c_str(), "Build %d.%d.%d.%d", &versions[0], &versions[1], &versions[2], &versions[3]) == 4) {
+			if (HasIntelDualSrcBug(versions)) {
+				bugs_.Infest(Bugs::DUAL_SOURCE_BLENDING_BROKEN);
+			}
+		}
+	}
+
+	if (caps_.vendor == GPUVendor::VENDOR_VIVANTE || caps_.vendor == GPUVendor::VENDOR_BROADCOM) {
+		bugs_.Infest(Bugs::BROKEN_NAN_IN_CONDITIONAL);
+	}
+
+	// TODO: Make this check more lenient. Disabled for all right now
+	// because it murders performance on Mali.
+	if (caps_.vendor != GPUVendor::VENDOR_NVIDIA) {
+		bugs_.Infest(Bugs::ANY_MAP_BUFFER_RANGE_SLOW);
+	}
+
+	if (caps_.vendor == GPUVendor::VENDOR_IMGTEC) {
+		// See https://github.com/hrydgard/ppsspp/commit/8974cd675e538f4445955e3eac572a9347d84232
+		// TODO: Should this workaround be removed for newer devices/drivers?
+		bugs_.Infest(Bugs::PVR_GENMIPMAP_HEIGHT_GREATER);
 	}
 }
 
@@ -720,6 +782,10 @@ static void LogReadPixelsError(GLenum error) {
 #endif
 
 bool OpenGLContext::CopyFramebufferToMemorySync(Framebuffer *src, int channelBits, int x, int y, int w, int h, Draw::DataFormat dataFormat, void *pixels, int pixelStride) {
+	if (gl_extensions.IsGLES && (channelBits & FB_COLOR_BIT) == 0) {
+		// Can't readback depth or stencil on GLES.
+		return false;
+	}
 	OpenGLFramebuffer *fb = (OpenGLFramebuffer *)src;
 	GLuint aspect = 0;
 	if (channelBits & FB_COLOR_BIT)
@@ -748,7 +814,6 @@ DepthStencilState *OpenGLContext::CreateDepthStencilState(const DepthStencilStat
 	ds->stencilFail = stencilOpToGL[(int)desc.front.failOp];
 	ds->stencilZFail = stencilOpToGL[(int)desc.front.depthFailOp];
 	ds->stencilWriteMask = desc.front.writeMask;
-	ds->stencilReference = desc.front.reference;
 	ds->stencilCompareMask = desc.front.compareMask;
 	return ds;
 }
@@ -858,8 +923,14 @@ Pipeline *OpenGLContext::CreateGraphicsPipeline(const PipelineDesc &desc) {
 	}
 	OpenGLPipeline *pipeline = new OpenGLPipeline(&renderManager_);
 	for (auto iter : desc.shaders) {
-		iter->AddRef();
-		pipeline->shaders.push_back(static_cast<OpenGLShaderModule *>(iter));
+		if (iter) {
+			iter->AddRef();
+			pipeline->shaders.push_back(static_cast<OpenGLShaderModule *>(iter));
+		} else {
+			ELOG("ERROR: Tried to create graphics pipeline with a null shader module");
+			delete pipeline;
+			return nullptr;
+		}
 	}
 	if (pipeline->LinkShaders()) {
 		// Build the rest of the virtual pipeline object.
@@ -878,7 +949,7 @@ Pipeline *OpenGLContext::CreateGraphicsPipeline(const PipelineDesc &desc) {
 	} else {
 		ELOG("Failed to create pipeline - shaders failed to link");
 		delete pipeline;
-		return NULL;
+		return nullptr;
 	}
 }
 
@@ -951,7 +1022,7 @@ bool OpenGLPipeline::LinkShaders() {
 void OpenGLContext::BindPipeline(Pipeline *pipeline) {
 	curPipeline_ = (OpenGLPipeline *)pipeline;
 	curPipeline_->blend->Apply(&renderManager_);
-	curPipeline_->depthStencil->Apply(&renderManager_);
+	curPipeline_->depthStencil->Apply(&renderManager_, stencilRef_);
 	curPipeline_->raster->Apply(&renderManager_);
 	renderManager_.BindProgram(curPipeline_->program_);
 }
@@ -1030,8 +1101,6 @@ OpenGLInputLayout::~OpenGLInputLayout() {
 }
 
 void OpenGLInputLayout::Compile(const InputLayoutDesc &desc) {
-	int semMask = 0;
-
 	// TODO: This is only accurate if there's only one stream. But whatever, for now we
 	// never use multiple streams anyway.
 	stride = (GLsizei)desc.bindings[0].stride;
@@ -1153,11 +1222,8 @@ uint32_t OpenGLContext::GetDataFormatSupport(DataFormat fmt) const {
 	case DataFormat::B4G4R4A4_UNORM_PACK16:
 		return FMT_RENDERTARGET | FMT_TEXTURE | FMT_AUTOGEN_MIPS;  // native support
 	case DataFormat::A4R4G4B4_UNORM_PACK16:
-#ifndef USING_GLES2
 		// Can support this if _REV formats are supported.
-		return FMT_TEXTURE;
-#endif
-		return 0;
+		return gl_extensions.IsGLES ? 0 : FMT_TEXTURE;
 
 	case DataFormat::R8G8B8A8_UNORM:
 		return FMT_RENDERTARGET | FMT_TEXTURE | FMT_INPUTLAYOUT | FMT_AUTOGEN_MIPS;

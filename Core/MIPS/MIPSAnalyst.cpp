@@ -1415,6 +1415,7 @@ skip:
 		memset(&info, 0, sizeof(info));
 
 		if (!Memory::IsValidAddress(address)) {
+			info.opcodeAddress = address;
 			return info;
 		}
 
@@ -1530,7 +1531,7 @@ skip:
 		}
 
 		// lw, sh, ...
-		if ((opInfo & IN_MEM) || (opInfo & OUT_MEM)) {
+		if (!IsSyscall(op) && (opInfo & (IN_MEM | OUT_MEM)) != 0) {
 			info.isDataAccess = true;
 			switch (opInfo & MEMTYPE_MASK) {
 			case MEMTYPE_BYTE:

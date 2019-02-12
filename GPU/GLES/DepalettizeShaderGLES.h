@@ -54,13 +54,18 @@ public:
 	std::vector<std::string> DebugGetShaderIDs(DebugShaderType type);
 	std::string DebugGetShaderString(std::string id, DebugShaderType type, DebugShaderStringType stringType);
 
+	void DeviceLost() {
+		Clear();
+	}
+	void DeviceRestore(Draw::DrawContext *draw);
+
 private:
 	bool CreateVertexShader();
 
 	GLRenderManager *render_;
 	bool useGL3_;
-	bool vertexShaderFailed_;
-	GLRShader *vertexShader_;
+	bool vertexShaderFailed_ = false;
+	GLRShader *vertexShader_ = nullptr;
 	std::map<u32, DepalShader *> cache_;
 	std::map<u32, DepalTexture *> texCache_;
 };

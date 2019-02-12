@@ -38,14 +38,17 @@ class D3D11RasterState;
 
 class D3D11DrawContext : public DrawContext {
 public:
-	D3D11DrawContext(ID3D11Device *device, ID3D11DeviceContext *deviceContext, ID3D11Device1 *device1, ID3D11DeviceContext1 *deviceContext1, D3D_FEATURE_LEVEL featureLevel, HWND hWnd);
+	D3D11DrawContext(ID3D11Device *device, ID3D11DeviceContext *deviceContext, ID3D11Device1 *device1, ID3D11DeviceContext1 *deviceContext1, D3D_FEATURE_LEVEL featureLevel, HWND hWnd, std::vector<std::string> deviceList);
 	~D3D11DrawContext();
 
 	const DeviceCaps &GetDeviceCaps() const override {
 		return caps_;
 	}
+	std::vector<std::string> GetDeviceList() const override {
+		return deviceList_;
+	}
 	uint32_t GetSupportedShaderLanguages() const override {
-		return (uint32_t)ShaderLanguage::HLSL_D3D11 | (uint32_t)ShaderLanguage::HLSL_D3D11_BYTECODE;
+		return (uint32_t)ShaderLanguage::HLSL_D3D11;
 	}
 	uint32_t GetDataFormatSupport(DataFormat fmt) const override;
 
@@ -91,6 +94,10 @@ public:
 			memcpy(blendFactor_, color, sizeof(float) * 4);
 			blendFactorDirty_ = true;
 		}
+	}
+	void SetStencilRef(uint8_t ref) override {
+		stencilRef_ = ref;
+		stencilRefDirty_ = true;
 	}
 
 	void Draw(int vertexCount, int offset) override;
@@ -201,8 +208,8 @@ private:
 	// Dynamic state
 	float blendFactor_[4]{};
 	bool blendFactorDirty_ = false;
-	uint8_t stencilRef_;
-	bool stencilRefDirty_;
+	uint8_t stencilRef_ = 0;
+	bool stencilRefDirty_ = true;
 
 	// Temporaries
 	ID3D11Texture2D *packTexture_ = nullptr;
@@ -210,25 +217,27 @@ private:
 	// System info
 	D3D_FEATURE_LEVEL featureLevel_;
 	std::string adapterDesc_;
+	std::vector<std::string> deviceList_;
 };
 
-D3D11DrawContext::D3D11DrawContext(ID3D11Device *device, ID3D11DeviceContext *deviceContext, ID3D11Device1 *device1, ID3D11DeviceContext1 *deviceContext1, D3D_FEATURE_LEVEL featureLevel, HWND hWnd)
+D3D11DrawContext::D3D11DrawContext(ID3D11Device *device, ID3D11DeviceContext *deviceContext, ID3D11Device1 *device1, ID3D11DeviceContext1 *deviceContext1, D3D_FEATURE_LEVEL featureLevel, HWND hWnd, std::vector<std::string> deviceList)
 	: device_(device),
 		context_(deviceContext1),
 		device1_(device1),
 		context1_(deviceContext1),
 		featureLevel_(featureLevel),
-		hWnd_(hWnd) {
+		hWnd_(hWnd),
+		deviceList_(deviceList) {
 
 	// Seems like a fair approximation...
 	caps_.dualSourceBlend = featureLevel_ >= D3D_FEATURE_LEVEL_10_0;
+	caps_.depthClampSupported = featureLevel_ >= D3D_FEATURE_LEVEL_10_0;
 
 	caps_.depthRangeMinusOneToOne = false;
 	caps_.framebufferBlitSupported = false;
 	caps_.framebufferCopySupported = true;
 	caps_.framebufferDepthBlitSupported = false;
 	caps_.framebufferDepthCopySupported = true;
-
 
 	D3D11_FEATURE_DATA_D3D11_OPTIONS options{};
 	HRESULT result = device_->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS, &options, sizeof(options));
@@ -239,8 +248,6 @@ D3D11DrawContext::D3D11DrawContext(ID3D11Device *device, ID3D11DeviceContext *de
 			// caps_.logicOpSupported = true;
 		}
 	}
-	// Obtain DXGI factory from device (since we used nullptr for pAdapter above)
-	IDXGIFactory1* dxgiFactory = nullptr;
 	IDXGIDevice* dxgiDevice = nullptr;
 	IDXGIAdapter* adapter = nullptr;
 	HRESULT hr = device_->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(&dxgiDevice));
@@ -260,6 +267,7 @@ D3D11DrawContext::D3D11DrawContext(ID3D11Device *device, ID3D11DeviceContext *de
 			default:
 				caps_.vendor = GPUVendor::VENDOR_UNKNOWN;
 			}
+			caps_.deviceID = desc.DeviceId;
 			adapter->Release();
 		}
 		dxgiDevice->Release();
@@ -803,11 +811,7 @@ public:
 };
 
 ShaderModule *D3D11DrawContext::CreateShaderModule(ShaderStage stage, ShaderLanguage language, const uint8_t *data, size_t dataSize) {
-	switch (language) {
-	case ShaderLanguage::HLSL_D3D11:
-	case ShaderLanguage::HLSL_D3D11_BYTECODE:
-		break;
-	default:
+	if (language != ShaderLanguage::HLSL_D3D11) {
 		ELOG("Unsupported shader language");
 		return nullptr;
 	}
@@ -823,77 +827,69 @@ ShaderModule *D3D11DrawContext::CreateShaderModule(ShaderStage stage, ShaderLang
 
 	std::string compiled;
 	std::string errors;
-	if (language == ShaderLanguage::HLSL_D3D11) {
-		const char *target = nullptr;
-		switch (stage) {
-		case ShaderStage::FRAGMENT: target = fragmentModel; break;
-		case ShaderStage::VERTEX: target = vertexModel; break;
-		case ShaderStage::GEOMETRY:
-			if (!geometryModel)
-				return nullptr;
-			target = geometryModel;
-			break;
-		case ShaderStage::COMPUTE:
-		case ShaderStage::CONTROL:
-		case ShaderStage::EVALUATION:
-		default:
-			Crash();
-			break;
-		}
-		if (!target) {
+	const char *target = nullptr;
+	switch (stage) {
+	case ShaderStage::FRAGMENT: target = fragmentModel; break;
+	case ShaderStage::VERTEX: target = vertexModel; break;
+	case ShaderStage::GEOMETRY:
+		if (!geometryModel)
 			return nullptr;
-		}
-
-		ID3DBlob *compiledCode = nullptr;
-		ID3DBlob *errorMsgs = nullptr;
-		HRESULT result = ptr_D3DCompile(data, dataSize, nullptr, nullptr, nullptr, "main", target, 0, 0, &compiledCode, &errorMsgs);
-		if (compiledCode) {
-			compiled = std::string((const char *)compiledCode->GetBufferPointer(), compiledCode->GetBufferSize());
-			compiledCode->Release();
-		}
-		if (errorMsgs) {
-			errors = std::string((const char *)errorMsgs->GetBufferPointer(), errorMsgs->GetBufferSize());
-			ELOG("Failed compiling:\n%s\n%s", data, errors.c_str());
-			errorMsgs->Release();
-		}
-
-		if (result != S_OK) {
-			return nullptr;
-		}
-
-		// OK, we can now proceed
-		language = ShaderLanguage::HLSL_D3D11_BYTECODE;
-		data = (const uint8_t *)compiled.c_str();
-		dataSize = compiled.size();
+		target = geometryModel;
+		break;
+	case ShaderStage::COMPUTE:
+	case ShaderStage::CONTROL:
+	case ShaderStage::EVALUATION:
+	default:
+		Crash();
+		break;
+	}
+	if (!target) {
+		return nullptr;
 	}
 
-	if (language == ShaderLanguage::HLSL_D3D11_BYTECODE) {
-		// Easy!
-		D3D11ShaderModule *module = new D3D11ShaderModule();
-		module->stage = stage;
-		module->byteCode_ = std::vector<uint8_t>(data, data + dataSize);
-		HRESULT result = S_OK;
-		switch (stage) {
-		case ShaderStage::VERTEX:
-			result = device_->CreateVertexShader(data, dataSize, nullptr, &module->vs);
-			break;
-		case ShaderStage::FRAGMENT:
-			result = device_->CreatePixelShader(data, dataSize, nullptr, &module->ps);
-			break;
-		case ShaderStage::GEOMETRY:
-			result = device_->CreateGeometryShader(data, dataSize, nullptr, &module->gs);
-			break;
-		default:
-			ELOG("Unsupported shader stage");
-			result = S_FALSE;
-			break;
-		}
-		if (result == S_OK) {
-			return module;
-		} else {
-			delete module;
-			return nullptr;
-		}
+	ID3DBlob *compiledCode = nullptr;
+	ID3DBlob *errorMsgs = nullptr;
+	HRESULT result = ptr_D3DCompile(data, dataSize, nullptr, nullptr, nullptr, "main", target, 0, 0, &compiledCode, &errorMsgs);
+	if (compiledCode) {
+		compiled = std::string((const char *)compiledCode->GetBufferPointer(), compiledCode->GetBufferSize());
+		compiledCode->Release();
+	}
+	if (errorMsgs) {
+		errors = std::string((const char *)errorMsgs->GetBufferPointer(), errorMsgs->GetBufferSize());
+		ELOG("Failed compiling:\n%s\n%s", data, errors.c_str());
+		errorMsgs->Release();
+	}
+
+	if (result != S_OK) {
+		return nullptr;
+	}
+
+	// OK, we can now proceed
+	data = (const uint8_t *)compiled.c_str();
+	dataSize = compiled.size();
+	D3D11ShaderModule *module = new D3D11ShaderModule();
+	module->stage = stage;
+	module->byteCode_ = std::vector<uint8_t>(data, data + dataSize);
+	switch (stage) {
+	case ShaderStage::VERTEX:
+		result = device_->CreateVertexShader(data, dataSize, nullptr, &module->vs);
+		break;
+	case ShaderStage::FRAGMENT:
+		result = device_->CreatePixelShader(data, dataSize, nullptr, &module->ps);
+		break;
+	case ShaderStage::GEOMETRY:
+		result = device_->CreateGeometryShader(data, dataSize, nullptr, &module->gs);
+		break;
+	default:
+		ELOG("Unsupported shader stage");
+		result = S_FALSE;
+		break;
+	}
+	if (result == S_OK) {
+		return module;
+	} else {
+		delete module;
+		return nullptr;
 	}
 	return nullptr;
 }
@@ -984,7 +980,6 @@ void D3D11DrawContext::BindPipeline(Pipeline *pipeline) {
 	curPipeline_ = dPipeline;
 }
 
-// Gonna need dirtyflags soon..
 void D3D11DrawContext::ApplyCurrentState() {
 	if (curBlend_ != curPipeline_->blend || blendFactorDirty_) {
 		context_->OMSetBlendState(curPipeline_->blend->bs, blendFactor_, 0xFFFFFFFF);
@@ -1363,15 +1358,16 @@ bool D3D11DrawContext::CopyFramebufferToMemorySync(Framebuffer *src, int channel
 
 	if (fb) {
 		assert(fb->colorFormat == DXGI_FORMAT_R8G8B8A8_UNORM);
+
+		// TODO: Figure out where the badness really comes from.
+		if (bx + bw > fb->width) {
+			bw -= (bx + bw) - fb->width;
+		}
+		if (by + bh > fb->height) {
+			bh -= (by + bh) - fb->height;
+		}
 	}
 
-	// TODO: Figure out where the badness really comes from.
-	if (bx + bw > fb->width) {
-		bw -= (bx + bw) - fb->width;
-	}
-	if (by + bh > fb->height) {
-		bh -= (by + bh) - fb->height;
-	}
 	if (bh <= 0 || bw <= 0)
 		return true;
 
@@ -1551,8 +1547,8 @@ void D3D11DrawContext::GetFramebufferDimensions(Framebuffer *fbo, int *w, int *h
 	}
 }
 
-DrawContext *T3DCreateD3D11Context(ID3D11Device *device, ID3D11DeviceContext *context, ID3D11Device1 *device1, ID3D11DeviceContext1 *context1, D3D_FEATURE_LEVEL featureLevel, HWND hWnd) {
-	return new D3D11DrawContext(device, context, device1, context1, featureLevel, hWnd);
+DrawContext *T3DCreateD3D11Context(ID3D11Device *device, ID3D11DeviceContext *context, ID3D11Device1 *device1, ID3D11DeviceContext1 *context1, D3D_FEATURE_LEVEL featureLevel, HWND hWnd, std::vector<std::string> adapterNames) {
+	return new D3D11DrawContext(device, context, device1, context1, featureLevel, hWnd, adapterNames);
 }
 
 }  // namespace Draw

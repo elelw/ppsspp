@@ -6,6 +6,7 @@
 
 #include "base/basictypes.h"
 #include "base/buffer.h"
+#include "net/resolve.h"
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -28,7 +29,7 @@ public:
 	virtual ~Connection();
 
 	// Inits the sockaddr_in.
-	bool Resolve(const char *host, int port);
+	bool Resolve(const char *host, int port, DNSType type = DNSType::ANY);
 
 	bool Connect(int maxTries = 2, double timeout = 20.0f, bool *cancelConnect = nullptr);
 	void Disconnect();
@@ -74,8 +75,14 @@ public:
 	// If your response contains a response, you must read it.
 	int ReadResponseEntity(Buffer *readbuf, const std::vector<std::string> &responseHeaders, Buffer *output, float *progress = nullptr, bool *cancelled = nullptr);
 
+	void SetDataTimeout(double t) {
+		dataTimeout_ = t;
+	}
+
+protected:
 	const char *userAgent_;
 	const char *httpVersion_;
+	double dataTimeout_ = -1.0;
 };
 
 // Not particularly efficient, but hey - it's a background download, that's pretty cool :P

@@ -35,7 +35,7 @@
 #include "GPU/ge_constants.h"
 #include "GPU/GeDisasm.h"
 #include "GPU/Common/FramebufferCommon.h"
-
+#include "GPU/Debugger/Debugger.h"
 #include "GPU/GLES/ShaderManagerGLES.h"
 #include "GPU/GLES/GPU_GLES.h"
 #include "GPU/GLES/FramebufferManagerGLES.h"
@@ -58,7 +58,7 @@ GPU_GLES::GPU_GLES(GraphicsContext *gfxCtx, Draw::DrawContext *draw)
 
 	GLRenderManager *render = (GLRenderManager *)draw->GetNativeObject(Draw::NativeObject::RENDER_MANAGER);
 
-	shaderManagerGL_ = new ShaderManagerGLES(render);
+	shaderManagerGL_ = new ShaderManagerGLES(draw);
 	framebufferManagerGL_ = new FramebufferManagerGLES(draw, render);
 	framebufferManager_ = framebufferManagerGL_;
 	textureCacheGL_ = new TextureCacheGLES(draw);
@@ -109,8 +109,7 @@ GPU_GLES::GPU_GLES(GraphicsContext *gfxCtx, Draw::DrawContext *draw)
 	if (g_Config.bHardwareTessellation) {
 		// Disable hardware tessellation if device is unsupported.
 		bool hasTexelFetch = gl_extensions.GLES3 || (!gl_extensions.IsGLES && gl_extensions.VersionGEThan(3, 3, 0)) || gl_extensions.EXT_gpu_shader4;
-		if (!gstate_c.SupportsAll(GPU_SUPPORTS_INSTANCE_RENDERING | GPU_SUPPORTS_VERTEX_TEXTURE_FETCH | GPU_SUPPORTS_TEXTURE_FLOAT) || !hasTexelFetch) {
-			// TODO: Check unsupported device name list.(Above gpu features are supported but it has issues with weak gpu, memory, shader compiler etc...)
+		if (!gstate_c.SupportsAll(GPU_SUPPORTS_VERTEX_TEXTURE_FETCH | GPU_SUPPORTS_TEXTURE_FLOAT) || !hasTexelFetch) {
 			g_Config.bHardwareTessellation = false;
 			ERROR_LOG(G3D, "Hardware Tessellation is unsupported, falling back to software tessellation");
 			I18NCategory *gr = GetI18NCategory("Graphics");
@@ -128,37 +127,19 @@ GPU_GLES::~GPU_GLES() {
 	// If we're here during app shutdown (exiting the Windows app in-game, for example)
 	// everything should already be cleared since DeviceLost has been run.
 
+	if (!shaderCachePath_.empty() && draw_) {
+		shaderManagerGL_->Save(shaderCachePath_);
+	}
+
 	framebufferManagerGL_->DestroyAllFBOs();
 	shaderManagerGL_->ClearCache(true);
 	depalShaderCache_.Clear();
 	fragmentTestCache_.Clear();
-	if (!shaderCachePath_.empty() && draw_) {
-		shaderManagerGL_->Save(shaderCachePath_);
-	}
+	
 	delete shaderManagerGL_;
 	shaderManagerGL_ = nullptr;
 	delete framebufferManagerGL_;
 	delete textureCacheGL_;
-}
-
-static constexpr int MakeIntelSimpleVer(int v1, int v2, int v3) {
-	return (v1 << 16) | (v2 << 8) | v3;
-}
-
-static bool HasIntelDualSrcBug(int versions[4]) {
-	// Intel uses a confusing set of at least 3 version numbering schemes.  This is the one given to OpenGL.
-	switch (MakeIntelSimpleVer(versions[0], versions[1], versions[2])) {
-	case MakeIntelSimpleVer(9, 17, 10):
-	case MakeIntelSimpleVer(9, 18, 10):
-		return false;
-	case MakeIntelSimpleVer(10, 18, 10):
-		return versions[3] < 4061;
-	case MakeIntelSimpleVer(10, 18, 14):
-		return versions[3] < 4080;
-	default:
-		// Older than above didn't support dual src anyway, newer should have the fix.
-		return false;
-	}
 }
 
 // Take the raw GL extension and versioning data and turn into feature flags.
@@ -167,32 +148,29 @@ void GPU_GLES::CheckGPUFeatures() {
 
 	features |= GPU_SUPPORTS_16BIT_FORMATS;
 
+	if (!draw_->GetBugs().Has(Draw::Bugs::BROKEN_NAN_IN_CONDITIONAL)) {
+		features |= GPU_SUPPORTS_VS_RANGE_CULLING;
+	}
+
 	if (gl_extensions.ARB_blend_func_extended || gl_extensions.EXT_blend_func_extended) {
-		if (!gl_extensions.VersionGEThan(3, 0, 0)) {
-			// Don't use this extension on sub 3.0 OpenGL versions as it does not seem reliable
-		} else if (gl_extensions.gpuVendor == GPU_VENDOR_INTEL) {
-			// Also on Intel, see https://github.com/hrydgard/ppsspp/issues/10117
-			// TODO: Remove entirely sometime reasonably far in driver years after 2015.
-			const std::string ver = draw_->GetInfoString(Draw::InfoField::APIVERSION);
-			int versions[4]{};
-			if (sscanf(ver.c_str(), "Build %d.%d.%d.%d", &versions[0], &versions[1], &versions[2], &versions[3]) == 4) {
-				if (!HasIntelDualSrcBug(versions)) {
-					features |= GPU_SUPPORTS_DUALSOURCE_BLEND;
-				}
-			} else {
-				features |= GPU_SUPPORTS_DUALSOURCE_BLEND;
-			}
-		} else {
+		if (!g_Config.bVendorBugChecksEnabled || !draw_->GetBugs().Has(Draw::Bugs::DUAL_SOURCE_BLENDING_BROKEN)) {
 			features |= GPU_SUPPORTS_DUALSOURCE_BLEND;
 		}
 	}
 
 	if (gl_extensions.IsGLES) {
-		if (gl_extensions.GLES3)
+		if (gl_extensions.GLES3) {
 			features |= GPU_SUPPORTS_GLSL_ES_300;
+			// Mali reports 30 but works fine...
+			if (gl_extensions.range[1][5][1] >= 30) {
+				features |= GPU_SUPPORTS_32BIT_INT_FSHADER;
+			}
+		}
 	} else {
-		if (gl_extensions.VersionGEThan(3, 3, 0))
+		if (gl_extensions.VersionGEThan(3, 3, 0)) {
 			features |= GPU_SUPPORTS_GLSL_330;
+			features |= GPU_SUPPORTS_32BIT_INT_FSHADER;
+		}
 	}
 
 	if (gl_extensions.EXT_shader_framebuffer_fetch || gl_extensions.NV_shader_framebuffer_fetch || gl_extensions.ARM_shader_framebuffer_fetch) {
@@ -302,6 +280,10 @@ bool GPU_GLES::IsReady() {
 	return shaderManagerGL_->ContinuePrecompile();
 }
 
+void  GPU_GLES::CancelReady() {
+	shaderManagerGL_->CancelPrecompile();
+}
+
 void GPU_GLES::BuildReportingInfo() {
 	GLRenderManager *render = (GLRenderManager *)draw_->GetNativeObject(Draw::NativeObject::RENDER_MANAGER);
 
@@ -331,11 +313,11 @@ void GPU_GLES::DeviceLost() {
 	// Simply drop all caches and textures.
 	// FBOs appear to survive? Or no?
 	// TransformDraw has registered as a GfxResourceHolder.
-	drawEngine_.ClearInputLayoutMap();
-	shaderManagerGL_->ClearCache(false);
+	CancelReady();
+	shaderManagerGL_->DeviceLost();
 	textureCacheGL_->DeviceLost();
-	fragmentTestCache_.Clear(false);
-	depalShaderCache_.Clear();
+	fragmentTestCache_.DeviceLost();
+	depalShaderCache_.DeviceLost();
 	drawEngine_.DeviceLost();
 	framebufferManagerGL_->DeviceLost();
 	// Don't even try to access the lost device.
@@ -349,9 +331,12 @@ void GPU_GLES::DeviceRestore() {
 	UpdateCmdInfo();
 	UpdateVsyncInterval(true);
 
+	shaderManagerGL_->DeviceRestore(draw_);
 	textureCacheGL_->DeviceRestore(draw_);
 	framebufferManagerGL_->DeviceRestore(draw_);
-	drawEngine_.DeviceRestore();
+	drawEngine_.DeviceRestore(draw_);
+	fragmentTestCache_.DeviceRestore(draw_);
+	depalShaderCache_.DeviceRestore(draw_);
 }
 
 void GPU_GLES::Reinitialize() {
@@ -388,9 +373,10 @@ inline void GPU_GLES::UpdateVsyncInterval(bool force) {
 	if (PSP_CoreParameter().unthrottle) {
 		desiredVSyncInterval = 0;
 	}
-	if (PSP_CoreParameter().fpsLimit == 1) {
+	if (PSP_CoreParameter().fpsLimit != FPSLimit::NORMAL) {
+		int limit = PSP_CoreParameter().fpsLimit == FPSLimit::CUSTOM1 ? g_Config.iFpsLimit1 : g_Config.iFpsLimit2;
 		// For an alternative speed that is a clean factor of 60, the user probably still wants vsync.
-		if (g_Config.iFpsLimit == 0 || (g_Config.iFpsLimit != 15 && g_Config.iFpsLimit != 30 && g_Config.iFpsLimit != 60)) {
+		if (limit == 0 || (limit >= 0 && limit != 15 && limit != 30 && limit != 60)) {
 			desiredVSyncInterval = 0;
 		}
 	}
@@ -438,7 +424,7 @@ void GPU_GLES::BeginFrame() {
 }
 
 void GPU_GLES::SetDisplayFramebuffer(u32 framebuf, u32 stride, GEBufferFormat format) {
-	host->GPUNotifyDisplay(framebuf, stride, format);
+	GPUDebug::NotifyDisplay(framebuf, stride, format);
 	framebufferManagerGL_->SetDisplayFramebuffer(framebuf, stride, format);
 }
 
@@ -455,7 +441,7 @@ void GPU_GLES::CopyDisplayToOutput() {
 	// If buffered, discard the depth buffer of the backbuffer. Don't even know if we need one.
 #if 0
 #ifdef USING_GLES2
-	if (gl_extensions.EXT_discard_framebuffer && g_Config.iRenderingMode != 0) {
+	if (gl_extensions.EXT_discard_framebuffer && g_Config.iRenderingMode != FB_NON_BUFFERED_MODE) {
 		GLenum attachments[] = {GL_DEPTH_EXT, GL_STENCIL_EXT};
 		glDiscardFramebufferEXT(GL_FRAMEBUFFER, 2, attachments);
 	}

@@ -19,6 +19,10 @@
 
 #include <cstdint>
 
+namespace Draw {
+	class DrawContext;
+}
+
 enum ShaderLanguage {
 	GLSL_140,
 	GLSL_300,
@@ -87,14 +91,15 @@ enum : uint64_t {
 
 	DIRTY_BEZIERSPLINE = 1ULL << 32,
 	DIRTY_TEXCLAMP = 1ULL << 33,
+	DIRTY_CULLRANGE = 1ULL << 34,
 
-	DIRTY_DEPAL = 1ULL << 34,
+	DIRTY_DEPAL = 1ULL << 35,
 
 	// space for 5 more uniform dirty flags. Remember to update DIRTY_ALL_UNIFORMS.
 
 	DIRTY_BONE_UNIFORMS = 0xFF000000ULL,
 
-	DIRTY_ALL_UNIFORMS = 0x7FFFFFFFFULL,
+	DIRTY_ALL_UNIFORMS = 0xFFFFFFFFFULL,
 	DIRTY_ALL_LIGHTS = DIRTY_LIGHT0 | DIRTY_LIGHT1 | DIRTY_LIGHT2 | DIRTY_LIGHT3,
 
 	// Other dirty elements that aren't uniforms!
@@ -115,10 +120,13 @@ enum : uint64_t {
 
 class ShaderManagerCommon {
 public:
-	ShaderManagerCommon() {}
+	ShaderManagerCommon(Draw::DrawContext *draw) : draw_(draw) {}
 	virtual ~ShaderManagerCommon() {}
 
 	virtual void DirtyLastShader() = 0;
+
+protected:
+	Draw::DrawContext *draw_ = nullptr;
 };
 
 struct TBuiltInResource;

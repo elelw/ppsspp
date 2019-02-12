@@ -225,7 +225,7 @@ void DrawEngineVulkan::ConvertStateToVulkanKey(FramebufferManagerVulkan &fbManag
 #endif
 
 			// Let's not write to alpha if stencil isn't enabled.
-			if (!gstate.isStencilTestEnabled()) {
+			if (IsStencilTestOutputDisabled()) {
 				amask = false;
 			} else {
 				// If the stencil type is set to KEEP, we shouldn't write to the stencil/alpha channel.
@@ -235,19 +235,40 @@ void DrawEngineVulkan::ConvertStateToVulkanKey(FramebufferManagerVulkan &fbManag
 			}
 
 			key.colorWriteMask = (rmask ? VK_COLOR_COMPONENT_R_BIT : 0) | (gmask ? VK_COLOR_COMPONENT_G_BIT : 0) | (bmask ? VK_COLOR_COMPONENT_B_BIT : 0) | (amask ? VK_COLOR_COMPONENT_A_BIT : 0);
+
+			// Workaround proposed in #10421, for bug where the color write mask is not applied correctly on Adreno.
+			if ((gstate.pmskc & 0x00FFFFFF) == 0x00FFFFFF && vulkan_->GetPhysicalDeviceProperties().properties.vendorID == VULKAN_VENDOR_QUALCOMM) {
+				key.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+				if (!key.blendEnable) {
+					key.blendEnable = true;
+					key.blendOpAlpha = VK_BLEND_OP_ADD;
+					key.srcAlpha = VK_BLEND_FACTOR_ZERO;
+					key.destAlpha = VK_BLEND_FACTOR_ONE;
+				}
+				key.blendOpColor = VK_BLEND_OP_ADD;
+				key.srcColor = VK_BLEND_FACTOR_ZERO;
+				key.destColor = VK_BLEND_FACTOR_ONE;
+			}
 		}
 	}
 
 	if (gstate_c.IsDirty(DIRTY_RASTER_STATE)) {
-		if (gstate.isModeClear()) {
+		if (gstate.isModeClear() || gstate.isModeThrough()) {
 			key.cullMode = VK_CULL_MODE_NONE;
-			// TODO: Or does it always clamp?
+			// TODO: Might happen in clear mode if not through...
 			key.depthClampEnable = false;
 		} else {
 			// Set cull
-			bool wantCull = !gstate.isModeThrough() && prim != GE_PRIM_RECTANGLES && gstate.isCullEnabled();
+			bool wantCull = prim != GE_PRIM_RECTANGLES && gstate.isCullEnabled();
 			key.cullMode = wantCull ? (gstate.getCullMode() ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT) : VK_CULL_MODE_NONE;
-			key.depthClampEnable = gstate.isClippingEnabled() && gstate_c.Supports(GPU_SUPPORTS_DEPTH_CLAMP);
+			if (gstate.getDepthRangeMin() == 0 || gstate.getDepthRangeMax() == 65535) {
+				// TODO: Still has a bug where we clamp to depth range if one is not the full range.
+				// But the alternate is not clamping in either direction...
+				key.depthClampEnable = gstate.isDepthClampEnabled() && gstate_c.Supports(GPU_SUPPORTS_DEPTH_CLAMP);
+			} else {
+				// We just want to clip in this case, the clamp would be clipped anyway.
+				key.depthClampEnable = false;
+			}
 		}
 	}
 

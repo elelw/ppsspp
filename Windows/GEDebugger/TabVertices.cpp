@@ -187,6 +187,7 @@ void CtrlVertexList::FormatVertColRaw(wchar_t *dest, int row, int col) {
 	const u8 *pos = vert + decoder->posoff;
 	const u8 *tc = vert + decoder->tcoff;
 	const u8 *color = vert + decoder->coloff;
+	const u8 *norm = vert + decoder->nrmoff;
 
 	switch (col) {
 	case VERTEXLIST_COL_X:
@@ -207,6 +208,10 @@ void CtrlVertexList::FormatVertColRaw(wchar_t *dest, int row, int col) {
 	case VERTEXLIST_COL_COLOR:
 		FormatVertColRawColor(dest, color, decoder->col);
 		break;
+
+	case VERTEXLIST_COL_NX: FormatVertColRawType(dest, norm, decoder->nrm, 0); break;
+	case VERTEXLIST_COL_NY: FormatVertColRawType(dest, norm, decoder->nrm, 1); break;
+	case VERTEXLIST_COL_NZ: FormatVertColRawType(dest, norm, decoder->nrm, 2); break;
 
 	default:
 		wcscpy(dest, L"Invalid");
@@ -281,6 +286,10 @@ int CtrlVertexList::GetRowCount() {
 		u32 cmd = Memory::Read_U32(list.pc);
 		if ((cmd >> 24) == GE_CMD_PRIM) {
 			rowCount_ = cmd & 0xFFFF;
+		} else if ((cmd >> 24) == GE_CMD_BEZIER || (cmd >> 24) == GE_CMD_SPLINE) {
+			u32 u = (cmd & 0x00FF) >> 0;
+			u32 v = (cmd & 0xFF00) >> 8;
+			rowCount_ = u * v;
 		}
 	}
 
@@ -365,7 +374,7 @@ void CtrlMatrixList::GetColumnText(wchar_t *dest, int row, int col) {
 	if (row >= MATRIXLIST_ROW_BONE_0_0) {
 		int b = (row - MATRIXLIST_ROW_BONE_0_0) / 3;
 		int r = (row - MATRIXLIST_ROW_BONE_0_0) % 3;
-		int offset = (row - MATRIXLIST_ROW_BONE_0_0) * 4 + col - 1;
+		int offset = b * 12 + r + (col - 1) * 3;
 
 		switch (col) {
 		case MATRIXLIST_COL_NAME:
@@ -378,7 +387,7 @@ void CtrlMatrixList::GetColumnText(wchar_t *dest, int row, int col) {
 		}
 	} else if (row >= MATRIXLIST_ROW_TGEN_0) {
 		int r = row - MATRIXLIST_ROW_TGEN_0;
-		int offset = r * 4 + col - 1;
+		int offset = r + (col - 1) * 4;
 
 		switch (col) {
 		case MATRIXLIST_COL_NAME:
@@ -391,7 +400,7 @@ void CtrlMatrixList::GetColumnText(wchar_t *dest, int row, int col) {
 		}
 	} else if (row >= MATRIXLIST_ROW_PROJ_0) {
 		int r = row - MATRIXLIST_ROW_PROJ_0;
-		int offset = r * 4 + col - 1;
+		int offset = r + (col - 1) * 4;
 
 		switch (col) {
 		case MATRIXLIST_COL_NAME:
@@ -404,7 +413,7 @@ void CtrlMatrixList::GetColumnText(wchar_t *dest, int row, int col) {
 		}
 	} else if (row >= MATRIXLIST_ROW_VIEW_0) {
 		int r = row - MATRIXLIST_ROW_VIEW_0;
-		int offset = r * 4 + col - 1;
+		int offset = r + (col - 1) * 3;
 
 		switch (col) {
 		case MATRIXLIST_COL_NAME:
@@ -417,7 +426,7 @@ void CtrlMatrixList::GetColumnText(wchar_t *dest, int row, int col) {
 		}
 	} else {
 		int r = row - MATRIXLIST_ROW_WORLD_0;
-		int offset = r * 4 + col - 1;
+		int offset = r + (col - 1) * 3;
 
 		switch (col) {
 		case MATRIXLIST_COL_NAME:

@@ -42,22 +42,22 @@ void CreateImage(VulkanContext *vulkan, VkCommandBuffer cmd, VKRImage &img, int 
 	vkCreateImage(vulkan->GetDevice(), &ici, nullptr, &img.image);
 
 	VkMemoryRequirements memreq;
-	vkGetImageMemoryRequirements(vulkan->GetDevice(), img.image, &memreq);
+	bool dedicatedAllocation = false;
+	vulkan->GetImageMemoryRequirements(img.image, &memreq, &dedicatedAllocation);
 
 	VkMemoryAllocateInfo alloc{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
 	alloc.allocationSize = memreq.size;
-
-	// Hint to the driver that this allocation is image-specific. Some drivers benefit.
-	// We only bother supporting the KHR extension, not the old NV one.
-	VkMemoryDedicatedAllocateInfoKHR dedicated{ VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO_KHR };
-	if (vulkan->DeviceExtensions().DEDICATED_ALLOCATION) {
-		alloc.pNext = &dedicated;
-		dedicated.image = img.image;
+	VkMemoryDedicatedAllocateInfoKHR dedicatedAllocateInfo{VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO_KHR};
+	if (dedicatedAllocation) {
+		dedicatedAllocateInfo.image = img.image;
+		alloc.pNext = &dedicatedAllocateInfo;
 	}
 
 	vulkan->MemoryTypeFromProperties(memreq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &alloc.memoryTypeIndex);
+
 	VkResult res = vkAllocateMemory(vulkan->GetDevice(), &alloc, nullptr, &img.memory);
 	assert(res == VK_SUCCESS);
+
 	res = vkBindImageMemory(vulkan->GetDevice(), img.image, img.memory, 0);
 	assert(res == VK_SUCCESS);
 
@@ -91,7 +91,7 @@ void CreateImage(VulkanContext *vulkan, VkCommandBuffer cmd, VKRImage &img, int 
 		break;
 	default:
 		Crash();
-		break;
+		return;
 	}
 
 	TransitionImageLayout2(cmd, img.image, 0, 1, aspects,
@@ -136,7 +136,7 @@ VulkanRenderManager::VulkanRenderManager(VulkanContext *vulkan) : vulkan_(vulkan
 	queueRunner_.CreateDeviceObjects();
 
 	// Temporary AMD hack for issue #10097
-	if (vulkan_->GetPhysicalDeviceProperties().vendorID == VULKAN_VENDOR_AMD) {
+	if (vulkan_->GetPhysicalDeviceProperties().properties.vendorID == VULKAN_VENDOR_AMD) {
 		useThread_ = false;
 	}
 }
@@ -174,13 +174,9 @@ void VulkanRenderManager::CreateBackbuffers() {
 		color_image_view.flags = 0;
 		color_image_view.image = sc_buffer.image;
 
-		// Pre-set them to PRESENT_SRC_KHR, as the first thing we do after acquiring
-		// in image to render to will be to transition them away from that.
-		TransitionImageLayout2(cmdInit, sc_buffer.image, 0, 1,
-			VK_IMAGE_ASPECT_COLOR_BIT,
-			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-			VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT,
-			0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+		// We leave the images as UNDEFINED, there's no need to pre-transition them as
+		// the backbuffer renderpass starts out with them being auto-transitioned from UNDEFINED anyway.
+		// Also, turns out it's illegal to transition un-acquired images, thanks Hans-Kristian. See #11417.
 
 		res = vkCreateImageView(vulkan_->GetDevice(), &color_image_view, nullptr, &sc_buffer.view);
 		swapchainImages_.push_back(sc_buffer);
@@ -263,7 +259,6 @@ void VulkanRenderManager::DestroyBackbuffers() {
 	StopThread();
 	vulkan_->WaitUntilQueueIdle();
 
-	VkDevice device = vulkan_->GetDevice();
 	for (uint32_t i = 0; i < swapchainImageCount_; i++) {
 		vulkan_->Delete().QueueDeleteImageView(swapchainImages_[i].view);
 	}
@@ -289,7 +284,6 @@ VulkanRenderManager::~VulkanRenderManager() {
 	vkDestroySemaphore(device, acquireSemaphore_, nullptr);
 	vkDestroySemaphore(device, renderingCompleteSemaphore_, nullptr);
 	for (int i = 0; i < vulkan_->GetInflightFrames(); i++) {
-		VkCommandBuffer cmdBuf[2]{ frameData_[i].mainCmd, frameData_[i].initCmd };
 		vkFreeCommandBuffers(device, frameData_[i].cmdPoolInit, 1, &frameData_[i].initCmd);
 		vkFreeCommandBuffers(device, frameData_[i].cmdPoolMain, 1, &frameData_[i].mainCmd);
 		vkDestroyCommandPool(device, frameData_[i].cmdPoolInit, nullptr);
@@ -386,7 +380,9 @@ VkCommandBuffer VulkanRenderManager::GetInitCmd() {
 			VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
 		};
 		VkResult res = vkBeginCommandBuffer(frameData.initCmd, &begin);
-		assert(res == VK_SUCCESS);
+		if (res != VK_SUCCESS) {
+			return VK_NULL_HANDLE;
+		}
 		frameData.hasInitCommands = true;
 	}
 	return frameData_[curFrame].initCmd;
@@ -422,6 +418,7 @@ void VulkanRenderManager::BindFramebufferAsRenderTarget(VKRFramebuffer *fb, VKRR
 	step->render.clearDepth = clearDepth;
 	step->render.clearStencil = clearStencil;
 	step->render.numDraws = 0;
+	step->render.numReads = 0;
 	step->render.finalColorLayout = !fb ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
 	steps_.push_back(step);
 
@@ -431,6 +428,13 @@ void VulkanRenderManager::BindFramebufferAsRenderTarget(VKRFramebuffer *fb, VKRR
 }
 
 bool VulkanRenderManager::CopyFramebufferToMemorySync(VKRFramebuffer *src, int aspectBits, int x, int y, int w, int h, Draw::DataFormat destFormat, uint8_t *pixels, int pixelStride) {
+	for (int i = (int)steps_.size() - 1; i >= 0; i--) {
+		if (steps_[i]->stepType == VKRStepType::RENDER && steps_[i]->render.framebuffer == src) {
+			steps_[i]->render.numReads++;
+			break;
+		}
+	}
+
 	VKRStep *step = new VKRStep{ VKRStepType::READBACK };
 	step->readback.aspectMask = aspectBits;
 	step->readback.src = src;
@@ -442,15 +446,14 @@ bool VulkanRenderManager::CopyFramebufferToMemorySync(VKRFramebuffer *src, int a
 
 	FlushSync();
 
-	Draw::DataFormat srcFormat;
+	Draw::DataFormat srcFormat = Draw::DataFormat::UNDEFINED;
 	if (aspectBits & VK_IMAGE_ASPECT_COLOR_BIT) {
 		if (src) {
 			switch (src->color.format) {
 			case VK_FORMAT_R8G8B8A8_UNORM: srcFormat = Draw::DataFormat::R8G8B8A8_UNORM; break;
 			default: _assert_(false);
 			}
-		}
-		else {
+		} else {
 			// Backbuffer.
 			if (!(vulkan_->GetSurfaceCapabilities().supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) {
 				ELOG("Copying from backbuffer not supported, can't take screenshots");
@@ -549,11 +552,6 @@ bool VulkanRenderManager::InitDepthStencilBuffer(VkCommandBuffer cmd) {
 	image_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
 	image_info.flags = 0;
 
-	VkMemoryAllocateInfo mem_alloc = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-	mem_alloc.allocationSize = 0;
-	mem_alloc.memoryTypeIndex = 0;
-
-	VkMemoryRequirements mem_reqs;
 
 	depth_.format = depth_format;
 
@@ -563,9 +561,20 @@ bool VulkanRenderManager::InitDepthStencilBuffer(VkCommandBuffer cmd) {
 	if (res != VK_SUCCESS)
 		return false;
 
-	vkGetImageMemoryRequirements(device, depth_.image, &mem_reqs);
+	bool dedicatedAllocation = false;
+	VkMemoryRequirements mem_reqs;
+	vulkan_->GetImageMemoryRequirements(depth_.image, &mem_reqs, &dedicatedAllocation);
 
+	VkMemoryAllocateInfo mem_alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
 	mem_alloc.allocationSize = mem_reqs.size;
+	mem_alloc.memoryTypeIndex = 0;
+
+	VkMemoryDedicatedAllocateInfoKHR dedicatedAllocateInfo{VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO_KHR};
+	if (dedicatedAllocation) {
+		dedicatedAllocateInfo.image = depth_.image;
+		mem_alloc.pNext = &dedicatedAllocateInfo;
+	}
+
 	// Use the memory properties to determine the type of memory required
 	pass = vulkan_->MemoryTypeFromProperties(mem_reqs.memoryTypeBits,
 		0, /* No requirements */
@@ -720,6 +729,7 @@ void VulkanRenderManager::CopyFramebuffer(VKRFramebuffer *src, VkRect2D srcRect,
 			if (steps_[i]->render.finalColorLayout == VK_IMAGE_LAYOUT_UNDEFINED) {
 				steps_[i]->render.finalColorLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 			}
+			steps_[i]->render.numReads++;
 			break;
 		}
 	}
@@ -762,6 +772,13 @@ void VulkanRenderManager::BlitFramebuffer(VKRFramebuffer *src, VkRect2D srcRect,
 	_dbg_assert_msg_(G3D, dstRect.extent.width > 0, "blit dstwidth == 0");
 	_dbg_assert_msg_(G3D, dstRect.extent.height > 0, "blit dstheight == 0");
 
+	for (int i = (int)steps_.size() - 1; i >= 0; i--) {
+		if (steps_[i]->stepType == VKRStepType::RENDER && steps_[i]->render.framebuffer == src) {
+			steps_[i]->render.numReads++;
+			break;
+		}
+	}
+
 	VKRStep *step = new VKRStep{ VKRStepType::BLIT };
 
 	step->blit.aspectMask = aspectMask;
@@ -784,6 +801,7 @@ VkImageView VulkanRenderManager::BindFramebufferAsTexture(VKRFramebuffer *fb, in
 			if (steps_[i]->render.finalColorLayout == VK_IMAGE_LAYOUT_UNDEFINED) {
 				steps_[i]->render.finalColorLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 			}
+			steps_[i]->render.numReads++;
 			break;
 		}
 	}
@@ -886,7 +904,11 @@ void VulkanRenderManager::Submit(int frame, bool triggerFence) {
 			submit_info.pCommandBuffers = cmdBufs;
 			res = vkQueueSubmit(vulkan_->GetGraphicsQueue(), 1, &submit_info, VK_NULL_HANDLE);
 			if (res == VK_ERROR_DEVICE_LOST) {
-				_assert_msg_(G3D, false, "Lost the Vulkan device!");
+#ifdef _WIN32
+				_assert_msg_(G3D, false, "Lost the Vulkan device! If this happens again, switch Graphics Backend from Vulkan to Direct3D11");
+#else
+				_assert_msg_(G3D, false, "Lost the Vulkan device! If this happens again, switch Graphics Backend from Vulkan to OpenGL");
+#endif
 			} else {
 				_assert_msg_(G3D, res == VK_SUCCESS, "vkQueueSubmit failed (init)! result=%s", VulkanResultToString(res));
 			}
@@ -910,7 +932,11 @@ void VulkanRenderManager::Submit(int frame, bool triggerFence) {
 	}
 	res = vkQueueSubmit(vulkan_->GetGraphicsQueue(), 1, &submit_info, triggerFence ? frameData.fence : VK_NULL_HANDLE);
 	if (res == VK_ERROR_DEVICE_LOST) {
-		_assert_msg_(G3D, false, "Lost the Vulkan device!");
+#ifdef _WIN32
+		_assert_msg_(G3D, false, "Lost the Vulkan device! If this happens again, switch Graphics Backend from Vulkan to Direct3D11");
+#else
+		_assert_msg_(G3D, false, "Lost the Vulkan device! If this happens again, switch Graphics Backend from Vulkan to OpenGL");
+#endif
 	} else {
 		_assert_msg_(G3D, res == VK_SUCCESS, "vkQueueSubmit failed (main, split=%d)! result=%s", (int)splitSubmit_, VulkanResultToString(res));
 	}
@@ -994,7 +1020,7 @@ void VulkanRenderManager::EndSyncFrame(int frame) {
 		VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
 	};
 	VkResult res = vkBeginCommandBuffer(frameData.mainCmd, &begin);
-	assert(res == VK_SUCCESS);
+	_assert_(res == VK_SUCCESS);
 
 	if (useThread_) {
 		std::unique_lock<std::mutex> lock(frameData.push_mutex);

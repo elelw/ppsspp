@@ -22,6 +22,7 @@
 #include "Core/Host.h"
 #include "Core/MemMap.h"
 #include "Core/Config.h"
+#include "Core/ConfigValues.h"
 #include "Core/System.h"
 #include "Core/Reporting.h"
 #include "GPU/ge_constants.h"
@@ -46,34 +47,33 @@
 
 namespace DX9 {
 
-static const char * vscode =
-	"struct VS_IN {\n"
-	"  float4 ObjPos   : POSITION;\n"
-	"  float2 Uv    : TEXCOORD0;\n"
-	"};"
-	"struct VS_OUT {\n"
-	"  float4 ProjPos  : POSITION;\n"
-	"  float2 Uv    : TEXCOORD0;\n"
-	"};\n"
-	"VS_OUT main( VS_IN In ) {\n"
-	"  VS_OUT Out;\n"
-	"  Out.ProjPos = In.ObjPos;\n"
-	"  Out.Uv = In.Uv;\n"
-	"  return Out;\n"
-	"}\n";
+static const char *vscode = R"(
+struct VS_IN {
+	float4 ObjPos   : POSITION;
+	float2 Uv    : TEXCOORD0;
+};"
+struct VS_OUT {
+	float4 ProjPos  : POSITION;
+	float2 Uv    : TEXCOORD0;
+};
+VS_OUT main( VS_IN In ) {
+	VS_OUT Out;
+	Out.ProjPos = In.ObjPos;
+	Out.Uv = In.Uv;
+	return Out;
+}
+)";
 
-//--------------------------------------------------------------------------------------
-// Pixel shader
-//--------------------------------------------------------------------------------------
-static const char * pscode =
-	"sampler s: register(s0);\n"
-	"struct PS_IN {\n"
-	"  float2 Uv : TEXCOORD0;\n"
-	"};\n"
-	"float4 main( PS_IN In ) : COLOR {\n"
-	"  float4 c =  tex2D(s, In.Uv);\n"
-	"  return c;\n"
-	"}\n";
+static const char *pscode = R"(
+sampler s: register(s0);
+struct PS_IN {
+	float2 Uv : TEXCOORD0;
+};
+float4 main( PS_IN In ) : COLOR {
+	float4 c =  tex2D(s, In.Uv);
+	return c;
+}
+)";
 
 static const D3DVERTEXELEMENT9 g_FramebufferVertexElements[] = {
 	{ 0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
@@ -82,12 +82,7 @@ static const D3DVERTEXELEMENT9 g_FramebufferVertexElements[] = {
 };
 
 	FramebufferManagerDX9::FramebufferManagerDX9(Draw::DrawContext *draw)
-		: FramebufferManagerCommon(draw),
-			drawPixelsTex_(0),
-			convBuf(0),
-			stencilUploadPS_(nullptr),
-			stencilUploadVS_(nullptr),
-			stencilUploadFailed_(false) {
+		: FramebufferManagerCommon(draw) {
 
 		device_ = (LPDIRECT3DDEVICE9)draw->GetNativeObject(Draw::NativeObject::DEVICE);
 		deviceEx_ = (LPDIRECT3DDEVICE9)draw->GetNativeObject(Draw::NativeObject::DEVICE_EX);
@@ -104,6 +99,19 @@ static const D3DVERTEXELEMENT9 g_FramebufferVertexElements[] = {
 		}
 
 		device_->CreateVertexDeclaration(g_FramebufferVertexElements, &pFramebufferVertexDecl);
+
+
+		int usage = 0;
+		D3DPOOL pool = D3DPOOL_MANAGED;
+		if (deviceEx_) {
+			pool = D3DPOOL_DEFAULT;
+			usage = D3DUSAGE_DYNAMIC;
+		}
+		HRESULT hr = device_->CreateTexture(1, 1, 1, usage, D3DFMT_A8R8G8B8, pool, &nullTex_, nullptr);
+		D3DLOCKED_RECT rect;
+		nullTex_->LockRect(0, &rect, nullptr, D3DLOCK_DISCARD);
+		memset(rect.pBits, 0, 4);
+		nullTex_->UnlockRect(0);
 	}
 
 	FramebufferManagerDX9::~FramebufferManagerDX9() {
@@ -119,11 +127,8 @@ static const D3DVERTEXELEMENT9 g_FramebufferVertexElements[] = {
 		if (drawPixelsTex_) {
 			drawPixelsTex_->Release();
 		}
-		for (auto it = tempFBOs_.begin(), end = tempFBOs_.end(); it != end; ++it) {
-			it->second.fbo->Release();
-		}
-		for (auto it = offscreenSurfaces_.begin(), end = offscreenSurfaces_.end(); it != end; ++it) {
-			it->second.surface->Release();
+		for (auto &it : offscreenSurfaces_) {
+			it.second.surface->Release();
 		}
 		delete [] convBuf;
 		if (stencilUploadPS_) {
@@ -132,6 +137,8 @@ static const D3DVERTEXELEMENT9 g_FramebufferVertexElements[] = {
 		if (stencilUploadVS_) {
 			stencilUploadVS_->Release();
 		}
+		if (nullTex_)
+			nullTex_->Release();
 	}
 
 	void FramebufferManagerDX9::SetTextureCache(TextureCacheDX9 *tc) {
@@ -314,24 +321,24 @@ static const D3DVERTEXELEMENT9 g_FramebufferVertexElements[] = {
 			return;
 		}
 
-		draw_->BindFramebufferAsRenderTarget(vfb->fbo, { Draw::RPAction::CLEAR, Draw::RPAction::KEEP, Draw::RPAction::KEEP });
-
 		// Technically, we should at this point re-interpret the bytes of the old format to the new.
 		// That might get tricky, and could cause unnecessary slowness in some games.
 		// For now, we just clear alpha/stencil from 565, which fixes shadow issues in Kingdom Hearts.
-		// (it uses 565 to write zeros to the buffer, than 4444 to actually render the shadow.)
+		// (it uses 565 to write zeros to the buffer, then 4444 to actually render the shadow.)
 		//
 		// The best way to do this may ultimately be to create a new FBO (combine with any resize?)
 		// and blit with a shader to that, then replace the FBO on vfb.  Stencil would still be complex
 		// to exactly reproduce in 4444 and 8888 formats.
 
 		if (old == GE_FORMAT_565) {
+			draw_->BindFramebufferAsRenderTarget(vfb->fbo, { Draw::RPAction::KEEP, Draw::RPAction::KEEP, Draw::RPAction::CLEAR });
+
 			dxstate.scissorTest.disable();
 			dxstate.depthWrite.set(FALSE);
 			dxstate.colorMask.set(false, false, false, true);
 			dxstate.stencilFunc.set(D3DCMP_ALWAYS, 0, 0);
 			dxstate.stencilMask.set(0xFF);
-			gstate_c.Dirty(DIRTY_BLEND_STATE | DIRTY_DEPTHSTENCIL_STATE | DIRTY_VIEWPORTSCISSOR_STATE);
+			gstate_c.Dirty(DIRTY_BLEND_STATE | DIRTY_DEPTHSTENCIL_STATE | DIRTY_RASTER_STATE | DIRTY_VIEWPORTSCISSOR_STATE | DIRTY_TEXTURE_PARAMS | DIRTY_VERTEXSHADER_STATE | DIRTY_FRAGMENTSHADER_STATE);
 
 			float coord[20] = {
 				-1.0f,-1.0f,0, 0,0,
@@ -345,7 +352,7 @@ static const D3DVERTEXELEMENT9 g_FramebufferVertexElements[] = {
 			device_->SetPixelShader(pFramebufferPixelShader);
 			device_->SetVertexShader(pFramebufferVertexShader);
 			shaderManagerDX9_->DirtyLastShader();
-			device_->SetTexture(0, nullptr);
+			device_->SetTexture(0, nullTex_);
 
 			D3DVIEWPORT9 vp{ 0, 0, (DWORD)vfb->renderWidth, (DWORD)vfb->renderHeight, 0.0f, 1.0f };
 			device_->SetViewport(&vp);
@@ -356,9 +363,9 @@ static const D3DVERTEXELEMENT9 g_FramebufferVertexElements[] = {
 				ERROR_LOG_REPORT(G3D, "ReformatFramebufferFrom() failed: %08x", hr);
 			}
 			dxstate.viewport.restore();
-		}
 
-		RebindFramebuffer();
+			textureCache_->ForgetLastTexture();
+		}
 	}
 
 	static void CopyPixelDepthOnly(u32 *dstp, const u32 *srcp, size_t c) {
@@ -387,10 +394,6 @@ static const D3DVERTEXELEMENT9 g_FramebufferVertexElements[] = {
 	}
 
 	void FramebufferManagerDX9::BlitFramebufferDepth(VirtualFramebuffer *src, VirtualFramebuffer *dst) {
-		if (g_Config.bDisableSlowFramebufEffects) {
-			return;
-		}
-
 		bool matchingDepthBuffer = src->z_address == dst->z_address && src->z_stride != 0 && dst->z_stride != 0;
 		bool matchingSize = src->width == dst->width && src->height == dst->height;
 		if (matchingDepthBuffer && matchingSize) {
@@ -443,12 +446,12 @@ static const D3DVERTEXELEMENT9 g_FramebufferVertexElements[] = {
 		// currentRenderVfb_ will always be set when this is called, except from the GE debugger.
 		// Let's just not bother with the copy in that case.
 		bool skipCopy = (flags & BINDFBCOLOR_MAY_COPY) == 0;
-		if (GPUStepping::IsStepping() || g_Config.bDisableSlowFramebufEffects) {
+		if (GPUStepping::IsStepping()) {
 			skipCopy = true;
 		}
-		if (!skipCopy && currentRenderVfb_ && framebuffer->fb_address == gstate.getFrameBufRawAddress()) {
+		if (!skipCopy && framebuffer == currentRenderVfb_) {
 			// TODO: Maybe merge with bvfbs_?  Not sure if those could be packing, and they're created at a different size.
-			Draw::Framebuffer *renderCopy = GetTempFBO(framebuffer->renderWidth, framebuffer->renderHeight, (Draw::FBColorDepth)framebuffer->colorDepth);
+			Draw::Framebuffer *renderCopy = GetTempFBO(TempFBO::COPY, framebuffer->renderWidth, framebuffer->renderHeight, (Draw::FBColorDepth)framebuffer->colorDepth);
 			if (renderCopy) {
 				VirtualFramebuffer copyInfo = *framebuffer;
 				copyInfo.fbo = renderCopy;
@@ -467,7 +470,7 @@ static const D3DVERTEXELEMENT9 g_FramebufferVertexElements[] = {
 	bool FramebufferManagerDX9::CreateDownloadTempBuffer(VirtualFramebuffer *nvfb) {
 		nvfb->colorDepth = Draw::FBO_8888;
 
-		nvfb->fbo = draw_->CreateFramebuffer({ nvfb->width, nvfb->height, 1, 1, true, (Draw::FBColorDepth)nvfb->colorDepth });
+		nvfb->fbo = draw_->CreateFramebuffer({ nvfb->bufferWidth, nvfb->bufferHeight, 1, 1, true, (Draw::FBColorDepth)nvfb->colorDepth });
 		if (!(nvfb->fbo)) {
 			ERROR_LOG(FRAMEBUF, "Error creating FBO! %i x %i", nvfb->renderWidth, nvfb->renderHeight);
 			return false;
@@ -514,7 +517,7 @@ static const D3DVERTEXELEMENT9 g_FramebufferVertexElements[] = {
 		// Direct3D 9 doesn't support rect -> self.
 		Draw::Framebuffer *srcFBO = src->fbo;
 		if (src == dst) {
-			Draw::Framebuffer *tempFBO = GetTempFBO(src->renderWidth, src->renderHeight, (Draw::FBColorDepth)src->colorDepth);
+			Draw::Framebuffer *tempFBO = GetTempFBO(TempFBO::BLIT, src->renderWidth, src->renderHeight, (Draw::FBColorDepth)src->colorDepth);
 			bool result = draw_->BlitFramebuffer(
 				src->fbo, srcX1, srcY1, srcX2, srcY2,
 				tempFBO, dstX1, dstY1, dstX2, dstY2,
@@ -537,16 +540,7 @@ static const D3DVERTEXELEMENT9 g_FramebufferVertexElements[] = {
 		const u32 *src32 = (const u32 *)src;
 
 		if (format == GE_FORMAT_8888) {
-			u32 *dst32 = (u32 *)dst;
-			if (src == dst) {
-				return;
-			} else {
-				for (u32 y = 0; y < height; ++y) {
-					ConvertBGRA8888ToRGBA8888(dst32, src32, width);
-					src32 += srcStride;
-					dst32 += dstStride;
-				}
-			}
+			ConvertFromBGRA8888(dst, src, dstStride, srcStride, width, height, Draw::DataFormat::R8G8B8A8_UNORM);
 		} else {
 			// But here it shouldn't matter if they do intersect
 			u16 *dst16 = (u16 *)dst;
@@ -586,7 +580,7 @@ static const D3DVERTEXELEMENT9 g_FramebufferVertexElements[] = {
 			return;
 		}
 
-		const u32 fb_address = (0x04000000) | vfb->fb_address;
+		const u32 fb_address = vfb->fb_address & 0x3FFFFFFF;
 		const int dstBpp = vfb->format == GE_FORMAT_8888 ? 4 : 2;
 
 		// We always need to convert from the framebuffer native format.
@@ -628,7 +622,7 @@ static const D3DVERTEXELEMENT9 g_FramebufferVertexElements[] = {
 		}
 
 		// We always read the depth buffer in 24_8 format.
-		const u32 z_address = (0x04000000) | vfb->z_address;
+		const u32 z_address = vfb->z_address;
 
 		DEBUG_LOG(FRAMEBUF, "Reading depthbuffer to mem at %08x for vfb=%08x", z_address, vfb->fb_address);
 
@@ -683,7 +677,7 @@ static const D3DVERTEXELEMENT9 g_FramebufferVertexElements[] = {
 			int age = frameLastFramebufUsed_ - it->second.last_frame_used;
 			if (age > FBO_OLD_AGE) {
 				it->second.surface->Release();
-				offscreenSurfaces_.erase(it++);
+				it = offscreenSurfaces_.erase(it);
 			} else {
 				++it;
 			}
@@ -709,13 +703,8 @@ static const D3DVERTEXELEMENT9 g_FramebufferVertexElements[] = {
 		}
 		bvfbs_.clear();
 
-		for (auto it = tempFBOs_.begin(), end = tempFBOs_.end(); it != end; ++it) {
-			it->second.fbo->Release();
-		}
-		tempFBOs_.clear();
-
-		for (auto it = offscreenSurfaces_.begin(), end = offscreenSurfaces_.end(); it != end; ++it) {
-			it->second.surface->Release();
+		for (auto &it : offscreenSurfaces_) {
+			it.second.surface->Release();
 		}
 		offscreenSurfaces_.clear();
 
@@ -738,7 +727,7 @@ static const D3DVERTEXELEMENT9 g_FramebufferVertexElements[] = {
 
 		if (!vfb) {
 			// If there's no vfb and we're drawing there, must be memory?
-			buffer = GPUDebugBuffer(Memory::GetPointer(fb_address | 0x04000000), fb_stride, 512, fb_format);
+			buffer = GPUDebugBuffer(Memory::GetPointer(fb_address), fb_stride, 512, fb_format);
 			return true;
 		}
 		LPDIRECT3DSURFACE9 renderTarget = vfb->fbo ? (LPDIRECT3DSURFACE9)draw_->GetFramebufferAPITexture(vfb->fbo, Draw::FB_COLOR_BIT | Draw::FB_SURFACE_BIT, 0) : nullptr;
@@ -760,9 +749,6 @@ static const D3DVERTEXELEMENT9 g_FramebufferVertexElements[] = {
 			LPDIRECT3DSURFACE9 offscreen = GetOffscreenSurface(renderTarget, vfb);
 			if (offscreen) {
 				success = GetRenderTargetFramebuffer(renderTarget, offscreen, w, h, buffer);
-			}
-			if (tempFBO) {
-				tempFBO->Release();
 			}
 		}
 
@@ -818,7 +804,7 @@ static const D3DVERTEXELEMENT9 g_FramebufferVertexElements[] = {
 
 		if (!vfb) {
 			// If there's no vfb and we're drawing there, must be memory?
-			buffer = GPUDebugBuffer(Memory::GetPointer(z_address | 0x04000000), z_stride, 512, GPU_DBG_FORMAT_16BIT);
+			buffer = GPUDebugBuffer(Memory::GetPointer(z_address), z_stride, 512, GPU_DBG_FORMAT_16BIT);
 			return true;
 		}
 
@@ -856,7 +842,7 @@ static const D3DVERTEXELEMENT9 g_FramebufferVertexElements[] = {
 
 		if (!vfb) {
 			// If there's no vfb and we're drawing there, must be memory?
-			buffer = GPUDebugBuffer(Memory::GetPointer(vfb->z_address | 0x04000000), vfb->z_stride, 512, GPU_DBG_FORMAT_16BIT);
+			buffer = GPUDebugBuffer(Memory::GetPointer(vfb->z_address), vfb->z_stride, 512, GPU_DBG_FORMAT_16BIT);
 			return true;
 		}
 

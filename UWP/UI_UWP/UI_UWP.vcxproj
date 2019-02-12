@@ -46,9 +46,9 @@
     <MinimumVisualStudioVersion>14.0</MinimumVisualStudioVersion>
     <AppContainerApplication>true</AppContainerApplication>
     <ApplicationType>Windows Store</ApplicationType>
-    <WindowsTargetPlatformMinVersion>10.0.14393.0</WindowsTargetPlatformMinVersion>
+    <WindowsTargetPlatformMinVersion>10.0.15063.0</WindowsTargetPlatformMinVersion>
     <ApplicationTypeRevision>10.0</ApplicationTypeRevision>
-    <WindowsTargetPlatformVersion>10.0.16299.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.17763.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -304,6 +304,7 @@
     <ClInclude Include="..\..\UI\ControlMappingScreen.h" />
     <ClInclude Include="..\..\UI\CwCheatScreen.h" />
     <ClInclude Include="..\..\UI\DevScreens.h" />
+    <ClInclude Include="..\..\UI\DiscordIntegration.h" />
     <ClInclude Include="..\..\UI\DisplayLayoutEditor.h" />
     <ClInclude Include="..\..\UI\DisplayLayoutScreen.h" />
     <ClInclude Include="..\..\UI\EmuScreen.h" />
@@ -311,6 +312,7 @@
     <ClInclude Include="..\..\UI\GamepadEmu.h" />
     <ClInclude Include="..\..\UI\GameScreen.h" />
     <ClInclude Include="..\..\UI\GameSettingsScreen.h" />
+    <ClInclude Include="..\..\UI\GPUDriverTestScreen.h" />
     <ClInclude Include="..\..\UI\HostTypes.h" />
     <ClInclude Include="..\..\UI\InstallZipScreen.h" />
     <ClInclude Include="..\..\UI\MainScreen.h" />
@@ -337,6 +339,7 @@
     <ClCompile Include="..\..\UI\ControlMappingScreen.cpp" />
     <ClCompile Include="..\..\UI\CwCheatScreen.cpp" />
     <ClCompile Include="..\..\UI\DevScreens.cpp" />
+    <ClCompile Include="..\..\UI\DiscordIntegration.cpp" />
     <ClCompile Include="..\..\UI\DisplayLayoutEditor.cpp" />
     <ClCompile Include="..\..\UI\DisplayLayoutScreen.cpp" />
     <ClCompile Include="..\..\UI\EmuScreen.cpp" />
@@ -344,6 +347,7 @@
     <ClCompile Include="..\..\UI\GamepadEmu.cpp" />
     <ClCompile Include="..\..\UI\GameScreen.cpp" />
     <ClCompile Include="..\..\UI\GameSettingsScreen.cpp" />
+    <ClCompile Include="..\..\UI\GPUDriverTestScreen.cpp" />
     <ClCompile Include="..\..\UI\InstallZipScreen.cpp" />
     <ClCompile Include="..\..\UI\MainScreen.cpp" />
     <ClCompile Include="..\..\UI\MiscScreens.cpp" />

@@ -34,11 +34,15 @@ public:
 	}
 
 	void ThreadStart() override {
-		renderManager_->ThreadStart();
+		renderManager_->ThreadStart(draw_);
 	}
 
 	bool ThreadFrame() override {
 		return renderManager_->ThreadFrame();
+	}
+
+	void BeginAndroidShutdown() override {
+		renderManager_->SetSkipGLCalls();
 	}
 
 	void ThreadEnd() override {

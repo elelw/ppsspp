@@ -93,6 +93,48 @@ public:
 	// Cancel any operations that might block, if possible.
 	virtual void Cancel() {
 	}
+
+	virtual std::string LatestError() const {
+		return "";
+	}
+};
+
+class ProxiedFileLoader : public FileLoader {
+public:
+	ProxiedFileLoader(FileLoader *backend) : backend_(backend) {
+	}
+	~ProxiedFileLoader() override {
+		// Takes ownership.
+		delete backend_;
+	}
+
+	bool IsRemote() override {
+		return backend_->IsRemote();
+	}
+	bool Exists() override {
+		return backend_->Exists();
+	}
+	bool ExistsFast() override {
+		return backend_->ExistsFast();
+	}
+	bool IsDirectory() override {
+		return backend_->IsDirectory();
+	}
+	s64 FileSize() override {
+		return backend_->FileSize();
+	}
+	std::string Path() const override {
+		return backend_->Path();
+	}
+	void Cancel() override {
+		backend_->Cancel();
+	}
+	std::string LatestError() const override {
+		return backend_->LatestError();
+	}
+
+protected:
+	FileLoader *backend_;
 };
 
 inline u32 operator & (const FileLoader::Flags &a, const FileLoader::Flags &b) {
@@ -110,6 +152,7 @@ IdentifiedFileType Identify_File(FileLoader *fileLoader);
 
 class FileLoaderFactory {
 public:
+	virtual ~FileLoaderFactory() {}
 	virtual FileLoader *ConstructFileLoader(const std::string &filename) = 0;
 };
 void RegisterFileLoaderFactory(std::string name, std::unique_ptr<FileLoaderFactory> factory);

@@ -27,6 +27,7 @@
 #include "Common/GraphicsContext.h"
 
 #include "Core/CoreParameter.h"
+#include "Core/ConfigValues.h"
 #include "Core/System.h"
 #include "GPU/Common/GPUDebugInterface.h"
 #include "GPU/GPUState.h"
@@ -75,7 +76,7 @@ public:
 	}
 
 	void ThreadStart() override {
-		renderManager_->ThreadStart();
+		renderManager_->ThreadStart(draw_);
 	}
 
 	bool ThreadFrame() override {

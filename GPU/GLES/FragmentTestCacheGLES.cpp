@@ -35,6 +35,10 @@ FragmentTestCacheGLES::~FragmentTestCacheGLES() {
 	Clear();
 }
 
+void FragmentTestCacheGLES::DeviceRestore(Draw::DrawContext *draw) {
+	render_ = (GLRenderManager *)draw->GetNativeObject(Draw::NativeObject::RENDER_MANAGER);
+}
+
 void FragmentTestCacheGLES::BindTestTexture(int slot) {
 	if (!g_Config.bFragmentTestCache) {
 		return;
@@ -77,6 +81,8 @@ void FragmentTestCacheGLES::BindTestTexture(int slot) {
 	GLRTexture *tex = CreateTestTexture(funcs, refs, masks, valid);
 	lastTexture_ = tex;
 	render_->BindTexture(slot, tex);
+	// We only need to do this once for the texture.
+	render_->SetTextureSampler(slot, GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE, GL_NEAREST, GL_NEAREST, 0.0f);
 	FragmentTestTexture item;
 	item.lastFrame = gpuStats.numFlips;
 	item.texture = tex;

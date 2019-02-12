@@ -24,6 +24,7 @@
 
 #include "Core/Core.h"
 #include "Core/Config.h"
+#include "Core/ConfigValues.h"
 #include "Core/Debugger/Breakpoints.h"
 #include "Core/ELF/ParamSFO.h"
 #include "Core/MemMapHelpers.h"
@@ -62,7 +63,6 @@ extern "C" {
 // For headless screenshots.
 #include "Core/HLE/sceDisplay.h"
 
-static const int ERROR_ERRNO_FILE_NOT_FOUND               = 0x80010002;
 static const int ERROR_ERRNO_IO_ERROR                     = 0x80010005;
 static const int ERROR_MEMSTICK_DEVCTL_BAD_PARAMS         = 0x80220081;
 static const int ERROR_MEMSTICK_DEVCTL_TOO_MANY_CALLBACKS = 0x80220082;
@@ -253,6 +253,14 @@ public:
 
 u64 __IoCompleteAsyncIO(FileNode *f);
 
+static int GetIOTimingMethod() {
+	if (PSP_CoreParameter().compat.flags().ForceUMDDelay) {
+		return IOTIMING_REALISTIC;
+	} else {
+		return g_Config.iIOTimingMethod;
+	}
+}
+
 static void TellFsThreadEnded (SceUID threadID) {
 	pspFileSystem.ThreadEnded(threadID);
 }
@@ -339,7 +347,8 @@ static void __IoAsyncNotify(u64 userdata, int cyclesLate) {
 		return;
 	}
 
-	if (g_Config.iIOTimingMethod == IOTIMING_HOST) {
+	int ioTimingMethod = GetIOTimingMethod();
+	if (ioTimingMethod == IOTIMING_HOST) {
 		// Not all async operations actually queue up.  Maybe should separate them?
 		if (!ioManager.HasResult(f->handle) && ioManager.HasOperation(f->handle)) {
 			// Try again in another 0.5ms until the IO completes on the host.
@@ -347,7 +356,7 @@ static void __IoAsyncNotify(u64 userdata, int cyclesLate) {
 			return;
 		}
 		__IoCompleteAsyncIO(f);
-	} else if (g_Config.iIOTimingMethod == IOTIMING_REALISTIC) {
+	} else if (ioTimingMethod == IOTIMING_REALISTIC) {
 		u64 finishTicks = __IoCompleteAsyncIO(f);
 		if (finishTicks > CoreTiming::GetTicks()) {
 			// Reschedule for later, since we now know how long it ought to take.
@@ -396,13 +405,14 @@ static void __IoSyncNotify(u64 userdata, int cyclesLate) {
 		return;
 	}
 
-	if (g_Config.iIOTimingMethod == IOTIMING_HOST) {
+	int ioTimingMethod = GetIOTimingMethod();
+	if (ioTimingMethod == IOTIMING_HOST) {
 		if (!ioManager.HasResult(f->handle)) {
 			// Try again in another 0.5ms until the IO completes on the host.
 			CoreTiming::ScheduleEvent(usToCycles(500) - cyclesLate, syncNotifyEvent, userdata);
 			return;
 		}
-	} else if (g_Config.iIOTimingMethod == IOTIMING_REALISTIC) {
+	} else if (ioTimingMethod == IOTIMING_REALISTIC) {
 		u64 finishTicks = ioManager.ResultFinishTicks(f->handle);
 		if (finishTicks > CoreTiming::GetTicks()) {
 			// Reschedule for later when the result should finish.
@@ -497,10 +507,12 @@ static void __IoManagerThread() {
 	}
 }
 
-static void __IoWakeManager() {
+static void __IoWakeManager(CoreLifecycle stage) {
 	// Ping the thread so that it knows to check coreState.
-	ioManagerThreadEnabled = false;
-	ioManager.FinishEventLoop();
+	if (stage == CoreLifecycle::STOPPING) {
+		ioManagerThreadEnabled = false;
+		ioManager.FinishEventLoop();
+	}
 }
 
 static void __IoVblank() {
@@ -587,7 +599,7 @@ void __IoInit() {
 	ioManagerThreadEnabled = g_Config.bSeparateIOThread;
 	ioManager.SetThreadEnabled(ioManagerThreadEnabled);
 	if (ioManagerThreadEnabled) {
-		Core_ListenShutdown(&__IoWakeManager);
+		Core_ListenLifecycle(&__IoWakeManager);
 		ioManagerThread = new std::thread(&__IoManagerThread);
 		ioManagerThread->detach();
 	}
@@ -721,7 +733,8 @@ static u32 sceKernelStderr() {
 u64 __IoCompleteAsyncIO(FileNode *f) {
 	PROFILE_THIS_SCOPE("io_rw");
 
-	if (g_Config.iIOTimingMethod == IOTIMING_REALISTIC) {
+	int ioTimingMethod = GetIOTimingMethod();
+	if (ioTimingMethod == IOTIMING_REALISTIC) {
 		u64 finishTicks = ioManager.ResultFinishTicks(f->handle);
 		if (finishTicks > CoreTiming::GetTicks()) {
 			return finishTicks;
@@ -805,7 +818,7 @@ static u32 sceIoGetstat(const char *filename, u32 addr) {
 		}
 	} else {
 		DEBUG_LOG(SCEIO, "sceIoGetstat(%s, %08x) : FILE NOT FOUND", filename, addr);
-		return hleDelayResult(ERROR_ERRNO_FILE_NOT_FOUND, "io getstat", usec);
+		return hleDelayResult(SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND, "io getstat", usec);
 	}
 }
 
@@ -919,7 +932,7 @@ static bool __IoRead(int &result, int id, u32 data_addr, int size, int &us) {
 				ioManager.ScheduleOperation(ev);
 				return false;
 			} else {
-				if (g_Config.iIOTimingMethod != IOTIMING_REALISTIC) {
+				if (GetIOTimingMethod() != IOTIMING_REALISTIC) {
 					result = (int) pspFileSystem.ReadFile(f->handle, data, size);
 				} else {
 					result = (int) pspFileSystem.ReadFile(f->handle, data, size, us);
@@ -989,7 +1002,7 @@ static u32 sceIoReadAsync(int id, u32 data_addr, int size) {
 		int us;
 		bool complete = __IoRead(result, id, data_addr, size, us);
 		if (complete) {
-			f->asyncResult = result;
+			f->asyncResult = (s64)result;
 			DEBUG_LOG(SCEIO, "%llx=sceIoReadAsync(%d, %08x, %x)", f->asyncResult, id, data_addr, size);
 		} else {
 			DEBUG_LOG(SCEIO, "sceIoReadAsync(%d, %08x, %x): deferring result", id, data_addr, size);
@@ -1054,7 +1067,7 @@ static bool __IoWrite(int &result, int id, u32 data_addr, int size, int &us) {
 			ioManager.ScheduleOperation(ev);
 			return false;
 		} else {
-			if (g_Config.iIOTimingMethod != IOTIMING_REALISTIC) {
+			if (GetIOTimingMethod() != IOTIMING_REALISTIC) {
 				result = (int) pspFileSystem.WriteFile(f->handle, (u8 *) data_ptr, size);
 			} else {
 				result = (int) pspFileSystem.WriteFile(f->handle, (u8 *) data_ptr, size, us);
@@ -1123,7 +1136,7 @@ static u32 sceIoWriteAsync(int id, u32 data_addr, int size) {
 		int us;
 		bool complete = __IoWrite(result, id, data_addr, size, us);
 		if (complete) {
-			f->asyncResult = result;
+			f->asyncResult = (s64)result;
 			DEBUG_LOG(SCEIO, "%llx=sceIoWriteAsync(%d, %08x, %x)", f->asyncResult, id, data_addr, size);
 		} else {
 			DEBUG_LOG(SCEIO, "sceIoWriteAsync(%d, %08x, %x): deferring result", id, data_addr, size);
@@ -1383,7 +1396,7 @@ static u32 sceIoOpen(const char *filename, int flags, int mode) {
 		else
 		{
 			ERROR_LOG(SCEIO, "ERROR_ERRNO_FILE_NOT_FOUND=sceIoOpen(%s, %08x, %08x) - file not found", filename, flags, mode);
-			return hleDelayResult(ERROR_ERRNO_FILE_NOT_FOUND, "file opened", 10000);
+			return hleDelayResult(SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND, "file opened", 10000);
 		}
 	}
 
@@ -1412,7 +1425,7 @@ static u32 sceIoRemove(const char *filename) {
 
 	// TODO: This timing isn't necessarily accurate, low end for now.
 	if(!pspFileSystem.GetFileInfo(filename).exists)
-		return hleDelayResult(ERROR_ERRNO_FILE_NOT_FOUND, "file removed", 100);
+		return hleDelayResult(SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND, "file removed", 100);
 
 	pspFileSystem.RemoveFile(filename);
 	return hleDelayResult(0, "file removed", 100);
@@ -1433,7 +1446,7 @@ static u32 sceIoRmdir(const char *dirname) {
 	if (pspFileSystem.RmDir(dirname))
 		return hleDelayResult(0, "rmdir", 1000);
 	else
-		return hleDelayResult(ERROR_ERRNO_FILE_NOT_FOUND, "rmdir", 1000);
+		return hleDelayResult(SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND, "rmdir", 1000);
 }
 
 static u32 sceIoSync(const char *devicename, int flag) {
@@ -1855,7 +1868,7 @@ static u32 sceIoRename(const char *from, const char *to) {
 
 	// TODO: Timing isn't terribly accurate.
 	if (!pspFileSystem.GetFileInfo(from).exists)
-		return hleDelayResult(ERROR_ERRNO_FILE_NOT_FOUND, "file renamed", 1000);
+		return hleDelayResult(SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND, "file renamed", 1000);
 
 	int result = pspFileSystem.RenameFile(from, to);
 	if (result < 0)
@@ -1933,7 +1946,7 @@ static u32 sceIoOpenAsync(const char *filename, int flags, int mode)
 		f = new FileNode();
 		f->handle = kernelObjects.Create(f);
 		f->fullpath = filename;
-		f->asyncResult = error == 0 ? ERROR_ERRNO_FILE_NOT_FOUND : error;
+		f->asyncResult = error == 0 ? (s64)SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND : (s64)error;
 		f->closePending = true;
 
 		fd = __IoAllocFd(f);
@@ -2087,7 +2100,7 @@ static u32 sceIoPollAsync(int id, u32 address) {
 	FileNode *f = __IoGetFd(id, error);
 	if (f) {
 		if (f->pendingAsyncResult) {
-			DEBUG_LOG(SCEIO, "%lli = sceIoPollAsync(%i, %08x): not ready", f->asyncResult, id, address);
+			VERBOSE_LOG(SCEIO, "%lli = sceIoPollAsync(%i, %08x): not ready", f->asyncResult, id, address);
 			return 1;
 		} else if (f->hasAsyncResult) {
 			DEBUG_LOG(SCEIO, "%lli = sceIoPollAsync(%i, %08x)", f->asyncResult, id, address);
@@ -2142,9 +2155,8 @@ public:
 static u32 sceIoDopen(const char *path) {
 	DEBUG_LOG(SCEIO, "sceIoDopen(\"%s\")", path);
 
-	if(!pspFileSystem.GetFileInfo(path).exists)
-	{
-		return ERROR_ERRNO_FILE_NOT_FOUND;
+	if (!pspFileSystem.GetFileInfo(path).exists) {
+		return SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND;
 	}
 
 	DirListing *dir = new DirListing();

@@ -39,7 +39,7 @@ struct VkRenderData {
 			VkPipelineLayout pipelineLayout;
 			VkDescriptorSet ds;
 			int numUboOffsets;
-			uint32_t uboOffsets[2];
+			uint32_t uboOffsets[3];
 			VkBuffer vbuffer;
 			VkDeviceSize voffset;
 			uint32_t count;
@@ -122,6 +122,8 @@ struct VKRStep {
 			float clearDepth;
 			int clearStencil;
 			int numDraws;
+			// Downloads and textures from this pass.
+			int numReads;
 			VkImageLayout finalColorLayout;
 		} render;
 		struct {
@@ -246,7 +248,6 @@ private:
 
 	VkFramebuffer backbuffer_;
 	VkImage backbufferImage_;
-	VkFramebuffer curFramebuffer_ = VK_NULL_HANDLE;
 
 	VkRenderPass backbufferRenderPass_ = VK_NULL_HANDLE;
 	VkRenderPass framebufferRenderPass_ = VK_NULL_HANDLE;
