@@ -231,12 +231,12 @@ void Vibrate(int mode) {
 	} else {
 		NSMutableDictionary *dictionary = [NSMutableDictionary dictionary];
 		NSArray *pattern = @[@YES, @30, @NO, @2];
-
-		dictionary[@"VibePattern"] = pattern;
-		dictionary[@"Intensity"] = @2;
-
-		AudioServicesPlaySystemSoundWithVibration(kSystemSoundID_Vibrate, nil, dictionary);
 	}
+
+	dictionary[@"VibePattern"] = pattern;
+	dictionary[@"Intensity"] = @2;
+
+	AudioServicesPlaySystemSoundWithVibration(kSystemSoundID_Vibrate, nil, dictionary);
 }
 
 int main(int argc, char *argv[])
