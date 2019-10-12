@@ -204,6 +204,7 @@ PermissionStatus System_GetPermissionStatus(SystemPermission permission) { retur
 
 FOUNDATION_EXTERN void AudioServicesPlaySystemSoundWithVibration(unsigned long, objc_object*, NSDictionary*);
 
+<<<<<<< HEAD
 BOOL SupportsTaptic() {
 	// we're on an iOS version that cannot instantiate UISelectionFeedbackGenerator, so no.
 	if(!NSClassFromString(@"UISelectionFeedbackGenerator")) {
@@ -229,6 +230,8 @@ void Vibrate(int mode) {
 		}
 		[app.feedbackGenerator selectionChanged];
 	} else {
+		NSMutableDictionary *dictionary = [NSMutableDictionary dictionary];
+		NSArray *pattern = @[@YES, @30, @NO, @2];
 		NSMutableDictionary *dictionary = [NSMutableDictionary dictionary];
 		NSArray *pattern = @[@YES, @30, @NO, @2];
 
