@@ -11,8 +11,8 @@
 #import <AudioToolbox/AudioToolbox.h>
 
 #import "AppDelegate.h"
-#import "PPSSPPUIApplication.h"
 #import "ViewController.h"
+#import <AudioToolbox/AudioToolbox.h>
 
 #include "Common/MemoryUtil.h"
 #include "Common/System/NativeApp.h"
@@ -271,6 +271,11 @@ int main(int argc, char *argv[])
 	PROFILE_INIT();
 
 	@autoreleasepool {
-		return UIApplicationMain(argc, argv, NSStringFromClass([PPSSPPUIApplication class]), NSStringFromClass([AppDelegate class]));
+		NSString *documentsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
+		NSString *bundlePath = [[[NSBundle mainBundle] resourcePath] stringByAppendingString:@"/assets/"];
+
+		NativeInit(argc, (const char**)argv, documentsPath.UTF8String, bundlePath.UTF8String, NULL);
+		
+		return UIApplicationMain(argc, argv, nil, NSStringFromClass([AppDelegate class]));
 	}
 }
