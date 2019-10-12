@@ -84,12 +84,12 @@ static const char *OFF_STATES = "8/=0gtvrfnmpeczqs";
     _delegate = delegate;
     if (!_delegate) return;
     
-    /*_delegateFlags.stateChanged = [_delegate respondsToSelector:@selector(stateChanged:)];
+    _delegateFlags.stateChanged = [_delegate respondsToSelector:@selector(stateChanged:)];
     _delegateFlags.buttonDown = [_delegate respondsToSelector:@selector(buttonDown:)];
-    _delegateFlags.buttonUp = [_delegate respondsToSelector:@selector(buttonUp:)];*/
+    _delegateFlags.buttonUp = [_delegate respondsToSelector:@selector(buttonUp:)];
 }
 
-/*#pragma mark -
+#pragma mark -
 #pragma mark UIKeyInput Protocol Methods
 
 - (BOOL)hasText {
@@ -135,6 +135,6 @@ static const char *OFF_STATES = "8/=0gtvrfnmpeczqs";
 
 - (void)deleteBackward {
     // This space intentionally left blank to complete protocol
-}*/
+}
 
 @end
