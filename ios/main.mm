@@ -11,8 +11,8 @@
 #import <AudioToolbox/AudioToolbox.h>
 
 #import "AppDelegate.h"
-#import "PPSSPPUIApplication.h"
 #import "ViewController.h"
+#import <AudioToolbox/AudioToolbox.h>
 
 #include "Common/MemoryUtil.h"
 #include "Common/System/NativeApp.h"
