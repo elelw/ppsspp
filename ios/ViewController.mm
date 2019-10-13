@@ -74,9 +74,6 @@ private:
 	Draw::DrawContext *draw_;
 	GLRenderManager *renderManager_;
 };
-double lastSelectPress = 0.0f;
-double lastStartPress = 0.0f;
-
 static float dp_xscale = 1.0f;
 static float dp_yscale = 1.0f;
 
@@ -97,11 +94,8 @@ static LocationHelper *locationHelper;
 
 @property (nonatomic, strong) EAGLContext* context;
 @property (nonatomic, strong) NSMutableArray<NSDictionary *>* touches;
-@property (nonatomic) EAGLContext* context;
 @property (nonatomic) NSString* documentsPath;
 @property (nonatomic) NSString* bundlePath;
-@property (nonatomic) NSMutableArray* touches;
-@property (nonatomic) AudioEngine* audioEngine;
 @property (nonatomic) iCadeReaderView* iCadeView;
 #if __IPHONE_OS_VERSION_MAX_ALLOWED > __IPHONE_6_1
 @property (nonatomic) GCController *gameController __attribute__((weak_import));
