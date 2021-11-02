@@ -40,7 +40,7 @@
 #include <sys/sysctl.h>
 #include <mach/machine.h>
 
-#include "Common/KeyMap.h"
+#include "Core/KeyMap.h"
 
 #define IS_IPAD() ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad)
 #define IS_IPHONE() ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPhone)

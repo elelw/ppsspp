@@ -1061,6 +1061,8 @@ elseif(IOS)
 		ios/CameraHelper.h
 		ios/LocationHelper.mm
 		ios/LocationHelper.h
+		ios/PPSSPPUIApplication.h
+		ios/PPSSPPUIApplication.mm
 		ios/SubtleVolume.h
 		ios/SubtleVolume.mm
 		ios/iCade/iCadeReaderView.h

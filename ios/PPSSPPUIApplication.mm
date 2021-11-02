@@ -26,7 +26,6 @@
 #include "Common/GPU/OpenGL/GLFeatures.h"
 
 #import "ios/AppDelegate.h"
-#include "ios/SmartKeyboardMap.hpp"
 
 #include "Core/Config.h"
 #include "Common/GraphicsContext.h"
@@ -72,13 +71,13 @@
     if (eventType == GSEVENT_TYPE_KEYUP) {
         struct KeyInput key;
         key.flags = KEY_UP;
-        key.keyCode = getSmartKeyboardMap((int)eventScanCode);
+        key.keyCode = (int)eventScanCode;
         key.deviceId = DEVICE_ID_KEYBOARD;
         NativeKey(key);
     } else if (GSEVENT_TYPE_KEYDOWN) {
         struct KeyInput key;
         key.flags = KEY_DOWN;
-        key.keyCode = getSmartKeyboardMap((int)eventScanCode);
+        key.keyCode = (int)eventScanCode;
         key.deviceId = DEVICE_ID_KEYBOARD;
         NativeKey(key);
     }

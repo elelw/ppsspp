@@ -11,8 +11,8 @@
 #import <AudioToolbox/AudioToolbox.h>
 
 #import "AppDelegate.h"
+#import "PPSSPPUIApplication.h"
 #import "ViewController.h"
-#import <AudioToolbox/AudioToolbox.h>
 
 #include "Common/MemoryUtil.h"
 #include "Common/System/NativeApp.h"
@@ -204,7 +204,6 @@ PermissionStatus System_GetPermissionStatus(SystemPermission permission) { retur
 
 FOUNDATION_EXTERN void AudioServicesPlaySystemSoundWithVibration(unsigned long, objc_object*, NSDictionary*);
 
-<<<<<<< HEAD
 BOOL SupportsTaptic() {
 	// we're on an iOS version that cannot instantiate UISelectionFeedbackGenerator, so no.
 	if(!NSClassFromString(@"UISelectionFeedbackGenerator")) {
@@ -221,25 +220,13 @@ BOOL SupportsTaptic() {
 }
 
 void Vibrate(int mode) {
-	if (SupportsTaptic()) {
-		PPSSPPUIApplication* app = (PPSSPPUIApplication*)[UIApplication sharedApplication];
-		if(app.feedbackGenerator == nil)
-		{
-			app.feedbackGenerator = [[UISelectionFeedbackGenerator alloc] init];
-			[app.feedbackGenerator prepare];
-		}
-		[app.feedbackGenerator selectionChanged];
-	} else {
-		NSMutableDictionary *dictionary = [NSMutableDictionary dictionary];
-		NSArray *pattern = @[@YES, @30, @NO, @2];
-		NSMutableDictionary *dictionary = [NSMutableDictionary dictionary];
-		NSArray *pattern = @[@YES, @30, @NO, @2];
+    NSMutableDictionary *dictionary = [NSMutableDictionary dictionary];
+    NSArray *pattern = @[@YES, @30, @NO, @2];
 
-		dictionary[@"VibePattern"] = pattern;
-		dictionary[@"Intensity"] = @2;
+    dictionary[@"VibePattern"] = pattern;
+    dictionary[@"Intensity"] = @2;
 
-		AudioServicesPlaySystemSoundWithVibration(kSystemSoundID_Vibrate, nil, dictionary);
-	}
+    AudioServicesPlaySystemSoundWithVibration(kSystemSoundID_Vibrate, nil, dictionary);
 }
 
 int main(int argc, char *argv[])
@@ -274,6 +261,6 @@ int main(int argc, char *argv[])
 	PROFILE_INIT();
 
 	@autoreleasepool {
-		return UIApplicationMain(argc, argv, NSStringFromClass([PPSSPPUIApplication class]), NSStringFromClass([AppDelegate class]));
+        return UIApplicationMain(argc, argv, nil, NSStringFromClass([AppDelegate class]));
 	}
 }
